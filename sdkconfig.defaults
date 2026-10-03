@@ -1,0 +1,12 @@
+# Real board: generic ESP32-S3-WROOM-1 N16R8 (16MB flash, 8MB octal PSRAM,
+# 44-pin, USB Type-C). Without these, ESP-IDF's generated sdkconfig falls
+# back to a 2MB flash-size default regardless of which PlatformIO `board`
+# is selected, which produced a "Flash memory size mismatch" warning on
+# every build.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Octal PSRAM (the "R8" in N16R8) needs explicit Octal mode - Quad mode is
+# the ESP32-S3 default and would be wrong for this chip variant.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
