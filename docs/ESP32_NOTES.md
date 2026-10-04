@@ -14,8 +14,14 @@ touch the HID interface yet — this step is only to confirm the board's USB OTG
 setup (the jumper fix mentioned when starting this) actually lets a downstream device enumerate
 at all, before building any protocol logic on top of it.
 
-Builds cleanly (`pio run`, verified in this environment: RAM 4.4%, Flash 2.8%). Not yet flashed
-to real hardware or tested against the real device at time of writing.
+Builds cleanly (`pio run`, verified in this environment: RAM 4.4%, Flash 2.8%).
+
+**Confirmed working on real hardware (2026-10-04):** board powered from its COM/UART USB-C port
+(`/dev/ttyACM0` on the PC), Maschine plugged into the OTG port via a USB-C→A OTG adapter. The
+Maschine powers up from the board's VBUS (OTG jumper fix works) and enumerates ~400 ms after
+`app_main()`: `New device at addr 1: VID=0x17CC PID=0x1140`. PSRAM (8MB octal) and 16MB flash
+are also detected correctly at boot. Never plug the OTG port into a PC while the jumper is
+bridged — the board would back-feed 5V into the PC's port.
 
 ## Flash-size mismatch warning — fixed, and why it happened
 
@@ -27,11 +33,6 @@ default** — ESP-IDF's generated `sdkconfig` falls back to a 2MB default regard
 `sdkconfig.defaults` with `CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y` (and `CONFIG_SPIRAM_MODE_OCT=y`
 for the N16R8's octal PSRAM, which also isn't the ESP32-S3 default — that's Quad). Confirmed
 clean after: no warning, `pio run` shows the full 16MB (16777216 bytes) as available flash.
-
-## Still TODO before flashing to real hardware
-
-- Confirm VBUS is actually present on the USB port after the OTG jumper fix, ideally with a
-  meter, before relying on the firmware's enumeration result to tell you that indirectly.
 
 ## Next steps (after device detection is confirmed working)
 
