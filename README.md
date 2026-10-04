@@ -24,11 +24,18 @@ Critical path for the synth-editor use case:
 - ✅ Pads + pad LEDs (secondary priority, but needed first anyway to find/fix a few protocol-
   level bugs that also affected other things)
 
-Not started yet: ESP32-S3 firmware.
+**ESP32-S3 firmware** (`src/`, PlatformIO + ESP-IDF USB host library): Maschine enumerates and
+is powered from the board's OTG port; pads + pad LEDs, all buttons and encoders, both displays
+(bitmap fonts, test synth-editor UI) and DIN MIDI in/out all work on real hardware. A few
+full-speed-only quirks had to be worked around — see
+**[`docs/ESP32_NOTES.md`](docs/ESP32_NOTES.md)**. Next: actual synth-editor logic.
 
 ## Layout
 
 - `docs/PROTOCOL.md` — the protocol reference. Read this first.
+- `docs/ESP32_NOTES.md` — firmware notes, step by step, incl. the full-speed workarounds.
+- `src/` — ESP32-S3 firmware (`main.c` HID side, `display.c`, `midi.c`, generated `fonts.c`).
+- `tools/gen_font.py` — regenerates `src/fonts.c`/`fonts.h` from a TTF.
 - `pc_reference/` — small self-contained Python scripts (not copied from any third-party
   project) used to find and verify the protocol, and to keep verifying it quickly without
   needing to flash firmware. Point them at your Maschine Mk2's `/dev/hidrawN` node.
@@ -37,8 +44,8 @@ Not started yet: ESP32-S3 firmware.
 
 Everything was prototyped and verified on a PC first (`pc_reference/`) because iteration there
 is seconds, not a flash-and-reboot cycle. The plan is to port the now-confirmed protocol
-knowledge in `docs/PROTOCOL.md` directly to ESP32-S3 firmware using TinyUSB's USB host stack
-(a separate, simple USB-MIDI host code path for the DIN MIDI side, and a HID host code path for
+knowledge in `docs/PROTOCOL.md` directly to ESP32-S3 firmware (ESP-IDF's native USB host
+library: a separate, simple USB-MIDI code path for the DIN MIDI side, and a HID code path for
 everything else), rather than re-discovering any of this on-device.
 
 ## Credit / prior art

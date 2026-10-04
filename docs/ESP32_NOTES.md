@@ -44,7 +44,7 @@ PC (which talks to the Maschine at high speed through the kernel's HID driver):
   reports in software — a report is complete on a short packet or once it reaches its known
   length (`0x01` 25, `0x20` 65).
 
-## Step 3 (current): displays — working
+## Step 3: displays — working
 
 `src/display.c` keeps a 1bpp framebuffer per display, tracks which 8-row chunks changed, and
 `main.c` streams only those as `0xE0`/`0xE1` reports (265 bytes, 5 packets each) over the
@@ -56,6 +56,25 @@ Fonts are DejaVu Sans Condensed pre-rendered to bitmaps by `tools/gen_font.py` (
 endless encoder, in a 64 px column right under it (name, value 0-127, bar), 10 encoder units per
 step (~130 steps per turn). Confirmed on hardware: layout lines up with the encoders, updates
 feel responsive, and pads keep working while turning encoders.
+
+## Step 4 (current): DIN MIDI — working both ways
+
+`src/midi.c` claims the Maschine's standard USB-MIDI interface (IF1, bulk) alongside the HID
+interface, hand-rolled (4-byte USB-MIDI event packets, cable 0) rather than via TinyUSB — it's a
+few dozen lines with ESP-IDF's host library. Pads send Note On/Off (pad 0 = note 36, channel 1,
+crude velocity from pressure at detection), and the 8 test parameters send CCs; DIN IN is logged.
+
+**Full-speed gotcha:** the Maschine reports its bulk endpoints with `wMaxPacketSize` **512**
+even when enumerated at full speed (it serves its high-speed descriptors at both speeds; bulk
+at full speed can only be 64). ESP-IDF refuses the allocation (`EP MPS (512) exceeds supported
+limit (408)`), so the interface claim fails. Fix: patch the cached endpoint descriptors down to
+64 before claiming (`fix_fs_bulk_mps` in `midi.c`).
+
+Confirmed on hardware via a PC USB-MIDI interface (ALSA `32:0` / `hw:4,0,0`) cabled to the
+Maschine's DIN jacks: messages sent with `amidi` arrived at the ESP32 intact (note, CC, program
+change), and all 16 pads (notes 36-51, every Note On paired with its Note Off) and encoder CCs
+showed up in `aseqdump`. Note: the Maschine buffers DIN IN data while nobody reads IF1, and
+delivers it once the host starts reading.
 
 ## Flash-size mismatch warning — fixed, and why it happened
 
@@ -71,10 +90,7 @@ clean after: no warning, `pio run` shows the full 16MB (16777216 bytes) as avail
 ## Next steps (after device detection is confirmed working)
 
 1. ~~Claim the HID interface and do a round-trip~~ — done, see Step 2.
-2. Separately, bring up the USB-MIDI class interface (interface 1) for DIN MIDI — this is
-   architecturally independent of the HID work (see `docs/PROTOCOL.md`), consider using TinyUSB's
-   host MIDI class driver for it rather than hand-rolling anything, since it's a completely
-   standard USB-MIDI class interface.
+2. ~~DIN MIDI via the USB-MIDI class interface~~ — done, see Step 4.
 3. Port the rest of `docs/PROTOCOL.md` (pads, buttons, encoders, displays) incrementally, cross-
    checking against the already-verified behavior in `pc_reference/` rather than re-deriving
    anything from scratch.

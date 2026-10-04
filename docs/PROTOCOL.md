@@ -51,8 +51,12 @@ to the host over standard USB-MIDI. **Confirmed bidirectionally on hardware**: a
 note sent to this interface (e.g. via `amidi -p hw:X,0,0 -S "90 3C 7F"`) comes out the physical
 DIN OUT jack, and MIDI fed into the physical DIN IN jack arrives at the same USB-MIDI port on
 the host. This is completely independent of the HID interface (IF2) and needs zero custom
-protocol — **TinyUSB's `usb_host` MIDI class driver can talk to this directly**, as a separate,
-simple code path from all the HID/Native-protocol work below.
+protocol — any USB-MIDI host code can talk to this directly (the ESP32 firmware hand-rolls it in
+`src/midi.c`), as a separate, simple code path from all the HID/Native-protocol work below.
+
+**Descriptor quirk:** the bulk endpoints report `wMaxPacketSize` 512 even at full speed (illegal
+there — max 64). A full-speed host like the ESP32-S3 has to treat them as 64; see
+`docs/ESP32_NOTES.md` (Step 4).
 
 ## HID Report Reference (interface 2)
 

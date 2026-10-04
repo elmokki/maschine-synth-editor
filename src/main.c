@@ -1,5 +1,5 @@
 /*
- * Step 3: HID round-trip with the Maschine Mk2 over USB host, plus displays.
+ * Step 4: HID round-trip with the Maschine Mk2 over USB host, displays, DIN MIDI.
  *
  * On connect: finds the HID interface (IF2) in the config descriptor,
  * claims it, keeps an interrupt IN transfer running for pads (0x20), and
@@ -8,7 +8,8 @@
  * presses. Output: all pads are lit dim blue and a pressed pad turns white
  * (0x80), and the two displays (0xE0/0xE1, see display.c) show a test
  * synth-editor UI - one parameter per endless encoder, in a column right
- * under it, changed by turning that encoder.
+ * under it, changed by turning that encoder. DIN MIDI (midi.c): pads send
+ * notes and the parameters send CCs on channel 1; DIN IN is logged.
  *
  * Report layouts are the ones confirmed on PC in docs/PROTOCOL.md; offsets
  * below are into the raw transfer buffer, where byte 0 is the report ID.
@@ -27,6 +28,7 @@
 #include "usb/usb_helpers.h"
 #include "display.h"
 #include "fonts.h"
+#include "midi.h"
 
 static const char *TAG = "maschine";
 
@@ -44,6 +46,7 @@ static const char *TAG = "maschine";
  * hysteresis so a pad near the threshold doesn't chatter. */
 #define PAD_PRESS_RAW 1000
 #define PAD_RELEASE_RAW 300
+#define PAD_BASE_NOTE 36  /* pad 0 = C1, the usual drum-pad base note */
 
 static const char *const button_names[48] = {
     "Display 1", "Display 2", "Display 3", "Display 4",
@@ -146,6 +149,9 @@ static const char *const param_names[PARAM_COUNT] = {
     "ATTACK", "DECAY", "SUSTAIN", "RELEASE",
 };
 static int param_values[PARAM_COUNT] = {64, 20, 80, 0, 5, 40, 100, 30};
+/* Sent on MIDI channel 1 when the value changes; mostly the General MIDI
+ * sound controller numbers, the rest picked arbitrarily for testing. */
+static const uint8_t param_cc[PARAM_COUNT] = {74, 71, 47, 76, 73, 75, 79, 72};
 static int encoder_acc[PARAM_COUNT];
 
 static void draw_param(int i)
@@ -190,6 +196,7 @@ static void param_turn(int i, int delta)
     v = v < 0 ? 0 : v > 127 ? 127 : v;
     if (v != param_values[i]) {
         param_values[i] = v;
+        midi_send(0xB0, param_cc[i], v);
         draw_param(i);
         out_kick();
     }
@@ -267,11 +274,16 @@ static void handle_report20(const uint8_t *buf, int len)
             set_pad_led(pad, 127, 127, 127);
             leds_changed = true;
             ESP_LOGI(TAG, "pad %2d down (raw %d)", pad, raw[pad]);
+            /* Crude velocity from the pressure at the moment the press is
+             * detected; good enough to test MIDI out */
+            int vel = raw[pad] / 32;
+            midi_send(0x90, PAD_BASE_NOTE + pad, vel < 1 ? 1 : vel > 127 ? 127 : vel);
         } else if (pad_down[pad] && raw[pad] <= PAD_RELEASE_RAW) {
             pad_down[pad] = false;
             set_pad_led(pad, 0, 0, 20);
             leds_changed = true;
             ESP_LOGI(TAG, "pad %2d up", pad);
+            midi_send(0x80, PAD_BASE_NOTE + pad, 0);
         }
     }
     if (leds_changed) {
@@ -460,6 +472,9 @@ static void handle_new_device(uint8_t dev_addr)
         return;
     }
 
+    /* DIN MIDI is independent of the HID side; carry on without it if it fails */
+    midi_attach(client_hdl, hdl, cfg);
+
     dev_hdl = hdl;
     connected = true;
     have_report01 = false;
@@ -494,6 +509,7 @@ static void handle_device_gone(usb_device_handle_t gone_hdl)
     usb_host_endpoint_halt(dev_hdl, ep_out);
     usb_host_endpoint_flush(dev_hdl, ep_out);
     usb_host_interface_release(client_hdl, dev_hdl, MASCHINE_HID_IF);
+    midi_detach();
     usb_host_device_close(client_hdl, dev_hdl);
     dev_hdl = NULL;
 }
