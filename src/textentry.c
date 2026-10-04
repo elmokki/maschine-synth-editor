@@ -181,11 +181,7 @@ void textentry_draw(int y0)
             continue;
         }
         bool lit = p == tap_key;
-        if (lit) {
-            display_fill_rect(1, cx0 + 1, cy0 + 1, 61, 14, true);
-        } else {
-            display_rect(1, cx0 + 1, cy0 + 1, 61, 14, true);
-        }
+        display_round_rect(1, cx0 + 1, cy0 + 1, 61, 14, lit, true);
         const char *legend = keys[p].kind == K_CASE ? (upper ? "ABC > abc" : "abc > ABC")
                                                      : keys[p].legend;
         int w = display_text_width(&font_small, legend);

@@ -22,6 +22,9 @@ void display_pixel(int disp, int x, int y, bool on);
 void display_fill_rect(int disp, int x, int y, int w, int h, bool on);
 void display_rect(int disp, int x, int y, int w, int h, bool on);
 void display_line(int disp, int x0, int y0, int x1, int y1, bool on);
+/* Rectangle with corners rounded by 2 px, outlined or filled; for boxes
+ * that stand for the Maschine's (rounded) buttons and pads */
+void display_round_rect(int disp, int x, int y, int w, int h, bool filled, bool on);
 
 /* Draws text with its top-left at (x, y); returns the x after the last glyph. */
 int display_text(int disp, int x, int y, const font_t *font, const char *s, bool on);

@@ -14,6 +14,10 @@ void maschine_set_pad_led(int pad, uint8_t r, uint8_t g, uint8_t b);
  * re-sent automatically after a reconnect. */
 void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b);
 
+/* Same, with the button's left and right LEDs set separately (rgb[3]
+ * each); the diffuser blends them into a left-to-right gradient. */
+void maschine_set_group_led_lr(int group, const uint8_t left[3], const uint8_t right[3]);
+
 /* Mono LED of the button with this report 0x01 input bit (see the button
  * table in docs/PROTOCOL.md), brightness 0-127. Every button except the
  * Group buttons (RGB, above) has one. */

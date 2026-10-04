@@ -2,9 +2,10 @@
  * MiniMax (Plugiator) editor UI on the Maschine's displays.
  *
  * Pages of 8 parameters, one per endless encoder, plus up to 8 switches on
- * the display buttons. The main encoder changes page; the arrow buttons
- * (or the main encoder, while Browse is toggled on) browse the patch
- * library on LittleFS and Enter loads the selected patch (sends every
+ * the display buttons. The main encoder and the top arrow buttons change
+ * page; the arrows next to Enter (or the main encoder, while Browse is
+ * toggled on) browse the patch library on LittleFS and Enter loads the
+ * selected patch (sends every
  * parameter, so the Plugiator's state is fully known afterwards). Rec
  * stores/renames/deletes patches.
  *

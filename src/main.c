@@ -128,16 +128,22 @@ static void out_kick(void)
     }
 }
 
-void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b)
+void maschine_set_group_led_lr(int group, const uint8_t left[3], const uint8_t right[3])
 {
-    /* Each group button has two RGB triples (purpose of the second one
-     * unknown, see PROTOCOL.md); set both the same */
+    /* Each group button has two RGB LEDs: left, then right (see PROTOCOL.md) */
     uint8_t *p = &group_leds[1 + group * 6];
-    p[0] = p[3] = r & 0x7F;
-    p[1] = p[4] = g & 0x7F;
-    p[2] = p[5] = b & 0x7F;
+    for (int i = 0; i < 3; i++) {
+        p[i] = left[i] & 0x7F;
+        p[3 + i] = right[i] & 0x7F;
+    }
     group_leds_dirty = true;
     out_kick();
+}
+
+void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b)
+{
+    const uint8_t c[3] = {r, g, b};
+    maschine_set_group_led_lr(group, c, c);
 }
 
 /* Mono button LEDs come in blocks of 8 that follow the input bit order

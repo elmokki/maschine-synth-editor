@@ -72,15 +72,14 @@ static const char *TAG = "editor";
 #define LED_DIM 8
 #define LED_ON 127
 
-/* Group button LEDs: dim = section exists; the selected section shows
- * which of its pages is open by colour */
-#define LED_SECTION_DIM 0, 4, 12
-static const uint8_t page_colors[][3] = {
-    {30, 90, 127},  /* page 1: cyan */
-    {127, 45, 0},   /* page 2: orange */
-    {20, 127, 20},  /* page 3: green */
-    {110, 0, 127},  /* page 4: magenta */
-};
+/* Group button LEDs: dim = section exists (violet tint if it has several
+ * pages); the selected section is cyan, and its page shows on the button's
+ * left/right LEDs: page 1 = left, page 2 = right, page 3 = whole button.
+ * A one-page section lights the whole button. */
+#define LED_SECTION_DIM 0, 4, 12        /* one page */
+#define LED_SECTION_DIM_MULTI 7, 0, 12  /* several pages: a slightly violet tint */
+static const uint8_t led_section_on[3] = {30, 90, 127};
+#define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* Navigation is two-level, the same for every synth: Group buttons A-H
  * pick a section (e.g. an operator, tone or partial), the main encoder
@@ -93,44 +92,52 @@ typedef struct {
     int8_t switches[8];  /* parameter index per display button, or NONE */
 } page_t;
 
-/* Grouped after the Minimoog panel sections (see the plug-in's Main and
- * Add GUI pages), 8 encoders at a time; one page per section. */
+/* Main panel of the plug-in GUI first, in signal-chain order (OSC -> MIX
+ * -> FILTER -> LOUDNESS), then its global controllers, then the Add panel's
+ * extras. Every switch sits above the knob it belongs with (the Decay
+ * switch shapes the envelope release, so it's above A DECAY rather than in
+ * the controllers section where the panel has it), and unrelated
+ * parameters don't share a page just to fill columns. Bypass affects all
+ * effects, so it's on both effect pages. */
+#define _ NONE
 static const page_t pages[] = {
     {0, "OSCILLATORS",
-     {MINIMAX_OSC1_RNG, MINIMAX_OSC1_WAV, MINIMAX_OSC2_RNG, MINIMAX_OSC2_WAV,
-      MINIMAX_OSC2_FRQ, MINIMAX_OSC3_RNG, MINIMAX_OSC3_WAV, MINIMAX_OSC3_FRQ},
-     {MINIMAX_OSC_MOD, MINIMAX_OSC3_CTL, MINIMAX_GLIDE_SW, MINIMAX_DECAY_SW,
-      NONE, NONE, NONE, NONE}},
+     {MINIMAX_OSC1_RNG, MINIMAX_OSC1_WAV, MINIMAX_OSC2_RNG, MINIMAX_OSC2_FRQ,
+      MINIMAX_OSC2_WAV, MINIMAX_OSC3_RNG, MINIMAX_OSC3_FRQ, MINIMAX_OSC3_WAV},
+     {MINIMAX_OSC_MOD, _, _, _, _, MINIMAX_OSC3_CTL, _, _}},
     {1, "MIXER",
      {MINIMAX_OSC1_VOL, MINIMAX_OSC2_VOL, MINIMAX_OSC3_VOL, MINIMAX_EXT_VOL,
-      MINIMAX_NOISE_VOL, MINIMAX_TUNE, MINIMAX_GLIDE, MINIMAX_MOD_MIX},
+      MINIMAX_NOISE_VOL, _, _, _},
      {MINIMAX_OSC1, MINIMAX_OSC2, MINIMAX_OSC3, MINIMAX_EXT,
-      MINIMAX_NOISE, MINIMAX_PINK, MINIMAX_FEEDBACK, NONE}},
+      MINIMAX_NOISE, MINIMAX_PINK, MINIMAX_FEEDBACK, _}},
     {2, "FILTER",
      {MINIMAX_CUTOFF, MINIMAX_EMPHASIS, MINIMAX_CONTOUR, MINIMAX_F_ATTACK,
-      MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_F_VELO, MINIMAX_VOLUME},
-     {MINIMAX_FILT_MOD, MINIMAX_KBD_1, MINIMAX_KBD_2, NONE,
-      NONE, NONE, NONE, NONE}},
+      MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_F_VELO, _},
+     {MINIMAX_FILT_MOD, MINIMAX_KBD_1, MINIMAX_KBD_2, _, _, _, _, _}},
     {3, "LOUDNESS",
      {MINIMAX_A_ATTACK, MINIMAX_A_DECAY, MINIMAX_A_SUSTAIN, MINIMAX_A_VELO,
-      MINIMAX_BEND, MINIMAX_MW_INT, MINIMAX_MW_OFFS, MINIMAX_MOD_WHL},
-     {MINIMAX_LO_NOTE, MINIMAX_RETRIG, MINIMAX_SINGLE, NONE,
-      NONE, NONE, NONE, NONE}},
-    {4, "CV / CHORUS",
-     {MINIMAX_CV_OSC, MINIMAX_CV_FILT, MINIMAX_CV_LOUD, MINIMAX_CH_RATE,
-      MINIMAX_CH_DEPTH, MINIMAX_CH_PHASE, MINIMAX_CH_FDBK, MINIMAX_CH_MIX},
-     {MINIMAX_FLANGER, MINIMAX_BYPASS, MINIMAX_BOOST, NONE,
-      NONE, NONE, NONE, NONE}},
-    {5, "DELAY",
+      MINIMAX_VOLUME, _, _, _},
+     {_, MINIMAX_DECAY_SW, _, _, MINIMAX_BOOST, _, _, _}},
+    {4, "CONTROLLERS",
+     {MINIMAX_TUNE, MINIMAX_GLIDE, MINIMAX_MOD_MIX, _, _, _, _, _},
+     {_, MINIMAX_GLIDE_SW, _, _, _, _, _, _}},
+    {5, "ADDITIONAL",
+     {MINIMAX_BEND, MINIMAX_MW_INT, MINIMAX_MW_OFFS, MINIMAX_MOD_WHL,
+      MINIMAX_CV_OSC, MINIMAX_CV_FILT, MINIMAX_CV_LOUD, _},
+     {MINIMAX_LO_NOTE, MINIMAX_RETRIG, MINIMAX_SINGLE, _, _, _, _, _}},
+    {6, "CHORUS",
+     {MINIMAX_CH_RATE, MINIMAX_CH_DEPTH, MINIMAX_CH_PHASE, MINIMAX_CH_FDBK,
+      MINIMAX_CH_MIX, _, _, _},
+     {MINIMAX_FLANGER, _, _, _, _, _, _, MINIMAX_BYPASS}},
+    {6, "DELAY",
      {MINIMAX_DLY_T_L, MINIMAX_DAMP_L, MINIMAX_LEVEL_L, MINIMAX_DLY_FDBK,
       MINIMAX_DLY_T_R, MINIMAX_DAMP_R, MINIMAX_LEVEL_R, MINIMAX_DLY_MIX},
-     {MINIMAX_CROSS, MINIMAX_BPM_L, MINIMAX_BPM_R, NONE,
-      NONE, NONE, NONE, NONE}},
+     {_, _, _, MINIMAX_CROSS, _, _, _, MINIMAX_BYPASS}},
     {6, "DELAY SYNC",
-     {MINIMAX_NOTE_L, MINIMAX_NOTE_R, MINIMAX_BPM, NONE,
-      NONE, NONE, NONE, NONE},
-     {NONE, NONE, NONE, NONE, NONE, NONE, NONE, NONE}},
+     {MINIMAX_NOTE_L, MINIMAX_NOTE_R, MINIMAX_BPM, _, _, _, _, _},
+     {MINIMAX_BPM_L, MINIMAX_BPM_R, _, _, _, _, _, _}},
 };
+#undef _
 #define PAGE_COUNT ((int)(sizeof(pages) / sizeof(pages[0])))
 
 static uint8_t values[MINIMAX_PARAM_COUNT];
@@ -186,9 +193,20 @@ static void update_group_leds(void)
 {
     for (int g = 0; g < 8; g++) {
         if (g == pages[page].section) {
-            int n = sizeof(page_colors) / sizeof(page_colors[0]);
-            const uint8_t *c = page_colors[(page - section_first_page(g)) % n];
-            maschine_set_group_led(g, c[0], c[1], c[2]);
+            int count = section_page_count(g);
+            int k = page - section_first_page(g);
+            bool lit_l = count == 1 || k != 1;
+            bool lit_r = count == 1 || k >= 1;
+            int left = lit_l ? 100 : LED_HALF_DIM;
+            int right = lit_r ? 100 : LED_HALF_DIM;
+            uint8_t l[3], r[3];
+            for (int i = 0; i < 3; i++) {
+                l[i] = led_section_on[i] * left / 100;
+                r[i] = led_section_on[i] * right / 100;
+            }
+            maschine_set_group_led_lr(g, l, r);
+        } else if (section_page_count(g) > 1) {
+            maschine_set_group_led(g, LED_SECTION_DIM_MULTI);
         } else if (section_first_page(g) != NONE) {
             maschine_set_group_led(g, LED_SECTION_DIM);
         } else {
@@ -232,7 +250,7 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_ARROW_LEFT_2, LED_DIM);
     maschine_set_button_led(BTN_ARROW_RIGHT_2, LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, overview ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_ENTER, patch_browse != NONE ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_ENTER, patch_browse != NONE && patch_browse != patch_loaded ? LED_ON : LED_DIM);
 }
 
 /* ---- drawing ---- */
@@ -308,15 +326,18 @@ static void draw_header(void)
     int title_end = draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
 
     int shown = patch_browse != NONE ? patch_browse : patch_loaded;
+    /* While browsing, a patch other than the loaded one is shown inverted
+     * with an Enter hint; landing back on the loaded one shows it plain */
+    bool pending = patch_browse != NONE && patch_browse != patch_loaded;
     char name[64];
     if (shown == NONE) {
         snprintf(buf, sizeof(buf), "no patch loaded");
     } else {
-        snprintf(buf, sizeof(buf), patch_browse != NONE ? "%s  [ENTER]" : "%s", patch_names[shown]);
+        snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : "%s", patch_names[shown]);
     }
     int right = DISPLAY_USABLE_WIDTH - 2;
     fit_text(&font_small, buf, right - title_end - 10, name, sizeof(name));
-    if (patch_browse != NONE) {
+    if (pending) {
         int w = display_text_width(&font_small, name);
         display_fill_rect(0, right - w - 2, 0, w + 4, HEADER_LINE_Y, true);
         draw_right(0, right, HEADER_CAP_Y, &font_small, name, false);
@@ -386,11 +407,7 @@ static void draw_column(int col)
     int sw = pg->switches[col];
     if (sw != NONE) {
         bool on = known[sw] && values[sw] >= 64;
-        if (on) {
-            display_fill_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, true);
-        } else {
-            display_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, true);
-        }
+        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, on, true);
         draw_centered(disp, x, COLUMN_INNER,
                       SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
                       &font_small, minimax_params[sw].short_name, !on);
@@ -599,7 +616,7 @@ static void draw_soft_keys(const char *const *labels)
         int x = col * COLUMN_WIDTH;
         display_fill_rect(0, x, SWITCH_BOX_Y, COLUMN_WIDTH, SWITCH_BOX_H, false);
         if (labels[col]) {
-            display_rect(0, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, true);
+            display_round_rect(0, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, false, true);
             draw_centered(0, x, COLUMN_INNER,
                           SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
                           &font_small, labels[col], true);
@@ -923,9 +940,13 @@ static void editor_button_impl(int bit, bool down)
             send_param(sw);
             draw_column(col);
         }
-    } else if (bit == BTN_ARROW_LEFT || bit == BTN_ARROW_LEFT_2) {
-        browse_patches(-1);
-    } else if (bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_RIGHT_2) {
+    } else if (bit == BTN_ARROW_LEFT) {
+        change_page(-1);  /* top arrows, by the display buttons: pages */
+    } else if (bit == BTN_ARROW_RIGHT) {
+        change_page(1);
+    } else if (bit == BTN_ARROW_LEFT_2) {
+        browse_patches(-1);  /* arrows under the main encoder, by Enter: patches */
+    } else if (bit == BTN_ARROW_RIGHT_2) {
         browse_patches(1);
     } else if (bit == BTN_BROWSE) {
         encoder_browses = !encoder_browses;

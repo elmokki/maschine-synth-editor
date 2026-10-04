@@ -156,11 +156,11 @@ See the pad section above for `pad_idx` — no remap needed.
 
 ### `0x81` OUT — group buttons + transport LEDs (56 bytes after report-ID)
 
-- Bytes 0-47: 8 Group buttons (A→H) × 6 bytes each = **two separate RGB triples per group
-  button** (first triple at `group*6 + 0..2`, second at `group*6 + 3..5`). Confirmed both
-  triples independently light the correct group button, in A→H order. What the *second* triple
-  is for in practice (selected-state? has-content indicator?) wasn't determined — only that it's
-  a second, independently-settable RGB value.
+- Bytes 0-47: 8 Group buttons (A→H) × 6 bytes each = **two RGB LEDs per group button: the first
+  triple (`group*6 + 0..2`) is the button's left side, the second (`group*6 + 3..5`) its right
+  side.** Confirmed on hardware with different colours per triple: the diffuser blends them
+  into a left-to-right gradient (red + blue → a pink-to-blue gradient), with some bleed between
+  the halves, so they read as one button with a gradient rather than two separate lights.
 - Bytes 48-55: 8 transport buttons, mono: Restart, Step-Left, Step-Right, Grid, Play, Rec,
   Erase, Shift — i.e. input byte 4 (bits 32-39) in order. **Confirmed 1-by-1 on hardware.**
 
@@ -240,7 +240,6 @@ Decoded fields (byte offsets within the 11-byte report):
   test order, not independently labeled.
 - Push-click on encoders, if any.
 - Byte 6 bits 1-7 of the button bitfield (bit 0 is a probable red herring, see button table).
-- Exact meaning of the group buttons' *second* RGB triple.
 
 ## Tools
 

@@ -92,14 +92,21 @@ turns them into `src/minimax_params.c/.h` (committed — MIDI implementation fac
 use 0/22/44/66/88/110, switches 0/127.
 
 **Editor** (`src/editor.c`), the navigation model meant for every synth:
-- Group buttons A-H select a section, pressing the current one again steps to its next page
-  (page shown by the Group LED colour); the main encoder steps through all pages; Navigate (held)
-  shows the section list. Parallel sections keep the page position (OP1 EG → OP3 EG).
+- Group buttons A-H select a section, pressing the current one again steps to its next page;
+  the main encoder and the top arrow pair step through all pages; Navigate (held) shows the
+  section list. Parallel sections keep the page position (OP1 EG → OP3 EG).
+- Group LEDs: dim blue = section exists, dim violet = it has several pages; the selected one is
+  cyan, and its page shows on the button's two LEDs (page 1 = left, 2 = right, 3 = whole button).
+- MiniMax sections follow the plug-in GUI: the Main panel first in signal-chain order
+  (A Oscillators, B Mixer, C Filter, D Loudness), then E Controllers, then the Add panel
+  (F Additional, G Effects: Chorus / Delay / Delay Sync). Each switch sits above the knob it
+  belongs with (the Decay switch above A DECAY, not in Controllers as on the panel).
 - 8 encoders = the page's 8 parameters (6-position knobs step every ~1/16 turn, waveforms drawn
   as a small picture), display buttons = the page's switches.
 - Header row: section/page and patch on the left display, prev/next page on the right. The
-  arrow buttons browse patches (or the main encoder, while Browse is toggled on); the browsed
-  patch shows inverted in the header, Enter loads it, any parameter encoder cancels browsing.
+  arrow pair next to Enter browses patches (or the main encoder, while Browse is toggled on);
+  a browsed patch shows inverted in the header (plain again when back on the loaded one), Enter
+  loads it, any parameter encoder cancels browsing.
 - Rec = store screen: save as new (`User NNN`, numbers from 100) or over a user patch, RENAME
   (pads become a phone keypad, `src/textentry.c`), DELETE (press twice). Factory patches
   (000-099) are read-only.
@@ -110,7 +117,8 @@ use 0/22/44/66/88/110, switches 0/127.
   is loaded or the parameter is touched. Patch load sends every parameter (verified byte-exact
   on the PC side).
 - Every button that does something is lit dimly, brightly when on/active. The mono button LED
-  slots were mapped with a temporary on-device wizard, see `docs/PROTOCOL.md`.
+  slots were mapped with a temporary on-device wizard, see `docs/PROTOCOL.md`. Boxes standing
+  for physical buttons/pads have 2 px rounded corners, like the buttons.
 - Fonts: Spleen pixel fonts (5x8, 6x12, 8x16, 12x24, BSD license) converted from BDF by
   `tools/gen_font.py`; they're far crisper on the 1-bit panel than anti-aliasing-designed TTFs.
 

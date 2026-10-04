@@ -66,6 +66,31 @@ void display_rect(int disp, int x, int y, int w, int h, bool on)
     display_fill_rect(disp, x + w - 1, y, 1, h, on);
 }
 
+void display_round_rect(int disp, int x, int y, int w, int h, bool filled, bool on)
+{
+    if (filled) {
+        display_fill_rect(disp, x, y, w, h, on);
+        /* Cut a 3-pixel corner off each corner */
+        static const int8_t cut[3][2] = {{0, 0}, {1, 0}, {0, 1}};
+        for (int i = 0; i < 3; i++) {
+            int dx = cut[i][0], dy = cut[i][1];
+            display_pixel(disp, x + dx, y + dy, !on);
+            display_pixel(disp, x + w - 1 - dx, y + dy, !on);
+            display_pixel(disp, x + dx, y + h - 1 - dy, !on);
+            display_pixel(disp, x + w - 1 - dx, y + h - 1 - dy, !on);
+        }
+        return;
+    }
+    display_fill_rect(disp, x + 2, y, w - 4, 1, on);
+    display_fill_rect(disp, x + 2, y + h - 1, w - 4, 1, on);
+    display_fill_rect(disp, x, y + 2, 1, h - 4, on);
+    display_fill_rect(disp, x + w - 1, y + 2, 1, h - 4, on);
+    display_pixel(disp, x + 1, y + 1, on);
+    display_pixel(disp, x + w - 2, y + 1, on);
+    display_pixel(disp, x + 1, y + h - 2, on);
+    display_pixel(disp, x + w - 2, y + h - 2, on);
+}
+
 void display_line(int disp, int x0, int y0, int x1, int y1, bool on)
 {
     /* Bresenham */
