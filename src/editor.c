@@ -898,7 +898,11 @@ static void editor_button_impl(int bit, bool down)
         int sw = synth->pages[page].switches[col];
         if (sw != NONE) {
             synth->param_toggle(sw);
-            draw_column(col);
+            /* A switch can affect others on the page (e.g. radio buttons),
+             * so redraw them all; only changed chunks go out */
+            for (int c = 0; c < 8; c++) {
+                draw_column(c);
+            }
         }
     } else if (bit == BTN_ARROW_LEFT) {
         change_page(-1);  /* top arrows, by the display buttons: pages */

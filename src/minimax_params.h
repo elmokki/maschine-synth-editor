@@ -25,13 +25,13 @@ extern const plug_param_t minimax_params[MINIMAX_PARAM_COUNT];
 #define MINIMAX_OSC2_VOL 16
 #define MINIMAX_OSC3_VOL 17
 #define MINIMAX_OSC1 18
-#define MINIMAX_EXT 19
+#define MINIMAX_FEEDBACK 19
 #define MINIMAX_OSC2 20
 #define MINIMAX_NOISE 21
 #define MINIMAX_OSC3 22
-#define MINIMAX_EXT_VOL 23
+#define MINIMAX_FDBK_LVL 23
 #define MINIMAX_NOISE_VOL 24
-#define MINIMAX_FEEDBACK 25
+#define MINIMAX_FDBK_C38 25
 #define MINIMAX_PINK 26
 #define MINIMAX_FILT_MOD 27
 #define MINIMAX_KBD_1 28
@@ -78,7 +78,7 @@ extern const plug_param_t minimax_params[MINIMAX_PARAM_COUNT];
 #define MINIMAX_BPM_R 69
 #define MINIMAX_DLY_MIX 70
 #define MINIMAX_BPM 71
-#define MINIMAX_BYPASS 72
+#define MINIMAX_FX_ON 72
 #define MINIMAX_BOOST 73
 #define MINIMAX_MIC_VOL 74
 #define MINIMAX_DEV_VOL 75

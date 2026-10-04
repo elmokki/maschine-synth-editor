@@ -49,10 +49,13 @@ PLUGINS = {
             "Osc2 Frequency": "OSC2 FRQ", "Osc3 Frequency": "OSC3 FRQ",
             "Osc3 Control": "OSC3 CTL",
             "Osc1 Volume": "OSC1 VOL", "Osc2 Volume": "OSC2 VOL", "Osc3 Volume": "OSC3 VOL",
-            "Osc1 Switch": "OSC1", "External Switch": "EXT", "Osc2 Switch": "OSC2",
+            # Tested: "External Switch" turns the output-to-mixer feedback
+            # on (the GUI's Feedback Level knob is "External Volume"), and
+            # the separate "Feedback" switch (C38) does nothing audible
+            "Osc1 Switch": "OSC1", "External Switch": "FEEDBACK", "Osc2 Switch": "OSC2",
             "Noise Switch": "NOISE", "Osc3 Switch": "OSC3",
-            "External Volume": "EXT VOL", "Noise Volume": "NOISE VOL",
-            "Feedback@C38": "FEEDBACK", "Noise Type": "PINK",
+            "External Volume": "FDBK LVL", "Noise Volume": "NOISE VOL",
+            "Feedback@C38": "FDBK C38", "Noise Type": "PINK",
             "Vcf Modulation": "FILT MOD", "Vcf Kybd Ctrl1": "KBD 1", "Vcf Kybd Ctrl2": "KBD 2",
             "Cutoff": "CUTOFF", "Emphasis": "EMPHASIS", "Amount of Contour": "CONTOUR",
             "Vcf Env Attack": "F ATTACK", "Vcf Env Decay": "F DECAY", "Vcf Env Sustain": "F SUSTAIN",
@@ -68,7 +71,7 @@ PLUGINS = {
             "Note Right": "NOTE R", "Cross": "CROSS", "Time Right": "DLY T R",
             "Damp Right": "DAMP R", "Level Right": "LEVEL R",
             "BPM Left": "BPM L", "BPM Right": "BPM R", "Delay Dry/Wet": "DLY MIX",
-            "BPM": "BPM", "Bypass": "BYPASS", "Boost": "BOOST",
+            "BPM": "BPM", "Bypass": "FX ON", "Boost": "BOOST",
             "Volume Mic": "MIC VOL", "Volume@C7": "DEV VOL",
         },
         # Overrides where the guess from preset values would be wrong (e.g.
@@ -80,11 +83,36 @@ PLUGINS = {
             "External Switch": "switch", "Noise Switch": "switch",
             "BPM Left": "switch", "BPM Right": "switch", "Cross": "switch",
             "Bypass": "switch", "Boost": "switch", "Chorus/Flanger": "switch",
-            "Note Left": "raw", "Note Right": "raw", "BPM": "raw",
+            "Note Left": "list", "Note Right": "list", "BPM": "raw",
+            "Modulation Mix": "mix",
         },
         "labels": {
             "Osc1 Range": "range", "Osc2 Range": "range", "Osc3 Range": "range",
             "Osc1 Waveform": "wave", "Osc2 Waveform": "wave", "Osc3 Waveform": "wave",
+            "Note Left": "note", "Note Right": "note",
+            "Chorus/Flanger": "chorus",  # a switch: off/on position names
+            "Modulation Mix": "modmix",  # a mix: 0 / 127 ends
+        },
+        # Display range of the plug-in GUI's knob scale, (low, high, decimals
+        # [, unit]), mapped linearly onto 0-127; a range symmetric around 0
+        # puts 0 at 64. Only for scales other than the GUI's usual 0-10 (those
+        # stay 0-127) and only where the scale is linear (not the log time
+        # knobs). The delay times are the GUI's own number fields (purple.xml
+        # in Minimax.pg: linear, 1.01-1365.33 ms).
+        "display": {
+            "Tune": (-2, 2, 1), "Osc2 Frequency": (-10, 10, 1), "Osc3 Frequency": (-10, 10, 1),
+            "Cutoff": (-4, 4, 1),
+            "Pitch AT": (-4, 4, 1), "Vcf AT": (-4, 4, 1), "Amp AT": (-4, 4, 1),
+            "Phase": (0, 180, 0), "Feedback@A74": (-5, 5, 1),
+            "BPM": (72, 199, 0),  # confirmed: value 0 = 72 BPM, 48 = 120 BPM
+            "Time Left": (1, 1365, 0, "ms"), "Time Right": (1, 1365, 0, "ms"),
+        },
+        # Envelope time knobs: the GUI has no number field for these, and its
+        # panel legend turned out to be far off (e.g. "200 ms" at value 27 is
+        # really ~26 ms). Curve = measured on the hardware instead, see CURVES.
+        "curves": {
+            "Vcf Env Attack": "env", "Vcf Env Decay": "env",
+            "Amp Env Attack": "env", "Amp Env Decay": "env",
         },
     },
 }
@@ -93,10 +121,30 @@ PLUGINS = {
 LABEL_SETS = {
     "range": ["LO", "32'", "16'", "8'", "4'", "2'"],
     "wave": ["TRI", "SHARK", "SAW", "SQUARE", "WIDE", "NARROW"],
+    # Delay note lengths in BPM mode, value = index (mapped with the
+    # Plug-in Manager's MIDI monitor); P = dotted, T = triplet
+    "note": ["1/1", "1/2P", "1/2", "1/2T", "1/4P", "1/4", "1/4T", "1/8P", "1/8", "1/8T",
+             "1/16P", "1/16", "1/16T", "1/32P", "1/32", "1/32T", "1/64P", "1/64", "1/64T"],
+    "chorus": ["CHORUS", "FLANGER"],
+    "modmix": ["OSC3", "NOISE"],
+}
+
+# (MIDI value, milliseconds) points of a time knob, interpolated
+# logarithmically in between.
+# "env": measured 2026-10-04 on the Plugiator (USB MIDI from the PC, audio
+# recorded through a Scarlett): amp attack time from the start of the rise
+# to full level, sustain 127. Decay uses the same time scale (its time to
+# 50 % matches the attack time at every value; to near silence it takes
+# ~3.5x longer). The filter envelope's knobs carry the same panel legend
+# and are assumed to match.
+CURVES = {
+    "env": [(0, 1), (7, 7), (14, 12), (20, 16), (27, 26), (34, 63), (41, 92), (51, 171),
+            (60, 328), (67, 619), (74, 1095), (82, 1938), (91, 3141), (99, 4501),
+            (107, 5835), (117, 7828), (127, 10710)],
 }
 
 TYPE_ENUM = {"cont": "PT_CONT", "switch": "PT_SWITCH", "step6": "PT_STEP6",
-             "raw24": "PT_RAW24", "raw": "PT_RAW"}
+             "raw24": "PT_RAW24", "raw": "PT_RAW", "list": "PT_LIST", "mix": "PT_MIX"}
 
 
 def load(plugin):
@@ -155,6 +203,8 @@ def main():
             "page": 0 if m.text.startswith("pan1") else 1,
             "labels": spec["labels"].get(key),
             "icon": "PI_WAVE" if spec["labels"].get(key) == "wave" else "PI_NONE",
+            "display": spec.get("display", {}).get(key),
+            "curve": spec.get("curves", {}).get(key),
         })
 
     write_c(plugin, spec["c_name"], params)
@@ -177,15 +227,34 @@ def write_c(plugin, c_name, params):
     c = [f"/* Generated by tools/plugiator_import.py from the Plug-in Manager's",
          f" * {plugin} config.xml - do not edit. */",
          f'#include "{c_name}_params.h"', ""]
+    for name in sorted({p["curve"] for p in params if p["curve"]}):
+        pts = CURVES[name]
+        c.append(f"static const plug_curve_point_t curve_{name}_points[{len(pts)}] = {{"
+                 + ", ".join(f"{{{v}, {ms}}}" for v, ms in pts) + "};")
+        c.append(f"static const plug_curve_t curve_{name} = {{curve_{name}_points, {len(pts)}}};")
+    used = {p["labels"] for p in params if p["labels"]}
     for name, labels in LABEL_SETS.items():
-        c.append(f"static const char *const labels_{name}[6] = {{"
-                 + ", ".join(f'"{l}"' for l in labels) + "};")
+        if name in used:
+            c.append(f"static const char *const labels_{name}[{len(labels)}] = {{"
+                     + ", ".join(f'"{l}"' for l in labels) + "};")
     c += ["", f"const plug_param_t {c_name}_params[{upper}_PARAM_COUNT] = {{"]
     for p in params:
-        labels = f"labels_{p['labels']}" if p["labels"] else "NULL"
-        c.append(f'    {{"{p["short"]}", "{p["name"]}", PLUG_{"CC" if p["kind"] == "C" else "PAT"}, '
-                 f'{p["num"]}, {TYPE_ENUM[p["type"]]}, {p["default"]}, '
-                 f'{"true" if p["in_preset"] else "false"}, {p["page"]}, {labels}, {p["icon"]}}},')
+        fields = [f'.short_name = "{p["short"]}"', f'.name = "{p["name"]}"',
+                  f'.msg = PLUG_{"CC" if p["kind"] == "C" else "PAT"}', f'.number = {p["num"]}',
+                  f'.type = {TYPE_ENUM[p["type"]]}', f'.default_value = {p["default"]}',
+                  f'.in_preset = {"true" if p["in_preset"] else "false"}', f'.page = {p["page"]}']
+        if p["labels"]:
+            fields += [f'.labels = labels_{p["labels"]}', f'.label_count = {len(LABEL_SETS[p["labels"]])}']
+        if p["icon"] != "PI_NONE":
+            fields.append(f'.icon = {p["icon"]}')
+        if p["display"]:
+            lo, hi, dec = p["display"][:3]
+            fields += [f".disp_lo = {lo}", f".disp_hi = {hi}", f".decimals = {dec}"]
+            if len(p["display"]) > 3:
+                fields.append(f'.unit = "{p["display"][3]}"')
+        if p["curve"]:
+            fields.append(f'.time_curve = &curve_{p["curve"]}')
+        c.append("    {" + ", ".join(fields) + "},")
     c.append("};")
     open(os.path.join(ROOT, "src", f"{c_name}_params.h"), "w").write("\n".join(h) + "\n")
     open(os.path.join(ROOT, "src", f"{c_name}_params.c"), "w").write("\n".join(c) + "\n")

@@ -7,6 +7,7 @@
  * values are unknown until a patch is loaded or the parameter is touched.
  * Patch files are those same messages, 3 bytes each, channel nibble 0.
  */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -32,8 +33,26 @@ static const char *TAG = "minimax";
  * extras. Every switch sits above the knob it belongs with (the Decay
  * switch shapes the envelope release, so it's above A DECAY rather than in
  * the controllers section where the panel has it), and unrelated
- * parameters don't share a page just to fill columns. Bypass affects all
- * effects, so it's on both effect pages. */
+ * parameters don't share a page just to fill columns. MOD MIX (the
+ * OSC3/noise balance of the modulation source) sits with the mixer, next
+ * to those two sources. The mixer's 4th channel is the output fed back
+ * pre-filter (GUI: Feedback Level), switched by the "External" switch; the
+ * GUI's separate Feedback switch (C38) does nothing and isn't on a page.
+ * FX ON (the GUI's "Bypass", but 127 = effects on) affects all effects,
+ * so it's on both effect pages. */
+/* Virtual parameters: shown and edited like any other, but stand for a
+ * combination of real ones */
+enum {
+    /* Keyboard Control 1 (1/3 octave per octave) + 2 (2/3): cutoff key
+     * tracking 0, 1/3, 2/3 or 1 octave per octave as one 4-position knob */
+    VP_KEYTRACK = MINIMAX_PARAM_COUNT,
+    /* Noise type as two buttons that switch each other off, like the
+     * panel's white/pink rocker: both drive the one Noise Type CC */
+    VP_NOISE_WHITE,
+    VP_NOISE_PINK,
+};
+static const char *const keytrack_labels[4] = {"0", "1/3", "2/3", "1"};
+
 #define _ SYNTH_NONE
 static const synth_page_t pages[] = {
     {0, "OSCILLATORS",
@@ -41,20 +60,20 @@ static const synth_page_t pages[] = {
       MINIMAX_OSC2_WAV, MINIMAX_OSC3_RNG, MINIMAX_OSC3_FRQ, MINIMAX_OSC3_WAV},
      {MINIMAX_OSC_MOD, _, _, _, _, MINIMAX_OSC3_CTL, _, _}},
     {1, "MIXER",
-     {MINIMAX_OSC1_VOL, MINIMAX_OSC2_VOL, MINIMAX_OSC3_VOL, MINIMAX_EXT_VOL,
-      MINIMAX_NOISE_VOL, _, _, _},
-     {MINIMAX_OSC1, MINIMAX_OSC2, MINIMAX_OSC3, MINIMAX_EXT,
-      MINIMAX_NOISE, MINIMAX_PINK, MINIMAX_FEEDBACK, _}},
+     {MINIMAX_OSC1_VOL, MINIMAX_OSC2_VOL, MINIMAX_OSC3_VOL, MINIMAX_FDBK_LVL,
+      MINIMAX_NOISE_VOL, MINIMAX_MOD_MIX, _, _},
+     {MINIMAX_OSC1, MINIMAX_OSC2, MINIMAX_OSC3, MINIMAX_FEEDBACK,
+      MINIMAX_NOISE, _, VP_NOISE_WHITE, VP_NOISE_PINK}},
     {2, "FILTER",
-     {MINIMAX_CUTOFF, MINIMAX_EMPHASIS, MINIMAX_CONTOUR, MINIMAX_F_ATTACK,
-      MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_F_VELO, _},
-     {MINIMAX_FILT_MOD, MINIMAX_KBD_1, MINIMAX_KBD_2, _, _, _, _, _}},
+     {MINIMAX_CUTOFF, MINIMAX_EMPHASIS, MINIMAX_CONTOUR, VP_KEYTRACK,
+      MINIMAX_F_ATTACK, MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_F_VELO},
+     {MINIMAX_FILT_MOD, _, _, _, _, _, _, _}},
     {3, "LOUDNESS",
      {MINIMAX_A_ATTACK, MINIMAX_A_DECAY, MINIMAX_A_SUSTAIN, MINIMAX_A_VELO,
       MINIMAX_VOLUME, _, _, _},
      {_, MINIMAX_DECAY_SW, _, _, MINIMAX_BOOST, _, _, _}},
     {4, "CONTROLLERS",
-     {MINIMAX_TUNE, MINIMAX_GLIDE, MINIMAX_MOD_MIX, _, _, _, _, _},
+     {MINIMAX_TUNE, MINIMAX_GLIDE, _, _, _, _, _, _},
      {_, MINIMAX_GLIDE_SW, _, _, _, _, _, _}},
     {5, "ADDITIONAL",
      {MINIMAX_BEND, MINIMAX_MW_INT, MINIMAX_MW_OFFS, MINIMAX_MOD_WHL,
@@ -63,11 +82,11 @@ static const synth_page_t pages[] = {
     {6, "CHORUS",
      {MINIMAX_CH_RATE, MINIMAX_CH_DEPTH, MINIMAX_CH_PHASE, MINIMAX_CH_FDBK,
       MINIMAX_CH_MIX, _, _, _},
-     {MINIMAX_FLANGER, _, _, _, _, _, _, MINIMAX_BYPASS}},
+     {MINIMAX_FLANGER, _, _, _, _, _, _, MINIMAX_FX_ON}},
     {6, "DELAY",
      {MINIMAX_DLY_T_L, MINIMAX_DAMP_L, MINIMAX_LEVEL_L, MINIMAX_DLY_FDBK,
       MINIMAX_DLY_T_R, MINIMAX_DAMP_R, MINIMAX_LEVEL_R, MINIMAX_DLY_MIX},
-     {_, _, _, MINIMAX_CROSS, _, _, _, MINIMAX_BYPASS}},
+     {_, _, _, MINIMAX_CROSS, _, _, _, MINIMAX_FX_ON}},
     {6, "DELAY SYNC",
      {MINIMAX_NOTE_L, MINIMAX_NOTE_R, MINIMAX_BPM, _, _, _, _, _},
      {MINIMAX_BPM_L, MINIMAX_BPM_R, _, _, _, _, _, _}},
@@ -114,18 +133,108 @@ static void send_param(int p)
 
 /* ---- parameters ---- */
 
+static bool is_virtual(int p)
+{
+    return p >= MINIMAX_PARAM_COUNT;
+}
+
+/* 0-3, or -1 while either switch is unknown */
+static int keytrack_pos(void)
+{
+    if (!known[MINIMAX_KBD_1] || !known[MINIMAX_KBD_2]) {
+        return -1;
+    }
+    return (values[MINIMAX_KBD_1] >= 64) + 2 * (values[MINIMAX_KBD_2] >= 64);
+}
+
 static const char *param_name(int p)
 {
-    return prm(p)->short_name;
+    switch (p) {
+    case VP_KEYTRACK: return "KEYTRACK";
+    case VP_NOISE_WHITE: return "WHITE";
+    case VP_NOISE_PINK: return "PINK";
+    default: return prm(p)->short_name;
+    }
+}
+
+/* Value on the plug-in GUI's scale, in tenths: a range symmetric around 0
+ * puts 0 at 64, anything else is linear over 0-127 */
+static int scaled_tenths(const plug_param_t *pp, int v)
+{
+    int lo = pp->disp_lo * 10, hi = pp->disp_hi * 10;
+    int num, den;
+    if (lo == -hi) {
+        num = (v - 64) * hi;
+        den = v >= 64 ? 63 : 64;
+    } else {
+        num = lo * 127 + v * (hi - lo);
+        den = 127;
+    }
+    return num >= 0 ? (num + den / 2) / den : -((-num + den / 2) / den);
+}
+
+static void format_scaled(const plug_param_t *pp, int v, char *buf, size_t len)
+{
+    int t = scaled_tenths(pp, v);
+    const char *sign = t < 0 ? "-" : pp->disp_lo < 0 && t > 0 ? "+" : "";
+    int a = t < 0 ? -t : t;
+    const char *unit = pp->unit ? pp->unit : "";
+    if (pp->decimals) {
+        snprintf(buf, len, "%s%d.%d%s", sign, a / 10, a % 10, unit);
+    } else {
+        snprintf(buf, len, "%s%d%s", sign, (a + 5) / 10, unit);
+    }
+}
+
+/* Time of a knob with a legend curve: logarithmic between the two nearest
+ * points, extended past the ends with the end segments' slope (those ends
+ * are estimates) */
+static void format_time(const plug_curve_t *c, int v, char *buf, size_t len)
+{
+    int i = 1;
+    while (i < c->count - 1 && v > c->points[i].value) {
+        i++;
+    }
+    const plug_curve_point_t *a = &c->points[i - 1], *b = &c->points[i];
+    float t = (float)(v - a->value) / (b->value - a->value);
+    float ms = a->ms * powf((float)b->ms / a->ms, t);
+    if (ms < 1000.0f) {
+        snprintf(buf, len, "%dms", (int)(ms + 0.5f));
+    } else if (ms < 10000.0f) {
+        int tenths = (int)(ms / 100.0f + 0.5f);
+        snprintf(buf, len, "%d.%ds", tenths / 10, tenths % 10);
+    } else {
+        snprintf(buf, len, "%ds", (int)(ms / 1000.0f + 0.5f));
+    }
 }
 
 static void param_format(int p, char *buf, size_t len)
 {
+    if (p == VP_KEYTRACK) {
+        int pos = keytrack_pos();
+        snprintf(buf, len, "%s", pos < 0 ? "--" : keytrack_labels[pos]);
+        return;
+    }
     uint8_t v = values[p];
     if (!known[p]) {
         snprintf(buf, len, "--");
     } else if (prm(p)->type == PT_SWITCH) {
-        snprintf(buf, len, v >= 64 ? "ON" : "OFF");
+        const char *const *l = prm(p)->labels;
+        snprintf(buf, len, "%s", l ? l[v >= 64] : v >= 64 ? "ON" : "OFF");
+    } else if (prm(p)->type == PT_MIX) {
+        /* Ends by name, in between as a ratio of the two, e.g. 70/30 */
+        int b = (v * 100 + 63) / 127;
+        if (b == 0 || b == 100) {
+            snprintf(buf, len, "%s", prm(p)->labels[b == 100]);
+        } else {
+            snprintf(buf, len, "%d/%d", 100 - b, b);
+        }
+    } else if (prm(p)->type == PT_LIST) {
+        snprintf(buf, len, "%s", prm(p)->labels[v < prm(p)->label_count ? v : prm(p)->label_count - 1]);
+    } else if (prm(p)->time_curve) {
+        format_time(prm(p)->time_curve, v, buf, len);
+    } else if (prm(p)->disp_lo != prm(p)->disp_hi) {
+        format_scaled(prm(p), v, buf, len);
     } else if (prm(p)->type == PT_STEP6) {
         if (prm(p)->labels) {
             snprintf(buf, len, "%s", prm(p)->labels[step6_pos(v)]);
@@ -139,27 +248,56 @@ static void param_format(int p, char *buf, size_t len)
 
 static int param_bar(int p)
 {
+    if (p == VP_KEYTRACK) {
+        int pos = keytrack_pos();
+        return pos < 0 ? -1 : pos * 1000 / 3;
+    }
     if (!known[p] || prm(p)->type == PT_SWITCH) {
         return -1;
     }
-    int max = prm(p)->type == PT_RAW24 ? 24 : prm(p)->type == PT_STEP6 ? 110 : 127;
-    return values[p] * 1000 / max;
+    int max = prm(p)->type == PT_RAW24 ? 24 : prm(p)->type == PT_STEP6 ? 110 :
+              prm(p)->type == PT_LIST ? prm(p)->label_count - 1 : 127;
+    return (values[p] > max ? max : values[p]) * 1000 / max;
 }
 
 static bool param_on(int p)
 {
+    if (p == VP_NOISE_WHITE || p == VP_NOISE_PINK) {
+        bool pink = values[MINIMAX_PINK] >= 64;
+        return known[MINIMAX_PINK] && (p == VP_NOISE_PINK) == pink;
+    }
+    if (is_virtual(p)) {
+        return false;
+    }
     return known[p] && values[p] >= 64;
 }
 
 static int param_units(int p)
 {
-    return prm(p)->type == PT_STEP6 ? UNITS_STEP6 :
+    if (p == VP_KEYTRACK) {
+        return UNITS_STEP6;
+    }
+    return prm(p)->type == PT_STEP6 || prm(p)->type == PT_LIST ? UNITS_STEP6 :
            prm(p)->type == PT_RAW24 ? UNITS_RAW24 : UNITS_CONT;
 }
 
 static bool param_step(int p, int steps)
 {
     init_values();
+    if (p == VP_KEYTRACK) {
+        int pos = keytrack_pos();
+        int next = (pos < 0 ? 0 : pos) + steps;
+        next = next < 0 ? 0 : next > 3 ? 3 : next;
+        if (next == pos) {
+            return false;
+        }
+        values[MINIMAX_KBD_1] = next & 1 ? 127 : 0;
+        values[MINIMAX_KBD_2] = next & 2 ? 127 : 0;
+        known[MINIMAX_KBD_1] = known[MINIMAX_KBD_2] = true;
+        send_param(MINIMAX_KBD_1);
+        send_param(MINIMAX_KBD_2);
+        return true;
+    }
     /* Unknown value: start from the factory default instead of guessing */
     int v = known[p] ? values[p] : prm(p)->default_value;
     if (prm(p)->type == PT_STEP6) {
@@ -168,7 +306,8 @@ static bool param_step(int p, int steps)
     } else if (prm(p)->type == PT_SWITCH) {
         v = steps > 0 ? 127 : 0;
     } else {
-        int max = prm(p)->type == PT_RAW24 ? 24 : 127;
+        int max = prm(p)->type == PT_RAW24 ? 24 :
+                  prm(p)->type == PT_LIST ? prm(p)->label_count - 1 : 127;
         v += steps;
         v = v < 0 ? 0 : v > max ? max : v;
     }
@@ -183,6 +322,16 @@ static bool param_step(int p, int steps)
 
 static void param_toggle(int p)
 {
+    if (p == VP_NOISE_WHITE || p == VP_NOISE_PINK) {
+        /* Selects its own position; pressing the lit one changes nothing */
+        values[MINIMAX_PINK] = p == VP_NOISE_PINK ? 127 : 0;
+        known[MINIMAX_PINK] = true;
+        send_param(MINIMAX_PINK);
+        return;
+    }
+    if (is_virtual(p)) {
+        return;
+    }
     /* An unknown switch is drawn as off, so its first press turns it on -
      * toggling from the factory default could look like nothing happened */
     values[p] = known[p] && values[p] >= 64 ? 0 : 127;
@@ -227,6 +376,9 @@ static void draw_wave(int disp, int x, int y, int w, int h, int pos)
 
 static bool param_draw(int p, int disp, int x, int y, int w, int h)
 {
+    if (is_virtual(p)) {
+        return false;
+    }
     if (prm(p)->icon != PI_WAVE || !known[p]) {
         return false;
     }
