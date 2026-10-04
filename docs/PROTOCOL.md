@@ -60,7 +60,7 @@ All reports are "numbered reports": the first byte written/read is the report ID
 |---|---|
 | 0-6 (7 bytes, 56 bits) | Button states, see table below. Bit `i` → `body[i/8] & (1<<(i%8))`. |
 | 7 | **Main (center) encoder.** Low nibble = rotation counter, confirmed wrapping 0-15, ±1 per detent (it has real mechanical clicks). High nibble: untested, meaning unknown. |
-| 8-23 (16 bytes) | **8 touch-encoders** above the two displays, 16-bit little-endian each, consecutive pairs: (8,9), (10,11), (12,13), (14,15), (16,17), (18,19), (20,21), (22,23). Report an **absolute finger/position value** (observed range ~0x37-0x150+, descriptor declares 0-999), *not* a relative delta — they have no mechanical detents, confirmed smooth/continuous on hardware. Pair order matches physical left-to-right position above the displays (not independently verified which pair NI itself calls "encoder 1" vs "8"). |
+| 8-23 (16 bytes) | **8 endless encoders** above the two displays (no detents, no end stops), 16-bit little-endian each, consecutive pairs: (8,9), (10,11), (12,13), (14,15), (16,17), (18,19), (20,21), (22,23). Each value is a **free-running position counter, 0-999, that wraps** both ways (999→0 when turning clockwise, 0→999 counter-clockwise; confirmed on hardware, no saturation/plateau at the ends). The absolute value has no physical meaning — use it **relatively**: `delta = cur - prev`, and when `|delta| > 500` correct for wrap by subtracting or adding 1000. One full physical turn ≈ **1300 units** (≈1.3 counter wraps; measured roughly as ~3887 units over ~3 hand-counted turns, so treat as ±10%). The device only reports changes of **≥4 units** (it has its own deadband, so the smallest delta seen was ±4). A small backward step (−4…−13) shows up when you stop or re-grip mid-turn; filter it if it bothers you. Pair order matches physical left-to-right position above the displays (not independently verified which pair NI itself calls "encoder 1" vs "8"). |
 
 **⚠️ Common mistake when reading this from a raw `hidraw` buffer:** byte 0 of the raw read is
 the report ID (`0x01`), so body byte 7 (main encoder) is `buf[8]`, and touch-encoder 1 is
@@ -220,7 +220,7 @@ Decoded fields (byte offsets within the 11-byte report):
 ## Open/unverified items (don't assume, re-test before relying on these)
 
 - Main encoder's high nibble (byte 7 bits 4-7) — never exercised.
-- Which physical touch-encoder (left-to-right) corresponds to which byte pair was inferred from
+- Which physical encoder (left-to-right) corresponds to which byte pair was inferred from
   test order, not independently labeled.
 - Push-click on encoders, if any.
 - Byte 6 bits 1-7 of the button bitfield (bit 0 is a probable red herring, see button table).

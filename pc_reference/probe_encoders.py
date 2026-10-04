@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Print encoder changes (main encoder + 8 touch-encoders) as they happen.
-See docs/PROTOCOL.md (report 0x01) - touch-encoders are absolute position
-(0-999ish), not deltas; the main encoder is a wrapping 0-15 click counter.
+See docs/PROTOCOL.md (report 0x01) - the 8 encoders are endless, reported as
+a wrapping 0-999 position counter (use deltas); the main encoder is a
+wrapping 0-15 click counter.
 Ctrl+C to stop."""
 import os
 import sys
