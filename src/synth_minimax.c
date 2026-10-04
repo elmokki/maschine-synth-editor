@@ -231,6 +231,11 @@ static void param_format(int p, char *buf, size_t len)
         }
     } else if (prm(p)->type == PT_LIST) {
         snprintf(buf, len, "%s", prm(p)->labels[v < prm(p)->label_count ? v : prm(p)->label_count - 1]);
+    } else if (prm(p)->log_k) {
+        const plug_param_t *pp = prm(p);
+        float k = pp->log_k;
+        float d = pp->log_lo + (pp->log_hi - pp->log_lo) * (powf(k, v / 127.0f) - 1.0f) / (k - 1.0f);
+        snprintf(buf, len, d < 10.0f ? "%.2f" : "%.1f", d);
     } else if (prm(p)->time_curve) {
         format_time(prm(p)->time_curve, v, buf, len);
     } else if (prm(p)->disp_lo != prm(p)->disp_hi) {
@@ -449,6 +454,66 @@ static bool patch_save(const char *path)
     return ok;
 }
 
+/* Values of the default (init) patch, read from its file on first use */
+static uint8_t init_values_[MINIMAX_PARAM_COUNT];
+static bool init_read;
+
+static void read_init_values(void)
+{
+    if (init_read) {
+        return;
+    }
+    init_read = true;
+    for (int p = 0; p < MINIMAX_PARAM_COUNT; p++) {
+        init_values_[p] = prm(p)->default_value;
+    }
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", synth_minimax.patch_dir, synth_minimax.default_patch);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "no %s, value init uses factory defaults", path);
+        return;
+    }
+    uint8_t buf[MAX_PATCH_BYTES];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    for (size_t i = 0; i + 3 <= n; i += 3) {
+        int p = find_param(buf[i] & 0xF0, buf[i + 1]);
+        if (p != SYNTH_NONE) {
+            init_values_[p] = buf[i + 2];
+        }
+    }
+}
+
+static bool reset_real(int p)
+{
+    if (known[p] && values[p] == init_values_[p]) {
+        return false;
+    }
+    values[p] = init_values_[p];
+    known[p] = true;
+    send_param(p);
+    return true;
+}
+
+static bool param_reset(int p)
+{
+    init_values();
+    read_init_values();
+    switch (p) {
+    case VP_KEYTRACK: {
+        bool a = reset_real(MINIMAX_KBD_1);
+        bool b = reset_real(MINIMAX_KBD_2);
+        return a || b;
+    }
+    case VP_NOISE_WHITE:
+    case VP_NOISE_PINK:
+        return reset_real(MINIMAX_PINK);
+    default:
+        return reset_real(p);
+    }
+}
+
 static int unknown_count(void)
 {
     int n = 0;
@@ -476,6 +541,7 @@ const synth_t synth_minimax = {
     .param_step = param_step,
     .param_toggle = param_toggle,
     .param_draw = param_draw,
+    .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .unknown_count = unknown_count,

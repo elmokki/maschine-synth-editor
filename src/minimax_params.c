@@ -64,7 +64,7 @@ const plug_param_t minimax_params[MINIMAX_PARAM_COUNT] = {
     {.short_name = "CV FILT", .name = "Vcf AT", .msg = PLUG_CC, .number = 50, .type = PT_CONT, .default_value = 63, .in_preset = true, .page = 1, .disp_lo = -4, .disp_hi = 4, .decimals = 1},
     {.short_name = "CV LOUD", .name = "Amp AT", .msg = PLUG_CC, .number = 51, .type = PT_CONT, .default_value = 63, .in_preset = true, .page = 1, .disp_lo = -4, .disp_hi = 4, .decimals = 1},
     {.short_name = "FLANGER", .name = "Chorus/Flanger", .msg = PLUG_PAT, .number = 75, .type = PT_SWITCH, .default_value = 0, .in_preset = true, .page = 1, .labels = labels_chorus, .label_count = 2},
-    {.short_name = "CH RATE", .name = "Rate", .msg = PLUG_PAT, .number = 71, .type = PT_CONT, .default_value = 4, .in_preset = true, .page = 1},
+    {.short_name = "CH RATE", .name = "Rate", .msg = PLUG_PAT, .number = 71, .type = PT_CONT, .default_value = 4, .in_preset = true, .page = 1, .log_lo = 0.01f, .log_hi = 20.0f, .log_k = 1000},
     {.short_name = "CH DEPTH", .name = "Depth", .msg = PLUG_PAT, .number = 73, .type = PT_CONT, .default_value = 127, .in_preset = true, .page = 1},
     {.short_name = "CH MIX", .name = "Ch. Dry/Wet", .msg = PLUG_CC, .number = 91, .type = PT_CONT, .default_value = 0, .in_preset = true, .page = 1},
     {.short_name = "CH PHASE", .name = "Phase", .msg = PLUG_PAT, .number = 72, .type = PT_CONT, .default_value = 127, .in_preset = true, .page = 1, .disp_lo = 0, .disp_hi = 180, .decimals = 0},

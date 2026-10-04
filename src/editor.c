@@ -50,6 +50,8 @@ static const char *TAG = "editor";
 #define BTN_ENTER 21
 #define BTN_GROUP_A 24
 #define BTN_REC 37
+#define BTN_ERASE 38
+#define BTN_MUTE 47
 #define BTN_NAVIGATE 43
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -87,10 +89,23 @@ static int patch_count;
 static int patch_loaded = NONE;
 static int patch_browse = NONE;  /* selection while browsing, not loaded yet */
 static int64_t browse_deadline;
+static bool modified;  /* the loaded patch has been edited since load/save */
 
 static char last_saved[72];        /* contents of the remembered-patch file */
 static int64_t remember_at;        /* when to write LAST_PATCH_FILE, 0 = nothing pending */
 static bool restored;              /* last patch already restored since boot */
+
+/* Erase: press = ask, press again = load the init patch; held while
+ * turning an encoder = that parameter back to its init value */
+#define INIT_CONFIRM_US 3000000
+static bool erase_held, erase_used;
+/* Rec opens the store screen on release, so Rec + Erase together (the
+ * panel's "Replace") can revert the loaded patch to its stored state */
+static bool rec_held, rec_used;
+static int64_t init_armed_until;
+/* Mute = panic (All Sound Off + All Notes Off); its LED flashes */
+#define PANIC_FLASH_US 300000
+static int64_t panic_flash_until;
 
 static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
@@ -167,13 +182,16 @@ static void update_group_leds(void)
 
 static void update_button_leds(void)
 {
+    /* Panic works on every screen */
+    maschine_set_button_led(BTN_MUTE, panic_flash_until ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : mode == MODE_EDIT ? LED_DIM : 0);
     if (mode == MODE_SETUP) {
         for (int col = 0; col < 8; col++) {
             maschine_set_button_led(BTN_DISPLAY_1 + col, 0);
         }
         static const int others[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2,
-                                     BTN_ARROW_RIGHT_2, BTN_NAVIGATE, BTN_ENTER, BTN_REC, BTN_BROWSE};
+                                     BTN_ARROW_RIGHT_2, BTN_NAVIGATE, BTN_ENTER, BTN_REC,
+                                     BTN_BROWSE, BTN_ERASE};
         for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
             maschine_set_button_led(others[i], 0);
         }
@@ -195,10 +213,12 @@ static void update_button_leds(void)
         maschine_set_button_led(BTN_ENTER, LED_DIM);
         maschine_set_button_led(BTN_REC, LED_ON);
         maschine_set_button_led(BTN_BROWSE, 0);
+        maschine_set_button_led(BTN_ERASE, 0);
         return;
     }
     maschine_set_button_led(BTN_REC, LED_DIM);
     maschine_set_button_led(BTN_BROWSE, encoder_browses ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_ERASE, init_armed_until || erase_held ? LED_ON : LED_DIM);
     for (int col = 0; col < 8; col++) {
         int sw = synth->pages[page].switches[col];
         uint8_t v = 0;
@@ -255,6 +275,13 @@ static void draw_header(void)
         display_fill_rect(d, 0, 0, DISPLAY_WIDTH, HEADER_LINE_Y + 1, false);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
+    if (init_armed_until) {
+        /* The whole header asks, so the second press can't be mistaken */
+        display_fill_rect(0, 0, 0, DISPLAY_USABLE_WIDTH, HEADER_LINE_Y, true);
+        draw_text_cap(0, 2, HEADER_CAP_Y, &font_small, "PRESS ERASE AGAIN: INIT PATCH", false);
+        draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "any other button cancels", true);
+        return;
+    }
 
     int first = section_first_page(synth->pages[page].section);
     int count = section_page_count(synth->pages[page].section);
@@ -274,7 +301,8 @@ static void draw_header(void)
     if (shown == NONE) {
         snprintf(buf, sizeof(buf), "no patch loaded");
     } else {
-        snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : "%s", patch_names[shown]);
+        snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : modified ? "%s *" : "%s",
+                 patch_names[shown]);
     }
     int right = DISPLAY_USABLE_WIDTH - 2;
     fit_text(&font_small, buf, right - title_end - 10, name, sizeof(name));
@@ -430,6 +458,7 @@ static void load_patch(int idx)
         return;
     }
     patch_loaded = idx;
+    modified = false;
     remember_at = esp_timer_get_time() + WRITE_DELAY_US;
     ESP_LOGI(TAG, "loaded %s", patch_names[idx]);
 }
@@ -600,6 +629,7 @@ static void save_patch(void)
     for (int i = 0; i < patch_count; i++) {
         if (strcmp(patch_names[i], file) == 0) {
             patch_loaded = i;
+            modified = false;
         }
     }
     remember_at = esp_timer_get_time() + WRITE_DELAY_US;
@@ -790,6 +820,61 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
 }
 
+/* ---- init / panic ---- */
+
+/* First edit of the loaded patch: show the unsaved-changes mark */
+static void mark_modified(void)
+{
+    if (!modified) {
+        modified = true;
+        draw_header();
+    }
+}
+
+static void cancel_init(void)
+{
+    if (init_armed_until) {
+        init_armed_until = 0;
+        draw_header();
+    }
+}
+
+static void init_patch(void)
+{
+    init_armed_until = 0;
+    for (int i = 0; i < patch_count; i++) {
+        if (strcmp(patch_names[i], synth->default_patch) == 0) {
+            end_browse();
+            load_patch(i);
+            draw_page();
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "init patch %s not found", synth->default_patch);
+    draw_header();
+}
+
+/* Rec + Erase: back to the loaded patch as stored, dropping edits */
+static void revert_patch(void)
+{
+    rec_used = erase_used = true;
+    if (patch_loaded == NONE || !modified) {
+        return;  /* nothing to revert */
+    }
+    ESP_LOGI(TAG, "reverting %s", patch_names[patch_loaded]);
+    load_patch(patch_loaded);
+    draw_page();
+}
+
+static void panic(void)
+{
+    int ch = synth_setting(SETTING_CHANNEL);
+    midi_send(0xB0 | ch, 120, 0);  /* All Sound Off */
+    midi_send(0xB0 | ch, 123, 0);  /* All Notes Off */
+    panic_flash_until = esp_timer_get_time() + PANIC_FLASH_US;
+    ESP_LOGI(TAG, "panic on channel %d", ch + 1);
+}
+
 /* ---- input ---- */
 
 static void setup_encoder(int i, int delta);
@@ -804,8 +889,18 @@ static void editor_encoder_impl(int i, int delta)
         return;
     }
     end_browse();
+    cancel_init();
     int p = synth->pages[page].knobs[i];
     if (p == NONE) {
+        return;
+    }
+    if (erase_held) {
+        erase_used = true;  /* releasing Erase now doesn't ask for a patch init */
+        encoder_acc[i] = 0;
+        if (synth->param_reset && synth->param_reset(p)) {
+            draw_column(i);
+            mark_modified();
+        }
         return;
     }
     int units = synth->param_units(p);
@@ -817,6 +912,7 @@ static void editor_encoder_impl(int i, int delta)
     encoder_acc[i] -= steps * units;
     if (synth->param_step(p, steps)) {
         draw_column(i);
+        mark_modified();
     }
 }
 
@@ -865,6 +961,12 @@ static void select_section(int section)
 
 static void editor_button_impl(int bit, bool down)
 {
+    if (bit == BTN_MUTE) {
+        if (down) {
+            panic();
+        }
+        return;
+    }
     if (bit == BTN_CONTROL && down && (mode == MODE_EDIT || mode == MODE_SETUP)) {
         end_browse();
         overview = false;
@@ -885,6 +987,46 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
+    if (bit == BTN_REC) {
+        if (down) {
+            cancel_init();
+            rec_held = true;
+            rec_used = false;
+            if (erase_held) {
+                revert_patch();
+            }
+        } else if (rec_held) {
+            rec_held = false;
+            if (!rec_used) {
+                enter_store();
+            }
+        }
+        return;
+    }
+    if (bit == BTN_ERASE) {
+        if (down) {
+            erase_held = true;
+            erase_used = false;
+            if (rec_held) {
+                revert_patch();
+            }
+        } else {
+            erase_held = false;
+            if (!erase_used) {
+                if (init_armed_until) {
+                    init_patch();
+                } else {
+                    end_browse();
+                    init_armed_until = esp_timer_get_time() + INIT_CONFIRM_US;
+                    draw_header();
+                }
+            }
+        }
+        return;
+    }
+    if (down) {
+        cancel_init();  /* any other button */
+    }
     if (bit == BTN_NAVIGATE) {
         overview = down;
         draw_page();
@@ -898,6 +1040,7 @@ static void editor_button_impl(int bit, bool down)
         int sw = synth->pages[page].switches[col];
         if (sw != NONE) {
             synth->param_toggle(sw);
+            mark_modified();
             /* A switch can affect others on the page (e.g. radio buttons),
              * so redraw them all; only changed chunks go out */
             for (int c = 0; c < 8; c++) {
@@ -917,8 +1060,6 @@ static void editor_button_impl(int bit, bool down)
         draw_header();
     } else if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
         select_section(bit - BTN_GROUP_A);
-    } else if (bit == BTN_REC) {
-        enter_store();
     } else if (bit == BTN_ENTER && patch_browse != NONE) {
         load_patch(patch_browse);
         patch_browse = NONE;
@@ -928,6 +1069,7 @@ static void editor_button_impl(int bit, bool down)
 
 static void editor_main_encoder_impl(int steps)
 {
+    cancel_init();
     if (mode == MODE_STORE) {
         store_main_encoder(steps);
         return;
@@ -966,6 +1108,12 @@ static void save_settings(void);
 static void editor_tick_impl(int64_t now_us)
 {
     textentry_tick(now_us);
+    if (init_armed_until && now_us > init_armed_until) {
+        cancel_init();
+    }
+    if (panic_flash_until && now_us > panic_flash_until) {
+        panic_flash_until = 0;
+    }
     if (settings_save_at && now_us > settings_save_at) {
         settings_save_at = 0;
         save_settings();
@@ -1080,8 +1228,10 @@ static void editor_pad_impl(int pad, bool down, int raw)
     int note = synth_setting(SETTING_PAD_NOTE) + (3 - pad / 4) * 4 + pad % 4;
     int channel = synth_setting(SETTING_CHANNEL);
     if (down) {
-        /* Crude velocity from the pressure when the press is detected */
-        int vel = raw / 32;
+        /* Velocity from the hit's peak pressure (main.c), over the range
+         * from the press threshold (~1000) to full scale (4095) */
+        int vel = 1 + (raw - 1000) * 126 / 3095;
+        ESP_LOGD(TAG, "pad %d note %d peak %d vel %d", pad, note, raw, vel);
         midi_send(0x90 | channel, note, vel < 1 ? 1 : vel > 127 ? 127 : vel);
         maschine_set_pad_led(pad, 127, 127, 127);
     } else {

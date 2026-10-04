@@ -65,6 +65,9 @@ typedef struct {
     /* Optional: draws a picture instead of the value text in the box; the
      * formatted value is then shown small underneath. NULL or false = text. */
     bool (*param_draw)(int p, int disp, int x, int y, int w, int h);
+    /* Back to the value it has in the default (init) patch, and send it;
+     * false if that changed nothing */
+    bool (*param_reset)(int p);
 
     /* Patches */
     bool (*patch_load)(const char *path);  /* read, send everything, update values */

@@ -110,6 +110,12 @@ PLUGINS = {
         # Envelope time knobs: the GUI has no number field for these, and its
         # panel legend turned out to be far off (e.g. "200 ms" at value 27 is
         # really ~26 ms). Curve = measured on the hardware instead, see CURVES.
+        # Logarithmic GUI number fields (purple.xml Curve_Type="Logarithmic"):
+        # (low, high, intensity), value = low + (high-low) * (I^(v/127)-1)/(I-1).
+        # Chorus rate confirmed against the GUI's own field at 11 points.
+        "logscales": {
+            "Rate": (0.01, 20.0, 1000),
+        },
         "curves": {
             "Vcf Env Attack": "env", "Vcf Env Decay": "env",
             "Amp Env Attack": "env", "Amp Env Decay": "env",
@@ -205,6 +211,7 @@ def main():
             "icon": "PI_WAVE" if spec["labels"].get(key) == "wave" else "PI_NONE",
             "display": spec.get("display", {}).get(key),
             "curve": spec.get("curves", {}).get(key),
+            "logscale": spec.get("logscales", {}).get(key),
         })
 
     write_c(plugin, spec["c_name"], params)
@@ -254,6 +261,9 @@ def write_c(plugin, c_name, params):
                 fields.append(f'.unit = "{p["display"][3]}"')
         if p["curve"]:
             fields.append(f'.time_curve = &curve_{p["curve"]}')
+        if p["logscale"]:
+            lo, hi, k = p["logscale"]
+            fields += [f".log_lo = {lo}f", f".log_hi = {hi}f", f".log_k = {k}"]
         c.append("    {" + ", ".join(fields) + "},")
     c.append("};")
     open(os.path.join(ROOT, "src", f"{c_name}_params.h"), "w").write("\n".join(h) + "\n")

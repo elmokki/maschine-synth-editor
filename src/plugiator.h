@@ -58,4 +58,9 @@ typedef struct {
     uint8_t decimals;           /* 0 or 1 */
     const char *unit;           /* appended to the scaled value, or NULL */
     const plug_curve_t *time_curve;  /* shown as a time instead, or NULL */
+    /* Logarithmic display scale, as the GUI's number fields do it:
+     * log_lo + (log_hi - log_lo) * (log_k^(v/127) - 1) / (log_k - 1);
+     * log_k = 0 = not used */
+    float log_lo, log_hi;
+    uint16_t log_k;
 } plug_param_t;

@@ -50,6 +50,10 @@ static const char *TAG = "maschine";
  * hysteresis so a pad near the threshold doesn't chatter. */
 #define PAD_PRESS_RAW 1000
 #define PAD_RELEASE_RAW 300
+/* Velocity: a hit's pressure keeps rising for a few ms after it crosses
+ * the press threshold, so the note waits this many pad reports (2 ms each)
+ * and uses the peak seen meanwhile */
+#define PAD_PEAK_REPORTS 3
 
 static const char *const button_names[48] = {
     "Display 1", "Display 2", "Display 3", "Display 4",
@@ -83,6 +87,8 @@ static uint8_t prev_buttons[6];
 static uint8_t prev_main_enc;
 static uint16_t prev_enc[8];
 static bool pad_down[16];
+static int8_t pad_wait[16];     /* reports left before the note goes out, 0 = sent */
+static int16_t pad_peak[16];
 
 static uint8_t pad_leds[PAD_LED_REPORT_SIZE];
 static uint8_t group_leds[GROUP_LED_REPORT_SIZE];
@@ -280,10 +286,21 @@ static void handle_report20(const uint8_t *buf, int len)
     for (int pad = 0; pad < 16; pad++) {
         if (!pad_down[pad] && raw[pad] >= PAD_PRESS_RAW) {
             pad_down[pad] = true;
-            editor_pad(pad, true, raw[pad]);
-        } else if (pad_down[pad] && raw[pad] <= PAD_RELEASE_RAW) {
-            pad_down[pad] = false;
-            editor_pad(pad, false, 0);
+            pad_wait[pad] = PAD_PEAK_REPORTS;
+            pad_peak[pad] = raw[pad];
+        } else if (pad_down[pad]) {
+            if (raw[pad] > pad_peak[pad]) {
+                pad_peak[pad] = raw[pad];
+            }
+            bool released = raw[pad] <= PAD_RELEASE_RAW;
+            if (pad_wait[pad] && (--pad_wait[pad] == 0 || released)) {
+                pad_wait[pad] = 0;
+                editor_pad(pad, true, pad_peak[pad]);
+            }
+            if (released) {
+                pad_down[pad] = false;
+                editor_pad(pad, false, 0);
+            }
         }
     }
     out_kick();

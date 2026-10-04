@@ -125,6 +125,14 @@ input channel (for DIN IN) will be added when a synth needs it; the Plugiator do
   load and only if it changed) and sent again on the first connect after boot; the synth's
   default patch (`099 Init`) if nothing is remembered or it's gone. Deleting the loaded patch
   loads the one before it in number order.
+- Erase = init: first press turns the left header into an inverted "PRESS ERASE AGAIN: INIT
+  PATCH" prompt (Erase lit), a second press within 3 s loads the synth's default patch, any
+  other control cancels. Erase held + turning an encoder = that parameter back to its init
+  value. Rec + Erase together (the panel's "Replace") = revert the loaded patch to its stored
+  state; Rec therefore opens the store screen on release. Editing the loaded patch adds " *"
+  to its name in the header. Mute = panic (All Sound Off + All Notes Off), on every screen.
+- Pads: the note goes out 3 pad reports (~6 ms) after the press threshold, with velocity from
+  the peak pressure seen meanwhile.
 - The Plugiator can't report its state (no MIDI OUT on DIN), so values show "--" until a patch
   is loaded or the parameter is touched. Patch load sends every parameter (verified byte-exact
   on the PC side).
