@@ -97,6 +97,24 @@ and knows nothing about any particular synth; each synth is a driver behind `src
 settings, formatting/stepping/sending of parameters, an optional picture per parameter
 (waveforms; envelopes later), and patch load/save. A second synth = a new driver file.
 
+**Synths** (Scene button): one column per driver, its display button switches (asks SURE? if
+the patch has unsaved edits). Switching (and every boot) runs the driver's `activate` — for
+Plugiator plug-ins a Program Change (Setup: PLUGIN PC; on this box MiniMax 101, B4000 102, Lightwave 103 - the manual has
+B4000/Lightwave the other way round, it depends on the install order) plus a confirming note 100 ms later,
+which loads the plug-in in ~1 s — waits 1.5 s, then sends
+that synth's remembered patch. The active synth is kept in `/lfs/state/active_synth`.
+Plugiator drivers share `src/plugiator.c` (CC/poly-AT parameters, value scales, stepped
+controls, pictures, patch files); `synth_minimax.c` / `synth_b4000.c` only hold their pages,
+settings and virtual parameters. Navigate moved to Sampling.
+
+**B4000** (`synth_b4000.c`): Upper/Lower manuals as parallel 2-page sections (8 drawbars, then
+1' + volume/octave/split/vibrato), Pedal, Vibrato/Perc, Rotor (horn | bass), Organ, Effects.
+Drawbars are drawn as drawbars (9 positions, MIDI 0/15/31/.../127, brown/white/black handles).
+From the GUI's MIDI monitor: CC73 = vibrato selector (Hammond order V-1 C-1 V-2 C-2 V-3 C-3 =
+120 10 30 50 70 90), CC74/CC71 = lower/upper vibrato on/off — the factory preset file has
+CC73/CC74 swapped (the Plug-in Manager sends them as stored), the importer swaps them back.
+Swell (CC11) is reversed: 0 = loud. Octaves 0/1/2 = -1/0/+1, split keys = note numbers.
+
 **Setup** (Control button): the active synth's settings in the same column layout, one per
 encoder — every driver starts with `CHANNEL` and `PAD LOW` (lowest pad note), Rolands will add a
 device ID. Saved as `NAME=value` lines in `/lfs/settings/<synth>` 5 s after the last change. An
@@ -143,7 +161,9 @@ input channel (for DIN IN) will be added when a synth needs it; the Plugiator do
   `tools/gen_font.py`; they're far crisper on the 1-bit panel than anti-aliasing-designed TTFs.
 
 **⚠️ `pio run -t uploadfs` rewrites the whole LittleFS partition** — it wipes user patches and
-the remembered patch. Only use it on a fresh board, or back up `/lfs` first.
+the remembered patch. Only use it on a fresh board. To add a synth's factory patches to a board
+in use, `tools/lfs_merge.py <data subdir>` reads the partition back (a backup), adds the files
+in a PC-side copy and writes that back only with `--write`.
 
 **Flash writes vs. USB:** the very first patch save made every USB pipe fail with transfer
 errors (likely a long flash erase holding off the USB host interrupt). All pipes now halt,

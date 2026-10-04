@@ -52,7 +52,10 @@ static const char *TAG = "editor";
 #define BTN_REC 37
 #define BTN_ERASE 38
 #define BTN_MUTE 47
-#define BTN_NAVIGATE 43
+#define BTN_NAVIGATE 11  /* Sampling: next to Browse and Control */
+#define BTN_SCENE 40     /* top of its column: the synth selection */
+#define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
+#define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
  * are written once things have stayed unchanged this long, so browsing or
@@ -76,8 +79,17 @@ static const char *TAG = "editor";
 static const uint8_t led_section_on[3] = {30, 90, 127};
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
-/* The active synth. One for now; picking between drivers comes later. */
+/* The synths to pick from (Scene), and the active one */
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000};
+#define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
+#define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
+#define SYNTH_CONFIRM_US 3000000
 static const synth_t *synth = &synth_minimax;
+static bool usb_ready;              /* Maschine (and DIN MIDI) connected */
+static int64_t activating_until;    /* synth being made ready, patch follows */
+static int synth_confirm = -1;      /* synth column pressed once with unsaved edits */
+static bool volume_held;
+static int64_t synth_confirm_until;
 
 static int encoder_acc[8];
 static int page;
@@ -111,7 +123,7 @@ static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
-typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP } ui_mode_t;
+typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH } ui_mode_t;
 static ui_mode_t mode;
 static int store_target;  /* NONE = new patch, else index of a user patch */
 static char store_name[TEXTENTRY_MAX_LEN + 1];
@@ -121,6 +133,7 @@ static int64_t delete_armed_until;  /* DELETE pressed once, press again to confi
 static void load_patch_list(void);
 static void draw_store(void);
 static void draw_setup(void);
+static void draw_synths(void);
 
 int synth_setting(int index)
 {
@@ -185,9 +198,14 @@ static void update_button_leds(void)
     /* Panic works on every screen */
     maschine_set_button_led(BTN_MUTE, panic_flash_until ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : mode == MODE_EDIT ? LED_DIM : 0);
-    if (mode == MODE_SETUP) {
+    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : mode == MODE_EDIT ? LED_DIM : 0);
+    if (mode == MODE_SETUP || mode == MODE_SYNTH) {
         for (int col = 0; col < 8; col++) {
-            maschine_set_button_led(BTN_DISPLAY_1 + col, 0);
+            uint8_t v = 0;
+            if (mode == MODE_SYNTH && col < SYNTH_COUNT) {
+                v = synths[col] == synth || col == synth_confirm ? LED_ON : LED_DIM;
+            }
+            maschine_set_button_led(BTN_DISPLAY_1 + col, v);
         }
         static const int others[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2,
                                      BTN_ARROW_RIGHT_2, BTN_NAVIGATE, BTN_ENTER, BTN_REC,
@@ -214,11 +232,13 @@ static void update_button_leds(void)
         maschine_set_button_led(BTN_REC, LED_ON);
         maschine_set_button_led(BTN_BROWSE, 0);
         maschine_set_button_led(BTN_ERASE, 0);
+        maschine_set_button_led(BTN_SCENE, 0);
         return;
     }
     maschine_set_button_led(BTN_REC, LED_DIM);
     maschine_set_button_led(BTN_BROWSE, encoder_browses ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_ERASE, init_armed_until || erase_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_VOLUME, !synth->volume_cc ? 0 : volume_held ? LED_ON : LED_DIM);
     for (int col = 0; col < 8; col++) {
         int sw = synth->pages[page].switches[col];
         uint8_t v = 0;
@@ -314,7 +334,11 @@ static void draw_header(void)
         draw_right(0, right, HEADER_CAP_Y, &font_small, name, true);
     }
 
-    if (encoder_browses) {
+    if (volume_held) {
+        snprintf(buf, sizeof(buf), "VOLUME %d", synth_setting(synth->volume_setting));
+        display_fill_rect(1, 0, 0, DISPLAY_USABLE_WIDTH, HEADER_LINE_Y, true);
+        draw_text_cap(1, 2, HEADER_CAP_Y, &font_small, buf, false);
+    } else if (encoder_browses) {
         draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "BROWSE: encoder picks patch", true);
     } else {
         /* Where the main encoder leads */
@@ -355,10 +379,16 @@ static void draw_column(int col)
 
     char val[16];
     synth->param_format(p, val, sizeof(val));
-    if (synth->param_draw && synth->param_draw(p, disp, x, VALUE_CAP_Y - 1, COLUMN_INNER,
-                                               font_large.cap_height)) {
-        /* Picture in the value area, the value's name below instead of a bar */
+    int drawn = synth->param_draw
+                ? synth->param_draw(p, disp, x, VALUE_CAP_Y - 1, COLUMN_INNER,
+                                    DISPLAY_HEIGHT - (VALUE_CAP_Y - 1))
+                : SYNTH_DRAW_NONE;
+    if (drawn == SYNTH_DRAW_LABEL) {
+        /* Picture in the value row, the value's name below instead of a bar */
         draw_centered(disp, x, COLUMN_INNER, BAR_Y, &font_tiny, val, true);
+        return;
+    }
+    if (drawn == SYNTH_DRAW_FULL) {
         return;
     }
     /* Largest font the value fits in, centred on the large font's caps */
@@ -415,10 +445,31 @@ static void draw_overview(void)
     }
 }
 
+/* While a synth is being made ready (plug-in loading): nothing else on the
+ * displays, so it's clear edits would go nowhere yet */
+static void draw_loading(void)
+{
+    char buf[40];
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+    }
+    snprintf(buf, sizeof(buf), "LOADING %s ...", synth->name);
+    draw_centered(0, 0, DISPLAY_USABLE_WIDTH, 24, &font_large, buf, true);
+    draw_centered(1, 0, DISPLAY_USABLE_WIDTH, 28, &font_small, "one moment", true);
+}
+
 static void draw_page(void)
 {
+    if (activating_until) {
+        draw_loading();
+        return;
+    }
     if (mode == MODE_SETUP) {
         draw_setup();
+        return;
+    }
+    if (mode == MODE_SYNTH) {
+        draw_synths();
         return;
     }
     if (mode != MODE_EDIT) {
@@ -875,12 +926,164 @@ static void panic(void)
     ESP_LOGI(TAG, "panic on channel %d", ch + 1);
 }
 
+/* ---- synth selection (Scene) ---- */
+
+static void load_settings(void);
+
+/* One column per synth, its display button picks it; the active one is
+ * filled, one asking for confirmation says SURE? */
+static void draw_synths(void)
+{
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
+    }
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "SYNTH", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "SCENE closes", true);
+    for (int i = 0; i < SYNTH_COUNT && i < 8; i++) {
+        int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
+        bool active = synths[i] == synth;
+        const char *label = i == synth_confirm ? "SURE?" : synths[i]->name;
+        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, active, true);
+        draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+                      &font_small, label, !active);
+        if (active) {
+            draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, "ACTIVE", true);
+        }
+    }
+    if (synth_confirm >= 0) {
+        draw_text_cap(1, 4, 30, &font_small, "The patch has unsaved edits.", true);
+        draw_text_cap(1, 4, 44, &font_small, "Press again to switch anyway.", true);
+    }
+}
+
+/* Patch to bring the synth back to: the remembered one, or the default */
+static void send_volume(void)
+{
+    if (synth->volume_cc) {
+        midi_send(0xB0 | synth_setting(SETTING_CHANNEL), synth->volume_cc,
+                  synth_setting(synth->volume_setting));
+    }
+}
+
+/* Device-level settings that aren't part of patches, after activation */
+static void send_device_settings(void)
+{
+    send_volume();
+    for (int i = 0; synth->device_ccs && synth->device_ccs[i].cc; i++) {
+        midi_send(0xB0 | synth_setting(SETTING_CHANNEL), synth->device_ccs[i].cc,
+                  synth_setting(synth->device_ccs[i].setting));
+    }
+}
+
+static void restore_patch(void)
+{
+    send_device_settings();
+    const char *candidates[2] = {last_saved, synth->default_patch};
+    for (int c = 0; c < 2; c++) {
+        for (int i = 0; i < patch_count && candidates[c][0]; i++) {
+            if (strcmp(patch_names[i], candidates[c]) == 0) {
+                load_patch(i);
+                remember_at = 0;  /* nothing new to remember */
+                draw_page();
+                return;
+            }
+        }
+        if (c == 0 && last_saved[0]) {
+            ESP_LOGW(TAG, "remembered patch %s not found, loading the default", last_saved);
+        }
+    }
+    ESP_LOGW(TAG, "default patch %s not found either", synth->default_patch);
+    draw_page();
+}
+
+/* Make the instrument ready (e.g. load the Plugiator plug-in), then send
+ * the patch once it has had time to switch */
+static void start_activation(void)
+{
+    if (!usb_ready) {
+        return;  /* editor_connected() does it */
+    }
+    if (synth->activate) {
+        synth->activate();
+        activating_until = esp_timer_get_time() + synth->activate_ms * 1000LL;
+        draw_page();
+    } else {
+        restore_patch();
+    }
+}
+
+static void read_last_patch(void)
+{
+    char path[MAX_PATH];
+    last_saved[0] = '\0';
+    synth_file(path, sizeof(path), STATE_DIR, "_last");
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (!fgets(last_saved, sizeof(last_saved), f)) {
+            last_saved[0] = '\0';
+        }
+        fclose(f);
+    }
+}
+
+static void switch_synth(int i)
+{
+    synth = synths[i];
+    ESP_LOGI(TAG, "synth: %s", synth->name);
+    mkdir(STATE_DIR, 0777);
+    FILE *f = fopen(ACTIVE_SYNTH_FILE, "w");
+    if (f) {
+        fputs(synth->key, f);
+        fclose(f);
+    }
+    /* Everything the editor holds about the previous synth goes */
+    page = 0;
+    memset(encoder_acc, 0, sizeof(encoder_acc));
+    patch_loaded = patch_browse = NONE;
+    modified = false;
+    remember_at = settings_save_at = 0;
+    load_settings();
+    load_patch_list();
+    read_last_patch();
+    mode = MODE_EDIT;
+    synth_confirm = -1;
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+    }
+    draw_page();
+    update_group_leds();
+    start_activation();
+}
+
+static void pick_synth(int i)
+{
+    if (synths[i] == synth) {
+        mode = MODE_EDIT;  /* the active one: just close */
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        draw_page();
+        return;
+    }
+    if (modified && synth_confirm != i) {
+        synth_confirm = i;
+        synth_confirm_until = esp_timer_get_time() + SYNTH_CONFIRM_US;
+        draw_synths();
+        return;
+    }
+    switch_synth(i);
+}
+
 /* ---- input ---- */
 
 static void setup_encoder(int i, int delta);
 
 static void editor_encoder_impl(int i, int delta)
 {
+    if (activating_until) {
+        return;  /* the synth isn't listening yet */
+    }
     if (mode == MODE_SETUP) {
         setup_encoder(i, delta);
         return;
@@ -967,6 +1170,27 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
+    if (activating_until) {
+        return;  /* the synth isn't listening yet */
+    }
+    if (bit == BTN_SCENE && down && (mode == MODE_EDIT || mode == MODE_SYNTH)) {
+        end_browse();
+        cancel_init();
+        overview = false;
+        synth_confirm = -1;
+        mode = mode == MODE_SYNTH ? MODE_EDIT : MODE_SYNTH;
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        draw_page();
+        return;
+    }
+    if (mode == MODE_SYNTH) {
+        if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + SYNTH_COUNT) {
+            pick_synth(bit - BTN_DISPLAY_1);
+        }
+        return;
+    }
     if (bit == BTN_CONTROL && down && (mode == MODE_EDIT || mode == MODE_SETUP)) {
         end_browse();
         overview = false;
@@ -985,6 +1209,15 @@ static void editor_button_impl(int bit, bool down)
         if (down) {
             store_button(bit);
         }
+        return;
+    }
+    if (bit == BTN_VOLUME && synth->volume_cc) {
+        volume_held = down;
+        if (down) {
+            end_browse();
+            cancel_init();
+        }
+        draw_header();
         return;
     }
     if (bit == BTN_REC) {
@@ -1069,6 +1302,17 @@ static void editor_button_impl(int bit, bool down)
 
 static void editor_main_encoder_impl(int steps)
 {
+    if (activating_until) {
+        return;
+    }
+    if (volume_held && mode == MODE_EDIT) {
+        int v = setting_values[synth->volume_setting] + steps * VOLUME_STEP;
+        setting_values[synth->volume_setting] = v < 0 ? 0 : v > 127 ? 127 : v;
+        settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+        send_volume();
+        draw_header();
+        return;
+    }
     cancel_init();
     if (mode == MODE_STORE) {
         store_main_encoder(steps);
@@ -1108,6 +1352,19 @@ static void save_settings(void);
 static void editor_tick_impl(int64_t now_us)
 {
     textentry_tick(now_us);
+    if (activating_until && now_us > activating_until) {
+        activating_until = 0;
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        restore_patch();
+    }
+    if (synth_confirm >= 0 && now_us > synth_confirm_until) {
+        synth_confirm = -1;
+        if (mode == MODE_SYNTH) {
+            draw_synths();
+        }
+    }
     if (init_armed_until && now_us > init_armed_until) {
         cancel_init();
     }
@@ -1168,17 +1425,23 @@ static void load_settings(void);
 
 static void editor_init_impl(void)
 {
-    load_settings();
-    load_patch_list();
-    char path[MAX_PATH];
-    synth_file(path, sizeof(path), STATE_DIR, "_last");
-    FILE *f = fopen(path, "r");
+    char key[24] = "";
+    FILE *f = fopen(ACTIVE_SYNTH_FILE, "r");
     if (f) {
-        if (!fgets(last_saved, sizeof(last_saved), f)) {
-            last_saved[0] = '\0';
+        if (!fgets(key, sizeof(key), f)) {
+            key[0] = '\0';
         }
         fclose(f);
     }
+    for (int i = 0; i < SYNTH_COUNT; i++) {
+        if (strcmp(synths[i]->key, key) == 0) {
+            synth = synths[i];
+        }
+    }
+    ESP_LOGI(TAG, "synth: %s", synth->name);
+    load_settings();
+    load_patch_list();
+    read_last_patch();
     for (int pad = 0; pad < 16; pad++) {
         maschine_set_pad_led(pad, 0, 0, 20);
     }
@@ -1189,35 +1452,25 @@ static void editor_init_impl(void)
     update_group_leds();
 }
 
-/* First connection since boot: bring the Plugiator back to the patch that
- * was loaded last (or the init patch), so the editor's values are known */
+/* First connection since boot: make the synth ready and bring it back to
+ * the patch that was loaded last (or its default patch), so the editor's
+ * values are known */
 static void editor_connected_impl(void)
 {
     if (restored) {
         return;
     }
     restored = true;
-    /* The remembered patch, or the default one if that's gone */
-    const char *candidates[2] = {last_saved, synth->default_patch};
-    for (int c = 0; c < 2; c++) {
-        for (int i = 0; i < patch_count && candidates[c][0]; i++) {
-            if (strcmp(patch_names[i], candidates[c]) == 0) {
-                load_patch(i);
-                remember_at = 0;  /* nothing new to remember */
-                draw_page();
-                return;
-            }
-        }
-        if (c == 0 && last_saved[0]) {
-            ESP_LOGW(TAG, "remembered patch %s not found, loading the default", last_saved);
-        }
-    }
-    ESP_LOGW(TAG, "default patch %s not found either", synth->default_patch);
+    usb_ready = true;
+    start_activation();
 }
 
 /* Pads play notes on the synth's channel, or type in the name screen */
 static void editor_pad_impl(int pad, bool down, int raw)
 {
+    if (activating_until && down) {
+        return;  /* a note now could be taken as the plug-in's confirm note */
+    }
     if (mode == MODE_NAME) {
         if (down) {
             textentry_pad(pad, esp_timer_get_time());

@@ -14,6 +14,11 @@
 
 #define SYNTH_NONE (-1)
 
+/* param_draw results */
+#define SYNTH_DRAW_NONE 0   /* nothing drawn: the editor shows the value as text */
+#define SYNTH_DRAW_LABEL 1  /* picture in the value row; formatted value small below */
+#define SYNTH_DRAW_FULL 2   /* picture fills the whole area below the name */
+
 /* Navigation is two-level, the same for every synth: Group buttons A-H pick
  * a section (e.g. an operator, tone or partial), the main encoder steps
  * through pages. Switching between sections keeps the page position within
@@ -41,6 +46,19 @@ typedef struct {
  * the pads, the driver for everything it sends */
 #define SETTING_CHANNEL 0
 #define SETTING_PAD_NOTE 1
+/* Plugiator drivers add: the Program Change that loads their plug-in. It
+ * depends on the order plug-ins were installed on the box (tested here:
+ * MiniMax 101, B4000 102, Lightwave 103 - the manual has B4000 and Lightwave
+ * the other way round), so it's a setting. */
+#define SETTING_PLUGIN_PC 2
+#define SETTING_VOLUME 3
+#define SETTING_SYNTH_MIC 4
+
+/* A setting sent as a Control Change after activation */
+typedef struct {
+    int8_t setting;
+    uint8_t cc;
+} synth_device_cc_t;
 
 typedef struct {
     const char *name;           /* shown in the UI, e.g. "MiniMax" */
@@ -62,9 +80,9 @@ typedef struct {
     int (*param_units)(int p);            /* encoder counter units per step */
     bool (*param_step)(int p, int steps); /* change + send; false if unchanged */
     void (*param_toggle)(int p);          /* display button pressed; sends */
-    /* Optional: draws a picture instead of the value text in the box; the
-     * formatted value is then shown small underneath. NULL or false = text. */
-    bool (*param_draw)(int p, int disp, int x, int y, int w, int h);
+    /* Optional: a picture instead of the value text, in the area below the
+     * parameter name (x, y, w, h); returns a SYNTH_DRAW_* result */
+    int (*param_draw)(int p, int disp, int x, int y, int w, int h);
     /* Back to the value it has in the default (init) patch, and send it;
      * false if that changed nothing */
     bool (*param_reset)(int p);
@@ -73,9 +91,25 @@ typedef struct {
     bool (*patch_load)(const char *path);  /* read, send everything, update values */
     bool (*patch_save)(const char *path);
     int (*unknown_count)(void);            /* params a save would fill with defaults */
+
+    /* Optional: make the instrument ready when this synth gets selected
+     * (e.g. load a Plugiator plug-in); the editor waits activate_ms before
+     * sending a patch */
+    void (*activate)(void);
+    int activate_ms;
+
+    /* Optional device volume (Volume button + main encoder): sent as this
+     * Control Change, kept in setting volume_setting and re-sent after
+     * activate. volume_cc 0 = none. */
+    uint8_t volume_cc;
+    int8_t volume_setting;
+    /* Optional: other device-level settings sent the same way after
+     * activate, as (setting index, CC) pairs, terminated by cc 0 */
+    const synth_device_cc_t *device_ccs;
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
 int synth_setting(int index);
 
 extern const synth_t synth_minimax;
+extern const synth_t synth_b4000;

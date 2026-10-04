@@ -4,11 +4,12 @@
 
 static const plug_curve_point_t curve_env_points[17] = {{0, 1}, {7, 7}, {14, 12}, {20, 16}, {27, 26}, {34, 63}, {41, 92}, {51, 171}, {60, 328}, {67, 619}, {74, 1095}, {82, 1938}, {91, 3141}, {99, 4501}, {107, 5835}, {117, 7828}, {127, 10710}};
 static const plug_curve_t curve_env = {curve_env_points, 17};
-static const char *const labels_range[6] = {"LO", "32'", "16'", "8'", "4'", "2'"};
-static const char *const labels_wave[6] = {"TRI", "SHARK", "SAW", "SQUARE", "WIDE", "NARROW"};
-static const char *const labels_note[19] = {"1/1", "1/2P", "1/2", "1/2T", "1/4P", "1/4", "1/4T", "1/8P", "1/8", "1/8T", "1/16P", "1/16", "1/16T", "1/32P", "1/32", "1/32T", "1/64P", "1/64", "1/64T"};
+static const uint8_t steps_step6[6] = {0, 22, 44, 66, 88, 110};
 static const char *const labels_chorus[2] = {"CHORUS", "FLANGER"};
 static const char *const labels_modmix[2] = {"OSC3", "NOISE"};
+static const char *const labels_note[19] = {"1/1", "1/2P", "1/2", "1/2T", "1/4P", "1/4", "1/4T", "1/8P", "1/8", "1/8T", "1/16P", "1/16", "1/16T", "1/32P", "1/32", "1/32T", "1/64P", "1/64", "1/64T"};
+static const char *const labels_range[6] = {"LO", "32'", "16'", "8'", "4'", "2'"};
+static const char *const labels_wave[6] = {"TRI", "SHARK", "SAW", "SQUARE", "WIDE", "NARROW"};
 
 const plug_param_t minimax_params[MINIMAX_PARAM_COUNT] = {
     {.short_name = "TUNE", .name = "Tune", .msg = PLUG_CC, .number = 21, .type = PT_CONT, .default_value = 63, .in_preset = true, .page = 0, .disp_lo = -2, .disp_hi = 2, .decimals = 1},
@@ -17,12 +18,12 @@ const plug_param_t minimax_params[MINIMAX_PARAM_COUNT] = {
     {.short_name = "GLIDE SW", .name = "Glide Switch", .msg = PLUG_CC, .number = 65, .type = PT_SWITCH, .default_value = 0, .in_preset = true, .page = 0},
     {.short_name = "DECAY SW", .name = "Env Decay", .msg = PLUG_CC, .number = 59, .type = PT_SWITCH, .default_value = 127, .in_preset = true, .page = 0},
     {.short_name = "OSC MOD", .name = "Osc Modulation", .msg = PLUG_CC, .number = 22, .type = PT_SWITCH, .default_value = 127, .in_preset = true, .page = 0},
-    {.short_name = "OSC1 RNG", .name = "Osc1 Range", .msg = PLUG_CC, .number = 79, .type = PT_STEP6, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_range, .label_count = 6},
-    {.short_name = "OSC1 WAV", .name = "Osc1 Waveform", .msg = PLUG_CC, .number = 80, .type = PT_STEP6, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_wave, .label_count = 6, .icon = PI_WAVE},
-    {.short_name = "OSC2 RNG", .name = "Osc2 Range", .msg = PLUG_CC, .number = 16, .type = PT_STEP6, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_range, .label_count = 6},
-    {.short_name = "OSC2 WAV", .name = "Osc2 Waveform", .msg = PLUG_CC, .number = 83, .type = PT_STEP6, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_wave, .label_count = 6, .icon = PI_WAVE},
-    {.short_name = "OSC3 RNG", .name = "Osc3 Range", .msg = PLUG_CC, .number = 20, .type = PT_STEP6, .default_value = 0, .in_preset = true, .page = 0, .labels = labels_range, .label_count = 6},
-    {.short_name = "OSC3 WAV", .name = "Osc3 Waveform", .msg = PLUG_CC, .number = 86, .type = PT_STEP6, .default_value = 0, .in_preset = true, .page = 0, .labels = labels_wave, .label_count = 6, .icon = PI_WAVE},
+    {.short_name = "OSC1 RNG", .name = "Osc1 Range", .msg = PLUG_CC, .number = 79, .type = PT_STEPS, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_range, .step_values = steps_step6, .label_count = 6},
+    {.short_name = "OSC1 WAV", .name = "Osc1 Waveform", .msg = PLUG_CC, .number = 80, .type = PT_STEPS, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_wave, .step_values = steps_step6, .label_count = 6, .icon = PI_WAVE},
+    {.short_name = "OSC2 RNG", .name = "Osc2 Range", .msg = PLUG_CC, .number = 16, .type = PT_STEPS, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_range, .step_values = steps_step6, .label_count = 6},
+    {.short_name = "OSC2 WAV", .name = "Osc2 Waveform", .msg = PLUG_CC, .number = 83, .type = PT_STEPS, .default_value = 44, .in_preset = true, .page = 0, .labels = labels_wave, .step_values = steps_step6, .label_count = 6, .icon = PI_WAVE},
+    {.short_name = "OSC3 RNG", .name = "Osc3 Range", .msg = PLUG_CC, .number = 20, .type = PT_STEPS, .default_value = 0, .in_preset = true, .page = 0, .labels = labels_range, .step_values = steps_step6, .label_count = 6},
+    {.short_name = "OSC3 WAV", .name = "Osc3 Waveform", .msg = PLUG_CC, .number = 86, .type = PT_STEPS, .default_value = 0, .in_preset = true, .page = 0, .labels = labels_wave, .step_values = steps_step6, .label_count = 6, .icon = PI_WAVE},
     {.short_name = "OSC2 FRQ", .name = "Osc2 Frequency", .msg = PLUG_CC, .number = 72, .type = PT_CONT, .default_value = 64, .in_preset = true, .page = 0, .disp_lo = -10, .disp_hi = 10, .decimals = 1},
     {.short_name = "OSC3 FRQ", .name = "Osc3 Frequency", .msg = PLUG_CC, .number = 85, .type = PT_CONT, .default_value = 63, .in_preset = true, .page = 0, .disp_lo = -10, .disp_hi = 10, .decimals = 1},
     {.short_name = "OSC3 CTL", .name = "Osc3 Control", .msg = PLUG_CC, .number = 87, .type = PT_SWITCH, .default_value = 0, .in_preset = true, .page = 0},
