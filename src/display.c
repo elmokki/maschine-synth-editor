@@ -66,6 +66,29 @@ void display_rect(int disp, int x, int y, int w, int h, bool on)
     display_fill_rect(disp, x + w - 1, y, 1, h, on);
 }
 
+void display_line(int disp, int x0, int y0, int x1, int y1, bool on)
+{
+    /* Bresenham */
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        display_pixel(disp, x0, y0, on);
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
 static const glyph_t *glyph_for(const font_t *font, char c)
 {
     unsigned char uc = (unsigned char)c;

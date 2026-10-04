@@ -57,7 +57,7 @@ endless encoder, in a 64 px column right under it (name, value 0-127, bar), 10 e
 step (~130 steps per turn). Confirmed on hardware: layout lines up with the encoders, updates
 feel responsive, and pads keep working while turning encoders.
 
-## Step 4 (current): DIN MIDI — working both ways
+## Step 4: DIN MIDI — working both ways
 
 `src/midi.c` claims the Maschine's standard USB-MIDI interface (IF1, bulk) alongside the HID
 interface, hand-rolled (4-byte USB-MIDI event packets, cable 0) rather than via TinyUSB — it's a
@@ -75,6 +75,54 @@ Maschine's DIN jacks: messages sent with `amidi` arrived at the ESP32 intact (no
 change), and all 16 pads (notes 36-51, every Note On paired with its Note Off) and encoder CCs
 showed up in `aseqdump`. Note: the Maschine buffers DIN IN data while nobody reads IF1, and
 delivers it once the host starts reading.
+
+## Step 5 (current): MiniMax editor + patch library — working
+
+**Patch library on LittleFS.** `partitions.csv`: 4MB app + ~12MB `storage` (LittleFS, via the
+`joltwallet/littlefs` component), mounted at `/lfs` by `src/storage.c`. `pio run -t uploadfs`
+writes `data/` into it. Each synth's patches live under their own directory; a patch file is
+the raw MIDI that restores the sound (SysEx dump for SysEx synths, a CC/poly-AT stream for the
+Plugiator), so loading is the same for every synth.
+
+**MiniMax data comes from the use-audio Plug-in Manager's own files** (found in the Wine prefix,
+copied to the gitignored `reference/`): `config.xml` is the full parameter map and
+`presets/default.xml` stores each preset as raw CC/poly-AT values. `tools/plugiator_import.py`
+turns them into `src/minimax_params.c/.h` (committed — MIDI implementation facts only) and
+`data/plugiator/minimax/NNN Name` (gitignored — use-audio's factory presets). 6-position knobs
+use 0/22/44/66/88/110, switches 0/127.
+
+**Editor** (`src/editor.c`), the navigation model meant for every synth:
+- Group buttons A-H select a section, pressing the current one again steps to its next page
+  (page shown by the Group LED colour); the main encoder steps through all pages; Navigate (held)
+  shows the section list. Parallel sections keep the page position (OP1 EG → OP3 EG).
+- 8 encoders = the page's 8 parameters (6-position knobs step every ~1/16 turn, waveforms drawn
+  as a small picture), display buttons = the page's switches.
+- Header row: section/page and patch on the left display, prev/next page on the right. The
+  arrow buttons browse patches (or the main encoder, while Browse is toggled on); the browsed
+  patch shows inverted in the header, Enter loads it, any parameter encoder cancels browsing.
+- Rec = store screen: save as new (`User NNN`, numbers from 100) or over a user patch, RENAME
+  (pads become a phone keypad, `src/textentry.c`), DELETE (press twice). Factory patches
+  (000-099) are read-only.
+- The last loaded patch is remembered (`/lfs/state/minimax_last`, written 5 s after a patch
+  load and only if it changed) and sent again on the first connect after boot; `099 Init` if
+  nothing is remembered.
+- The Plugiator can't report its state (no MIDI OUT on DIN), so values show "--" until a patch
+  is loaded or the parameter is touched. Patch load sends every parameter (verified byte-exact
+  on the PC side).
+- Every button that does something is lit dimly, brightly when on/active. The mono button LED
+  slots were mapped with a temporary on-device wizard, see `docs/PROTOCOL.md`.
+- Fonts: Spleen pixel fonts (5x8, 6x12, 8x16, 12x24, BSD license) converted from BDF by
+  `tools/gen_font.py`; they're far crisper on the 1-bit panel than anti-aliasing-designed TTFs.
+
+**⚠️ `pio run -t uploadfs` rewrites the whole LittleFS partition** — it wipes user patches and
+the remembered patch. Only use it on a fresh board, or back up `/lfs` first.
+
+**Flash writes vs. USB:** the very first patch save made every USB pipe fail with transfer
+errors (likely a long flash erase holding off the USB host interrupt). All pipes now halt,
+flush and clear the endpoint and resubmit on error (`src/usb_recover.h`); the error hasn't
+recurred since, so that recovery path is still untested on real hardware.
+
+Not yet tested with the Plugiator itself connected (verified via the PC MIDI interface only).
 
 ## Flash-size mismatch warning — fixed, and why it happened
 

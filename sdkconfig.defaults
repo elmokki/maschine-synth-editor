@@ -10,3 +10,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # the ESP32-S3 default and would be wrong for this chip variant.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
+
+# Custom partition table: 4MB app + ~12MB LittleFS patch library
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

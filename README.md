@@ -28,7 +28,8 @@ Critical path for the synth-editor use case:
 is powered from the board's OTG port; pads + pad LEDs, all buttons and encoders, both displays
 (bitmap fonts, test synth-editor UI) and DIN MIDI in/out all work on real hardware. A few
 full-speed-only quirks had to be worked around — see
-**[`docs/ESP32_NOTES.md`](docs/ESP32_NOTES.md)**. Next: actual synth-editor logic.
+**[`docs/ESP32_NOTES.md`](docs/ESP32_NOTES.md)**. First synth editor: Plugiator MiniMax, with a
+patch library on LittleFS.
 
 ## Layout
 
@@ -36,6 +37,9 @@ full-speed-only quirks had to be worked around — see
 - `docs/ESP32_NOTES.md` — firmware notes, step by step, incl. the full-speed workarounds.
 - `src/` — ESP32-S3 firmware (`main.c` HID side, `display.c`, `midi.c`, generated `fonts.c`).
 - `tools/gen_font.py` — regenerates `src/fonts.c`/`fonts.h` from a TTF.
+- `tools/plugiator_import.py` — Plugiator parameter tables + factory presets from the Plug-in
+  Manager's files (see `docs/ESP32_NOTES.md`, Step 5).
+- `reference/`, `data/` — local only (gitignored): third-party manuals and factory presets.
 - `pc_reference/` — small self-contained Python scripts (not copied from any third-party
   project) used to find and verify the protocol, and to keep verifying it quickly without
   needing to flash firmware. Point them at your Maschine Mk2's `/dev/hidrawN` node.

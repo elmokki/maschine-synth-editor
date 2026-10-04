@@ -1,15 +1,13 @@
 /*
- * Step 4: HID round-trip with the Maschine Mk2 over USB host, displays, DIN MIDI.
+ * Step 5: MiniMax editor - Maschine Mk2 over USB host, displays, DIN MIDI.
  *
  * On connect: finds the HID interface (IF2) in the config descriptor,
  * claims it, keeps an interrupt IN transfer running for pads (0x20), and
  * polls buttons/encoders (0x01) with GET_REPORT on EP0 (see poll_report01
- * for why). Logs button presses/releases, main encoder steps and pad
- * presses. Output: all pads are lit dim blue and a pressed pad turns white
- * (0x80), and the two displays (0xE0/0xE1, see display.c) show a test
- * synth-editor UI - one parameter per endless encoder, in a column right
- * under it, changed by turning that encoder. DIN MIDI (midi.c): pads send
- * notes and the parameters send CCs on channel 1; DIN IN is logged.
+ * for why). Buttons and encoders drive the MiniMax editor (editor.c), which
+ * draws on the two displays (0xE0/0xE1, display.c) and sends to the
+ * Plugiator over DIN MIDI (midi.c). Pads are lit dim blue, light up white
+ * while pressed (0x80) and play notes on channel 1.
  *
  * Report layouts are the ones confirmed on PC in docs/PROTOCOL.md; offsets
  * below are into the raw transfer buffer, where byte 0 is the report ID.
@@ -29,6 +27,10 @@
 #include "display.h"
 #include "fonts.h"
 #include "midi.h"
+#include "storage.h"
+#include "editor.h"
+#include "maschine.h"
+#include "usb_recover.h"
 
 static const char *TAG = "maschine";
 
@@ -40,13 +42,14 @@ static const char *TAG = "maschine";
  * packet (0x20 is 65 bytes) are reassembled in report_buf. */
 #define REPORT_BUF_SIZE 128
 #define PAD_LED_REPORT_SIZE 49  /* 0x80 + 16 pads x RGB */
+#define GROUP_LED_REPORT_SIZE 57  /* 0x81 + 8 groups x 2 RGB + 8 transport */
+#define OTHER_LED_REPORT_SIZE 32  /* 0x82 + 31 mono button LEDs */
 
 /* Pad thresholds on the raw 0-4095 value. Cross-talk from a firmly pressed
  * neighbour reaches ~750 (see PROTOCOL.md), so press well above that, with
  * hysteresis so a pad near the threshold doesn't chatter. */
 #define PAD_PRESS_RAW 1000
 #define PAD_RELEASE_RAW 300
-#define PAD_BASE_NOTE 36  /* pad 0 = C1, the usual drum-pad base note */
 
 static const char *const button_names[48] = {
     "Display 1", "Display 2", "Display 3", "Display 4",
@@ -72,7 +75,7 @@ static bool ctrl_busy;
 static int64_t ctrl_last_us;
 static uint32_t ctrl_fail;
 static bool connected;
-static bool out_busy, pad_leds_dirty;
+static bool out_busy, pad_leds_dirty, group_leds_dirty, other_leds_dirty;
 
 /* Input state, for change detection */
 static bool have_report01;
@@ -82,17 +85,12 @@ static uint16_t prev_enc[8];
 static bool pad_down[16];
 
 static uint8_t pad_leds[PAD_LED_REPORT_SIZE];
+static uint8_t group_leds[GROUP_LED_REPORT_SIZE];
+static uint8_t other_leds[OTHER_LED_REPORT_SIZE];
 
 static uint8_t report_buf[REPORT_BUF_SIZE];
 static int report_len;
 
-static void set_pad_led(int pad, uint8_t r, uint8_t g, uint8_t b)
-{
-    uint8_t *p = &pad_leds[1 + pad * 3];
-    p[0] = r & 0x7F;
-    p[1] = g & 0x7F;
-    p[2] = b & 0x7F;
-}
 
 /* One interrupt OUT transfer in flight at a time, shared by pad LEDs and
  * display chunks. Pad LEDs go first so they stay responsive while a
@@ -107,6 +105,14 @@ static void out_kick(void)
         memcpy(buf, pad_leds, PAD_LED_REPORT_SIZE);
         xfer_out->num_bytes = PAD_LED_REPORT_SIZE;
         pad_leds_dirty = false;
+    } else if (group_leds_dirty) {
+        memcpy(buf, group_leds, GROUP_LED_REPORT_SIZE);
+        xfer_out->num_bytes = GROUP_LED_REPORT_SIZE;
+        group_leds_dirty = false;
+    } else if (other_leds_dirty) {
+        memcpy(buf, other_leds, OTHER_LED_REPORT_SIZE);
+        xfer_out->num_bytes = OTHER_LED_REPORT_SIZE;
+        other_leds_dirty = false;
     } else if (display_next_packet(buf)) {
         xfer_out->num_bytes = DISPLAY_PACKET_SIZE;
     } else {
@@ -122,11 +128,68 @@ static void out_kick(void)
     }
 }
 
-static void send_pad_leds(void)
+void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b)
 {
+    /* Each group button has two RGB triples (purpose of the second one
+     * unknown, see PROTOCOL.md); set both the same */
+    uint8_t *p = &group_leds[1 + group * 6];
+    p[0] = p[3] = r & 0x7F;
+    p[1] = p[4] = g & 0x7F;
+    p[2] = p[5] = b & 0x7F;
+    group_leds_dirty = true;
+    out_kick();
+}
+
+/* Mono button LEDs come in blocks of 8 that follow the input bit order
+ * within each block, but the blocks are ordered differently from the input
+ * bytes (mapped on hardware, see docs/PROTOCOL.md):
+ *   0x82 bytes 0-7   <- input byte 1 (Control ... Auto)
+ *   0x82 bytes 8-15  <- input byte 0 (Display buttons 1-8)
+ *   0x82 bytes 16-23 <- input byte 5 (Scene ... Mute)
+ *   0x82 bytes 24-30 <- input byte 2 (Volume ... Note Repeat)
+ *   0x81 bytes 48-55 <- input byte 4 (Restart ... Shift)
+ * Byte 3 is the Group buttons (RGB, see maschine_set_group_led). */
+static uint8_t *button_led(int bit)
+{
+    static const int8_t other_block[6] = {8, 0, 24, -1, -1, 16};
+    int byte = bit / 8, i = bit % 8;
+    if (bit < 0 || bit >= 48) {
+        return NULL;
+    }
+    if (byte == 4) {
+        return &group_leds[1 + 48 + i];
+    }
+    if (other_block[byte] < 0 || (byte == 2 && i == 7)) {
+        return NULL;
+    }
+    return &other_leds[1 + other_block[byte] + i];
+}
+
+void maschine_set_button_led(int bit, uint8_t value)
+{
+    uint8_t *led = button_led(bit);
+    if (!led || *led == (value & 0x7F)) {
+        return;
+    }
+    *led = value & 0x7F;
+    if (led >= group_leds && led < group_leds + GROUP_LED_REPORT_SIZE) {
+        group_leds_dirty = true;
+    } else {
+        other_leds_dirty = true;
+    }
+    out_kick();
+}
+
+void maschine_set_pad_led(int pad, uint8_t r, uint8_t g, uint8_t b)
+{
+    uint8_t *p = &pad_leds[1 + pad * 3];
+    p[0] = r & 0x7F;
+    p[1] = g & 0x7F;
+    p[2] = b & 0x7F;
     pad_leds_dirty = true;
     out_kick();
 }
+
 
 static void out_cb(usb_transfer_t *xfer)
 {
@@ -134,72 +197,11 @@ static void out_cb(usb_transfer_t *xfer)
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         ESP_LOGW(TAG, "OUT transfer status %d (report 0x%02X)",
                  xfer->status, xfer->data_buffer[0]);
+        if (connected && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+            usb_recover_endpoint(dev_hdl, ep_out, TAG);
+        }
     }
     out_kick();
-}
-
-/* Test UI: 8 parameters, one per endless encoder, shown in four 64 px
- * columns per display so each sits right under its encoder. */
-#define PARAM_COUNT 8
-#define ENCODER_UNITS_PER_STEP 10  /* ~1300 units per turn -> ~130 steps */
-#define COLUMN_WIDTH 64
-
-static const char *const param_names[PARAM_COUNT] = {
-    "CUTOFF", "RESO", "ENV AMT", "DRIVE",
-    "ATTACK", "DECAY", "SUSTAIN", "RELEASE",
-};
-static int param_values[PARAM_COUNT] = {64, 20, 80, 0, 5, 40, 100, 30};
-/* Sent on MIDI channel 1 when the value changes; mostly the General MIDI
- * sound controller numbers, the rest picked arbitrarily for testing. */
-static const uint8_t param_cc[PARAM_COUNT] = {74, 71, 47, 76, 73, 75, 79, 72};
-static int encoder_acc[PARAM_COUNT];
-
-static void draw_param(int i)
-{
-    int disp = i / 4;
-    int x = (i % 4) * COLUMN_WIDTH;
-    /* The last column on each display loses x=255 to the panel crop, so
-     * keep every column's content inside a 63 px wide box. */
-    int w = COLUMN_WIDTH - 1;
-    char val[8];
-    snprintf(val, sizeof(val), "%d", param_values[i]);
-
-    display_fill_rect(disp, x, 0, COLUMN_WIDTH, DISPLAY_HEIGHT, false);
-    display_text(disp, x + (w - display_text_width(&font_small, param_names[i])) / 2, 2,
-                 &font_small, param_names[i], true);
-    display_text(disp, x + (w - display_text_width(&font_large, val)) / 2, 20,
-                 &font_large, val, true);
-    display_rect(disp, x + 4, 50, w - 8, 10, true);
-    int fill = (w - 12) * param_values[i] / 127;
-    display_fill_rect(disp, x + 6, 52, fill, 6, true);
-}
-
-static void draw_all(void)
-{
-    for (int d = 0; d < DISPLAY_COUNT; d++) {
-        display_clear(d);
-    }
-    for (int i = 0; i < PARAM_COUNT; i++) {
-        draw_param(i);
-    }
-}
-
-static void param_turn(int i, int delta)
-{
-    encoder_acc[i] += delta;
-    int steps = encoder_acc[i] / ENCODER_UNITS_PER_STEP;
-    if (steps == 0) {
-        return;
-    }
-    encoder_acc[i] -= steps * ENCODER_UNITS_PER_STEP;
-    int v = param_values[i] + steps;
-    v = v < 0 ? 0 : v > 127 ? 127 : v;
-    if (v != param_values[i]) {
-        param_values[i] = v;
-        midi_send(0xB0, param_cc[i], v);
-        draw_param(i);
-        out_kick();
-    }
 }
 
 /* 8 endless encoders: free-running 0-999 counter, wraps both ways */
@@ -233,18 +235,20 @@ static void handle_report01(const uint8_t *buf, int len)
             if (now != was) {
                 const char *name = button_names[bit] ? button_names[bit] : "?";
                 ESP_LOGI(TAG, "button %-14s %s (bit %d)", name, now ? "down" : "up", bit);
+                editor_button(bit, now);
             }
         }
         if (main_enc != prev_main_enc) {
             /* 4-bit wrapping counter, one step per detent */
             int d = ((main_enc - prev_main_enc + 8) & 0x0F) - 8;
-            ESP_LOGI(TAG, "main encoder %+d (raw %d)", d, main_enc);
+            editor_main_encoder(d);
         }
         for (int i = 0; i < 8; i++) {
             if (enc[i] != prev_enc[i]) {
-                param_turn(i, encoder_delta(enc[i], prev_enc[i]));
+                editor_encoder(i, encoder_delta(enc[i], prev_enc[i]));
             }
         }
+        out_kick();
     }
 
     memcpy(prev_buttons, buttons, sizeof(prev_buttons));
@@ -267,28 +271,16 @@ static void handle_report20(const uint8_t *buf, int len)
         }
     }
 
-    bool leds_changed = false;
     for (int pad = 0; pad < 16; pad++) {
         if (!pad_down[pad] && raw[pad] >= PAD_PRESS_RAW) {
             pad_down[pad] = true;
-            set_pad_led(pad, 127, 127, 127);
-            leds_changed = true;
-            ESP_LOGI(TAG, "pad %2d down (raw %d)", pad, raw[pad]);
-            /* Crude velocity from the pressure at the moment the press is
-             * detected; good enough to test MIDI out */
-            int vel = raw[pad] / 32;
-            midi_send(0x90, PAD_BASE_NOTE + pad, vel < 1 ? 1 : vel > 127 ? 127 : vel);
+            editor_pad(pad, true, raw[pad]);
         } else if (pad_down[pad] && raw[pad] <= PAD_RELEASE_RAW) {
             pad_down[pad] = false;
-            set_pad_led(pad, 0, 0, 20);
-            leds_changed = true;
-            ESP_LOGI(TAG, "pad %2d up", pad);
-            midi_send(0x80, PAD_BASE_NOTE + pad, 0);
+            editor_pad(pad, false, 0);
         }
     }
-    if (leds_changed) {
-        send_pad_leds();
-    }
+    out_kick();
 }
 
 /* Buttons/encoders (0x01) are fetched with HID GET_REPORT on EP0, not
@@ -377,6 +369,9 @@ static void in_cb(usb_transfer_t *xfer)
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
             ESP_LOGW(TAG, "IN transfer status %d", xfer->status);
+            if (connected) {
+                usb_recover_endpoint(dev_hdl, ep_in, TAG);
+            }
         }
         report_len = 0;
     } else if (xfer->actual_num_bytes > 0) {
@@ -488,13 +483,13 @@ static void handle_new_device(uint8_t dev_addr)
     xfer_in->bEndpointAddress = ep_in;
     ESP_ERROR_CHECK(usb_host_transfer_submit(xfer_in));
 
-    for (int pad = 0; pad < 16; pad++) {
-        set_pad_led(pad, 0, 0, 20);
-    }
     display_invalidate_all();  /* redraw everything on (re)connect */
-    send_pad_leds();
+    group_leds_dirty = true;
+    other_leds_dirty = true;
+    pad_leds_dirty = true;
 
     ESP_LOGI(TAG, ">>> Maschine Mk2 HID interface claimed, listening. <<<");
+    editor_connected();
 }
 
 static void handle_device_gone(usb_device_handle_t gone_hdl)
@@ -541,6 +536,8 @@ static void usb_lib_task(void *arg)
 
 void app_main(void)
 {
+    storage_init();
+
     ESP_LOGI(TAG, "Installing USB Host Library...");
 
     const usb_host_config_t host_config = {
@@ -572,11 +569,17 @@ void app_main(void)
     xfer_ctrl->callback = ctrl_cb;
     xfer_ctrl->timeout_ms = 1000;
     pad_leds[0] = 0x80;
-    draw_all();
+    group_leds[0] = 0x81;
+    other_leds[0] = 0x82;
+    editor_init();
 
     ESP_LOGI(TAG, "Waiting for the Maschine Mk2...");
 
+    /* Wake up regularly even without USB events, for UI timeouts */
     while (1) {
-        usb_host_client_handle_events(client_hdl, portMAX_DELAY);
+        usb_host_client_handle_events(client_hdl, pdMS_TO_TICKS(20));
+        poll_report01();
+        editor_tick(esp_timer_get_time());
+        out_kick();
     }
 }

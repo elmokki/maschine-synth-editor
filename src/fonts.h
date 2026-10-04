@@ -10,10 +10,14 @@ typedef struct {
 
 typedef struct {
     uint8_t height;    /* line height, same for every glyph */
+    uint8_t cap_top;   /* rows from the top of the line to the top of 'H' */
+    uint8_t cap_height;/* height of 'H', for centering text vertically */
     uint8_t first, last;
     const glyph_t *glyphs;
     const uint8_t *bitmap;
 } font_t;
 
-extern const font_t font_small;  /* DejaVu Sans Condensed 11pt, 14px line */
-extern const font_t font_large;  /* DejaVu Sans Condensed 20pt, 24px line */
+extern const font_t font_tiny;  /* Spleen 5x8, 8px line */
+extern const font_t font_small;  /* Spleen 6x12, 12px line */
+extern const font_t font_medium;  /* Spleen 8x16, 16px line */
+extern const font_t font_large;  /* Spleen 12x24, 24px line */

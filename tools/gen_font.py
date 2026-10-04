@@ -1,34 +1,94 @@
 #!/usr/bin/env python3
-"""Pre-render TTF fonts to 1bpp bitmap fonts for the ESP32 firmware.
+"""Convert fonts to 1bpp bitmap fonts for the ESP32 firmware.
 
 Writes src/fonts.c + src/fonts.h. Run from the project root:
-    python3 tools/gen_font.py [path/to/DejaVuSansCondensed.ttf]
+    python3 tools/gen_font.py
 
-Glyphs are ASCII 32-126, rendered without anti-aliasing. Every glyph has
-the font's full line height; rows are MSB-first, (width+7)/8 bytes each -
-the same bit order as the Maschine's display framebuffer.
+Sources are BDF pixel fonts (drawn for exactly this kind of 1-bit
+display; used as-is) or TTF fonts (rendered without anti-aliasing). Glyphs
+are ASCII 32-126; every glyph has the font's full line height; rows are
+MSB-first, (width+7)/8 bytes each - the same bit order as the Maschine's
+display framebuffer.
 
-DejaVu fonts are under the Bitstream Vera / DejaVu license, which allows
-embedding (including as converted bitmaps) in software.
+Current fonts: Spleen by Frederic Cambus (BSD 2-clause, see
+tools/fonts/LICENSE.spleen).
 """
 import os
-import sys
 
-from PIL import Image, ImageDraw, ImageFont
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+FONT_DIR = os.path.join(ROOT, "tools", "fonts")
 
-FONT_PATH = sys.argv[1] if len(sys.argv) > 1 else \
-    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSansCondensed.ttf"
-
-# (C name, point size)
-FONTS = [("font_small", 11), ("font_large", 20)]
+# (C name, source file, TTF point size or None for BDF, description)
+FONTS = [
+    ("font_tiny", "spleen-5x8.bdf", None, "Spleen 5x8"),
+    ("font_small", "spleen-6x12.bdf", None, "Spleen 6x12"),
+    ("font_medium", "spleen-8x16.bdf", None, "Spleen 8x16"),
+    ("font_large", "spleen-12x24.bdf", None, "Spleen 12x24"),
+]
 FIRST, LAST = 32, 126
 
 
-def render(size):
-    font = ImageFont.truetype(FONT_PATH, size)
+def pack(rows, width):
+    """rows: list of lists of 0/1 -> MSB-first bytes"""
+    stride = (width + 7) // 8
+    data = bytearray(stride * len(rows))
+    for y, row in enumerate(rows):
+        for x, bit in enumerate(row):
+            if bit:
+                data[y * stride + (x >> 3)] |= 0x80 >> (x & 7)
+    return bytes(data)
+
+
+def load_bdf(path):
+    """Returns (height, {code: (advance, rows)}) with rows covering the
+    full line height, glyph placed on the baseline."""
+    ascent = descent = None
+    glyphs = {}
+    lines = iter(open(path, encoding="latin-1").read().splitlines())
+    for line in lines:
+        if line.startswith("FONT_ASCENT"):
+            ascent = int(line.split()[1])
+        elif line.startswith("FONT_DESCENT"):
+            descent = int(line.split()[1])
+        elif line.startswith("STARTCHAR"):
+            code = advance = bbx = None
+            bitmap = []
+            for line in lines:
+                if line.startswith("ENCODING"):
+                    code = int(line.split()[1])
+                elif line.startswith("DWIDTH"):
+                    advance = int(line.split()[1])
+                elif line.startswith("BBX"):
+                    bbx = [int(v) for v in line.split()[1:]]
+                elif line == "BITMAP":
+                    for line in lines:
+                        if line == "ENDCHAR":
+                            break
+                        bitmap.append(int(line, 16))
+                    break
+            if code is None or not FIRST <= code <= LAST:
+                continue
+            w, h, xoff, yoff = bbx
+            nbits = ((w + 7) // 8) * 8
+            height = ascent + descent
+            rows = [[0] * advance for _ in range(height)]
+            top = ascent - (h + yoff)
+            for gy, bits in enumerate(bitmap):
+                for gx in range(w):
+                    if bits & (1 << (nbits - 1 - gx)):
+                        x, y = gx + xoff, top + gy
+                        if 0 <= x < advance and 0 <= y < height:
+                            rows[y][x] = 1
+            glyphs[code] = (advance, rows)
+    return ascent + descent, glyphs
+
+
+def load_ttf(path, size):
+    from PIL import Image, ImageDraw, ImageFont
+    font = ImageFont.truetype(path, size)
     ascent, descent = font.getmetrics()
     height = ascent + descent
-    glyphs = []
+    glyphs = {}
     for code in range(FIRST, LAST + 1):
         ch = chr(code)
         advance = round(font.getlength(ch))
@@ -38,20 +98,20 @@ def render(size):
         draw = ImageDraw.Draw(img)
         draw.fontmode = "1"
         draw.text((0, 0), ch, font=font, fill=1)
-        stride = (width + 7) // 8
-        data = bytearray(stride * height)
-        for y in range(height):
-            for x in range(width):
-                if img.getpixel((x, y)):
-                    data[y * stride + (x >> 3)] |= 0x80 >> (x & 7)
-        glyphs.append((ch, width, advance, bytes(data)))
+        rows = [[1 if img.getpixel((x, y)) else 0 for x in range(width)] for y in range(height)]
+        glyphs[code] = (advance, rows)
     return height, glyphs
 
 
+def cap_metrics(glyphs):
+    """Top row and height of the ink of 'H'"""
+    _, rows = glyphs[ord("H")]
+    ink = [y for y, row in enumerate(rows) if any(row)]
+    return ink[0], ink[-1] - ink[0] + 1
+
+
 def main():
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-    c = ["/* Generated by tools/gen_font.py from %s - do not edit. */"
-         % os.path.basename(FONT_PATH), '#include "fonts.h"', ""]
+    c = ['/* Generated by tools/gen_font.py - do not edit. */', '#include "fonts.h"', ""]
     h = ["/* Generated by tools/gen_font.py - do not edit. */",
          "#pragma once", "#include <stdint.h>", "",
          "typedef struct {",
@@ -61,17 +121,23 @@ def main():
          "} glyph_t;", "",
          "typedef struct {",
          "    uint8_t height;    /* line height, same for every glyph */",
+         "    uint8_t cap_top;   /* rows from the top of the line to the top of 'H' */",
+         "    uint8_t cap_height;/* height of 'H', for centering text vertically */",
          "    uint8_t first, last;",
          "    const glyph_t *glyphs;",
          "    const uint8_t *bitmap;",
          "} font_t;", ""]
-    for name, size in FONTS:
-        height, glyphs = render(size)
+    for name, src, size, desc in FONTS:
+        path = os.path.join(FONT_DIR, src)
+        height, glyphs = load_ttf(path, size) if size else load_bdf(path)
+        cap_top, cap_height = cap_metrics(glyphs)
         bitmap = bytearray()
         table = []
-        for ch, width, advance, data in glyphs:
-            table.append("    {%d, %d, %d}, /* %r */" % (len(bitmap), width, advance, ch))
-            bitmap += data
+        for code in range(FIRST, LAST + 1):
+            advance, rows = glyphs.get(code, glyphs[ord("?")])
+            width = max(len(rows[0]), 1)
+            table.append("    {%d, %d, %d}, /* %r */" % (len(bitmap), width, advance, chr(code)))
+            bitmap += pack(rows, width)
         c.append("static const uint8_t %s_bitmap[%d] = {" % (name, len(bitmap)))
         for i in range(0, len(bitmap), 16):
             c.append("    " + ", ".join("0x%02X" % b for b in bitmap[i:i + 16]) + ",")
@@ -79,14 +145,14 @@ def main():
         c.append("static const glyph_t %s_glyphs[] = {" % name)
         c += table
         c.append("};")
-        c.append("const font_t %s = {%d, %d, %d, %s_glyphs, %s_bitmap};"
-                 % (name, height, FIRST, LAST, name, name))
+        c.append("const font_t %s = {%d, %d, %d, %d, %d, %s_glyphs, %s_bitmap};"
+                 % (name, height, cap_top, cap_height, FIRST, LAST, name, name))
         c.append("")
-        h.append("extern const font_t %s;  /* DejaVu Sans Condensed %dpt, %dpx line */"
-                 % (name, size, height))
-        print("%s: %dpt, line height %d, %d bytes" % (name, size, height, len(bitmap)))
-    open(os.path.join(root, "src", "fonts.c"), "w").write("\n".join(c) + "\n")
-    open(os.path.join(root, "src", "fonts.h"), "w").write("\n".join(h) + "\n")
+        h.append("extern const font_t %s;  /* %s, %dpx line */" % (name, desc, height))
+        print("%s: %s, line %d, cap %d+%d, %d bytes"
+              % (name, desc, height, cap_top, cap_height, len(bitmap)))
+    open(os.path.join(ROOT, "src", "fonts.c"), "w").write("\n".join(c) + "\n")
+    open(os.path.join(ROOT, "src", "fonts.h"), "w").write("\n".join(h) + "\n")
 
 
 if __name__ == "__main__":

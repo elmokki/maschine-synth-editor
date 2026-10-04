@@ -161,16 +161,24 @@ See the pad section above for `pad_idx` — no remap needed.
   triples independently light the correct group button, in A→H order. What the *second* triple
   is for in practice (selected-state? has-content indicator?) wasn't determined — only that it's
   a second, independently-settable RGB value.
-- Bytes 48-55: 8 transport buttons, mono (single brightness byte each): Restart, Step-Left,
-  Step-Right, Grid, Play, Rec, Erase, Shift (assumed in the same order as the input bit map —
-  only spot-checked, not individually confirmed by name).
+- Bytes 48-55: 8 transport buttons, mono: Restart, Step-Left, Step-Right, Grid, Play, Rec,
+  Erase, Shift — i.e. input byte 4 (bits 32-39) in order. **Confirmed 1-by-1 on hardware.**
 
 ### `0x82` OUT — other button LEDs (31 bytes after report-ID, mono only)
 
-Covers the remaining named buttons (display buttons, Control/Step/Browse cluster,
-Scene/Pattern/etc. cluster, Volume/Swing/Tempo/Enter/NoteRepeat). Only spot-checked a handful
-of slots (0,1,2,28,29,30), not an exhaustive 1-by-1 confirmation like the input bit map got —
-redo properly before relying on this for real UI feedback.
+**Fully mapped on hardware** (an on-device wizard lit one slot at a time and recorded which
+button the user pressed). Every slot has a button. The LEDs come in blocks of 8 that keep the
+input bit order *within* each block, but the blocks are ordered differently from the input
+bytes:
+
+| `0x82` bytes | Buttons (input bits) |
+|---|---|
+| 0-7 | input byte 1: Control, Step, Browse, Sampling, Arrow-Left, Arrow-Right, All, Auto (8-15) |
+| 8-15 | input byte 0: Display buttons 1-8 (0-7) |
+| 16-23 | input byte 5: Scene, Pattern, Pad Mode, Navigate, Duplicate, Select, Solo, Mute (40-47) |
+| 24-30 | input byte 2: Volume, Swing, Tempo, Arrow-Left #2, Arrow-Right #2, Enter, Note Repeat (16-22) |
+
+Together with `0x81` (Group RGB + transport), every button on the device has an LED.
 
 ### `0xE0` / `0xE1` OUT — displays (265 bytes per write: 9-byte header + 256 data bytes)
 
@@ -233,7 +241,6 @@ Decoded fields (byte offsets within the 11-byte report):
 - Push-click on encoders, if any.
 - Byte 6 bits 1-7 of the button bitfield (bit 0 is a probable red herring, see button table).
 - Exact meaning of the group buttons' *second* RGB triple.
-- Full 1-by-1 confirmation of `0x82` and the transport half of `0x81` (only spot-checked).
 
 ## Tools
 

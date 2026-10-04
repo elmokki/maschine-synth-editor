@@ -3,13 +3,14 @@
 #include "esp_log.h"
 #include "usb/usb_helpers.h"
 #include "midi.h"
+#include "usb_recover.h"
 
 static const char *TAG = "midi";
 
 #define MIDI_IF 1
 #define MIDI_CABLE 0         /* the Maschine's only external MIDI port */
 #define MIDI_BUF_SIZE 64     /* one full-speed bulk packet = 16 events */
-#define QUEUE_LEN 64         /* events, must be a power of two */
+#define QUEUE_LEN 256        /* events, must be a power of two; a full patch is ~75 */
 #define FS_BULK_MPS 64
 
 static usb_host_client_handle_t client_hdl;
@@ -53,6 +54,9 @@ static void out_cb(usb_transfer_t *xfer)
     out_busy = false;
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         ESP_LOGW(TAG, "OUT transfer status %d", xfer->status);
+        if (attached && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+            usb_recover_endpoint(dev_hdl, ep_out, TAG);
+        }
     }
     out_kick();
 }
@@ -96,6 +100,9 @@ static void in_cb(usb_transfer_t *xfer)
         }
     } else if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
         ESP_LOGW(TAG, "IN transfer status %d", xfer->status);
+        if (attached) {
+            usb_recover_endpoint(dev_hdl, ep_in, TAG);
+        }
     }
 
     if (attached) {

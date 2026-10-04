@@ -5,3 +5,10 @@ sdkconfig.*
 
 compile_commands.json
 __pycache__/
+
+# Third-party manuals/images - local reference only, never commit
+reference/
+# LittleFS image source - generated, contains third-party factory presets
+data/
+# ESP-IDF component manager downloads (pinned in dependencies.lock)
+managed_components/
