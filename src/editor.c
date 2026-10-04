@@ -1,4 +1,5 @@
 #include <dirent.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,13 +71,22 @@ static const char *TAG = "editor";
 #define LED_DIM 8
 #define LED_ON 127
 
-/* Group button LEDs: dim = section exists (violet tint if it has several
- * pages); the selected section is cyan, and its page shows on the button's
- * left/right LEDs: page 1 = left, page 2 = right, page 3 = whole button.
- * A one-page section lights the whole button. */
-#define LED_SECTION_DIM 0, 4, 12        /* one page */
-#define LED_SECTION_DIM_MULTI 7, 0, 12  /* several pages: a slightly violet tint */
-static const uint8_t led_section_on[3] = {30, 90, 127};
+/* Group button LEDs, in the synth's colour theme: dim = section exists
+ * (sliding to its complementary colour if it has several pages); the selected section is bright, and its
+ * page shows on the button's left/right LEDs: page 1 = left, page 2 =
+ * right, page 3 = whole button. A one-page section lights the whole
+ * button. */
+/* Default colour theme, for synths without their own (see synth_t) */
+static const uint8_t default_bright[3] = {30, 90, 127}, default_dim[3] = {0, 4, 12};
+/* A section with several pages: a gradient between the theme's dim colour
+ * and its complementary colour (hue + 180 degrees) across the button's
+ * left/right LEDs, a bit brighter than a one-page section, so it stands out
+ * in any theme without going pale */
+#define MULTI_PAGE_GAIN_PCT 150
+/* ...and the gradient slowly slides from side to side (0 = static) */
+#define MULTI_PAGE_SLIDE_PERIOD_US 4000000
+#define LED_ANIM_INTERVAL_US 50000
+static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Scene), and the active one */
@@ -167,6 +177,28 @@ static int section_page_count(int section)
     return n;
 }
 
+static bool has_theme(void)
+{
+    return synth->theme_bright[0] || synth->theme_bright[1] || synth->theme_bright[2];
+}
+
+static const uint8_t *theme_bright(void)
+{
+    return has_theme() ? synth->theme_bright : default_bright;
+}
+
+static const uint8_t *theme_dim(void)
+{
+    return has_theme() ? synth->theme_dim : default_dim;
+}
+
+/* Pads at rest, in the synth's theme */
+static void pad_idle(int pad)
+{
+    const uint8_t *c = theme_dim();
+    maschine_set_pad_led(pad, c[0], c[1], c[2]);
+}
+
 static void update_group_leds(void)
 {
     for (int g = 0; g < 8; g++) {
@@ -179,14 +211,34 @@ static void update_group_leds(void)
             int right = lit_r ? 100 : LED_HALF_DIM;
             uint8_t l[3], r[3];
             for (int i = 0; i < 3; i++) {
-                l[i] = led_section_on[i] * left / 100;
-                r[i] = led_section_on[i] * right / 100;
+                l[i] = theme_bright()[i] * left / 100;
+                r[i] = theme_bright()[i] * right / 100;
             }
             maschine_set_group_led_lr(g, l, r);
         } else if (section_page_count(g) > 1) {
-            maschine_set_group_led(g, LED_SECTION_DIM_MULTI);
+            /* f: 0 = colour left / white right, 1 = the other way round */
+            float f = 0.0f;
+            if (MULTI_PAGE_SLIDE_PERIOD_US) {
+                int64_t t = esp_timer_get_time() % MULTI_PAGE_SLIDE_PERIOD_US;
+                f = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * t / MULTI_PAGE_SLIDE_PERIOD_US);
+            }
+            const uint8_t *d = theme_dim();
+            int hi = d[0] > d[1] ? (d[0] > d[2] ? d[0] : d[2]) : (d[1] > d[2] ? d[1] : d[2]);
+            int lo = d[0] < d[1] ? (d[0] < d[2] ? d[0] : d[2]) : (d[1] < d[2] ? d[1] : d[2]);
+            uint8_t l[3], r[3];
+            const uint8_t *acc = synth->theme_accent;
+            bool own_accent = has_theme() && (acc[0] || acc[1] || acc[2]);
+            for (int i = 0; i < 3; i++) {
+                float c = d[i] * MULTI_PAGE_GAIN_PCT / 100.0f;
+                float w = own_accent ? acc[i]
+                                     : (hi + lo - d[i]) * MULTI_PAGE_GAIN_PCT / 100.0f;  /* complement */
+                l[i] = (uint8_t)(c + (w - c) * f + 0.5f);
+                r[i] = (uint8_t)(w + (c - w) * f + 0.5f);
+            }
+            maschine_set_group_led_lr(g, l, r);
         } else if (section_first_page(g) != NONE) {
-            maschine_set_group_led(g, LED_SECTION_DIM);
+            const uint8_t *c = theme_dim();
+            maschine_set_group_led(g, c[0], c[1], c[2]);
         } else {
             maschine_set_group_led(g, 0, 0, 0);
         }
@@ -626,7 +678,7 @@ static void leave_store(void)
     textentry_stop();
     mode = MODE_EDIT;
     for (int pad = 0; pad < 16; pad++) {
-        maschine_set_pad_led(pad, 0, 0, 20);
+        pad_idle(pad);
     }
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
@@ -756,7 +808,7 @@ static void store_button(int bit)
             textentry_stop();
             mode = MODE_STORE;
             for (int pad = 0; pad < 16; pad++) {
-                maschine_set_pad_led(pad, 0, 0, 20);
+                pad_idle(pad);
             }
             draw_store();
         }
@@ -1050,6 +1102,9 @@ static void switch_synth(int i)
     synth_confirm = -1;
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
+    }
+    for (int pad = 0; pad < 16; pad++) {
+        pad_idle(pad);  /* the new synth's colours */
     }
     draw_page();
     update_group_leds();
@@ -1352,6 +1407,10 @@ static void save_settings(void);
 static void editor_tick_impl(int64_t now_us)
 {
     textentry_tick(now_us);
+    if (MULTI_PAGE_SLIDE_PERIOD_US && now_us > led_anim_at) {
+        led_anim_at = now_us + LED_ANIM_INTERVAL_US;
+        update_group_leds();
+    }
     if (activating_until && now_us > activating_until) {
         activating_until = 0;
         for (int d = 0; d < DISPLAY_COUNT; d++) {
@@ -1443,7 +1502,7 @@ static void editor_init_impl(void)
     load_patch_list();
     read_last_patch();
     for (int pad = 0; pad < 16; pad++) {
-        maschine_set_pad_led(pad, 0, 0, 20);
+        pad_idle(pad);
     }
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
@@ -1489,7 +1548,7 @@ static void editor_pad_impl(int pad, bool down, int raw)
         maschine_set_pad_led(pad, 127, 127, 127);
     } else {
         midi_send(0x80 | channel, note, 0);
-        maschine_set_pad_led(pad, 0, 0, 20);
+        pad_idle(pad);
     }
 }
 

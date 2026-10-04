@@ -106,6 +106,16 @@ typedef struct {
     /* Optional: other device-level settings sent the same way after
      * activate, as (setting index, CC) pairs, terminated by cc 0 */
     const synth_device_cc_t *device_ccs;
+
+    /* Colour theme, RGB 0-127, so each synth is recognisable at a glance:
+     * bright = the selected section's Group button, dim = other sections
+     * and the pads at rest. All zero = the editor's default blue. */
+    uint8_t theme_bright[3], theme_dim[3];
+    /* Optional: the other end of a multi-page section's gradient; all zero
+     * = theme_dim's complementary colour. LED channels differ a lot in
+     * brightness (green >> blue > red), so a computed complement can drown
+     * a reddish theme. */
+    uint8_t theme_accent[3];
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */

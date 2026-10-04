@@ -138,12 +138,16 @@ void maschine_set_group_led_lr(int group, const uint8_t left[3], const uint8_t r
 {
     /* Each group button has two RGB LEDs: left, then right (see PROTOCOL.md) */
     uint8_t *p = &group_leds[1 + group * 6];
+    bool changed = false;
     for (int i = 0; i < 3; i++) {
+        changed |= p[i] != (left[i] & 0x7F) || p[3 + i] != (right[i] & 0x7F);
         p[i] = left[i] & 0x7F;
         p[3 + i] = right[i] & 0x7F;
     }
-    group_leds_dirty = true;
-    out_kick();
+    if (changed) {  /* animated LEDs get set often; only send real changes */
+        group_leds_dirty = true;
+        out_kick();
+    }
 }
 
 void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b)
