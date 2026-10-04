@@ -1,13 +1,13 @@
 /*
- * MiniMax (Plugiator) editor UI on the Maschine's displays.
+ * The editor UI on the Maschine's displays, for whichever synth driver is
+ * active (see synth.h; MiniMax for now).
  *
  * Pages of 8 parameters, one per endless encoder, plus up to 8 switches on
- * the display buttons. The main encoder and the top arrow buttons change
- * page; the arrows next to Enter (or the main encoder, while Browse is
- * toggled on) browse the patch library on LittleFS and Enter loads the
- * selected patch (sends every
- * parameter, so the Plugiator's state is fully known afterwards). Rec
- * stores/renames/deletes patches.
+ * the display buttons; Group buttons pick sections. The main encoder and
+ * the top arrow buttons change page; the arrows next to Enter (or the main
+ * encoder, while Browse is toggled on) browse the patch library on
+ * LittleFS and Enter loads the selected patch. Rec stores/renames/deletes
+ * patches, Control opens the synth's setup (MIDI channel, pad note, ...).
  *
  * Only draws into the display framebuffers and queues MIDI; the caller
  * (main.c) pushes dirty display chunks out afterwards. Not thread-safe:

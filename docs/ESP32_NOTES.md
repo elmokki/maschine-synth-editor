@@ -91,6 +91,17 @@ turns them into `src/minimax_params.c/.h` (committed — MIDI implementation fac
 `data/plugiator/minimax/NNN Name` (gitignored — use-audio's factory presets). 6-position knobs
 use 0/22/44/66/88/110, switches 0/127.
 
+**Architecture:** `src/editor.c` is the generic editor (UI, navigation, patch library, settings)
+and knows nothing about any particular synth; each synth is a driver behind `src/synth.h`
+(`src/synth_minimax.c` is the first): it owns the parameter values and provides the pages and
+settings, formatting/stepping/sending of parameters, an optional picture per parameter
+(waveforms; envelopes later), and patch load/save. A second synth = a new driver file.
+
+**Setup** (Control button): the active synth's settings in the same column layout, one per
+encoder — every driver starts with `CHANNEL` and `PAD LOW` (lowest pad note), Rolands will add a
+device ID. Saved as `NAME=value` lines in `/lfs/settings/<synth>` 5 s after the last change. An
+input channel (for DIN IN) will be added when a synth needs it; the Plugiator doesn't.
+
 **Editor** (`src/editor.c`), the navigation model meant for every synth:
 - Group buttons A-H select a section, pressing the current one again steps to its next page;
   the main encoder and the top arrow pair step through all pages; Navigate (held) shows the
@@ -111,8 +122,9 @@ use 0/22/44/66/88/110, switches 0/127.
   (pads become a phone keypad, `src/textentry.c`), DELETE (press twice). Factory patches
   (000-099) are read-only.
 - The last loaded patch is remembered (`/lfs/state/minimax_last`, written 5 s after a patch
-  load and only if it changed) and sent again on the first connect after boot; `099 Init` if
-  nothing is remembered.
+  load and only if it changed) and sent again on the first connect after boot; the synth's
+  default patch (`099 Init`) if nothing is remembered or it's gone. Deleting the loaded patch
+  loads the one before it in number order.
 - The Plugiator can't report its state (no MIDI OUT on DIN), so values show "--" until a patch
   is loaded or the parameter is touched. Patch load sends every parameter (verified byte-exact
   on the PC side).
