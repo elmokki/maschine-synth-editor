@@ -35,6 +35,10 @@ The device has two firmware personalities:
 IF2 (HID) is what shows up as e.g. `/dev/hidraw6` on Linux (exact number varies by system —
 match on `HID_ID=...17CCp00001140` via `udevadm`/sysfs, not a hardcoded path).
 
+**On a full-speed host (e.g. ESP32-S3), `0x01` doesn't arrive on the interrupt pipe at all** —
+the 500 Hz pad stream fills every 1 ms poll. Read it with HID GET_REPORT on EP0 instead; see
+`docs/ESP32_NOTES.md` (Step 2).
+
 Despite the HID interface's small 64-byte max packet, a single `write()` of a 265-byte HID
 output report is accepted and transmitted in full — the kernel/USB stack chunks it into multiple
 packets transparently. No special handling needed on the host side for this.

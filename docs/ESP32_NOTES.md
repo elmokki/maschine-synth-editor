@@ -5,7 +5,7 @@ ESP32-S3-WROOM-1 **N16R8** (16MB flash, 8MB octal PSRAM, 44-pin, USB Type-C) —
 the EZ1 project, different batch" per the user. Matches PlatformIO's `esp32-s3-devkitc1-n16r8`
 board definition.
 
-## Step 1 (current): device detection only
+## Step 1: device detection only
 
 `src/main.c` installs ESP-IDF's native USB Host Library (`usb/usb_host.h`), waits for a device
 to enumerate, opens it, reads the device descriptor, and prints VID/PID — flagging it if it
@@ -23,6 +23,40 @@ Maschine powers up from the board's VBUS (OTG jumper fix works) and enumerates ~
 are also detected correctly at boot. Never plug the OTG port into a PC while the jumper is
 bridged — the board would back-feed 5V into the PC's port.
 
+## Step 2: HID round-trip — working
+
+`src/main.c` claims IF2 and confirms both directions on hardware: pad presses (`0x20`) light the
+pressed pad white via `0x80` (correct pad every time), and button / main encoder / endless encoder
+events from `0x01` are logged by name. Two full-speed-specific findings, neither visible on the
+PC (which talks to the Maschine at high speed through the kernel's HID driver):
+
+- **`0x01` never arrives on the interrupt IN pipe.** The ESP32-S3 is a full-speed-only host, so
+  the interrupt endpoint (`bInterval` 1) is polled once per 1 ms frame. The Maschine streams pad
+  reports continuously at 500 Hz, and each `0x20` report is 65 bytes = 2 packets (64 + 1), so
+  the pad stream fills every single poll (measured: exactly 500 pad reports/s, zero `0x01`
+  reports even while pressing buttons). Fix: read `0x01` with a HID **GET_REPORT** control
+  request on EP0 instead (`bmRequestType 0xA1, bRequest 0x01, wValue 0x0101, wIndex 2,
+  wLength 25`). The Maschine answers it fine, ~170 Hz with no failures, and it doesn't slow the
+  pad stream.
+- **ESP-IDF's HCD asserts on multi-packet interrupt IN transfers ending in a short packet**
+  (`assert failed: _buffer_parse_intr hcd_dwc.c:2437`, crash loop on connect). Every `0x20`
+  report ends that way. Fix: submit IN transfers of exactly one MPS (64 bytes) and reassemble
+  reports in software — a report is complete on a short packet or once it reaches its known
+  length (`0x01` 25, `0x20` 65).
+
+## Step 3 (current): displays — working
+
+`src/display.c` keeps a 1bpp framebuffer per display, tracks which 8-row chunks changed, and
+`main.c` streams only those as `0xE0`/`0xE1` reports (265 bytes, 5 packets each) over the
+interrupt OUT pipe, sharing it with pad LEDs (pad LEDs get priority). ESP-IDF's HCD handles
+these multi-packet interrupt OUT transfers fine — the assert above is IN-only.
+
+Fonts are DejaVu Sans Condensed pre-rendered to bitmaps by `tools/gen_font.py` (generates
+`src/fonts.c`/`fonts.h`; 11pt → 14 px line, 20pt → 24 px line). Test UI: 8 parameters, one per
+endless encoder, in a 64 px column right under it (name, value 0-127, bar), 10 encoder units per
+step (~130 steps per turn). Confirmed on hardware: layout lines up with the encoders, updates
+feel responsive, and pads keep working while turning encoders.
+
 ## Flash-size mismatch warning — fixed, and why it happened
 
 `pio run -t compiledb` initially warned `Flash memory size mismatch detected. Expected 8MB,
@@ -36,8 +70,7 @@ clean after: no warning, `pio run` shows the full 16MB (16777216 bytes) as avail
 
 ## Next steps (after device detection is confirmed working)
 
-1. Claim the HID interface (interface 2 in `docs/PROTOCOL.md`'s topology table) and do a single
-   round-trip: read one `0x01` report, light one pad via `0x80`.
+1. ~~Claim the HID interface and do a round-trip~~ — done, see Step 2.
 2. Separately, bring up the USB-MIDI class interface (interface 1) for DIN MIDI — this is
    architecturally independent of the HID work (see `docs/PROTOCOL.md`), consider using TinyUSB's
    host MIDI class driver for it rather than hand-rolling anything, since it's a completely
