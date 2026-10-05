@@ -158,6 +158,11 @@ typedef struct {
      * current sound (Auto button); sysex_in gets every SysEx arriving */
     void (*read)(void);
     void (*sysex_in)(const uint8_t *data, size_t len);
+
+    /* Optional: a one-off job on the Setup screen's display button 8,
+     * pressed twice to confirm (e.g. import the synth's own sounds) */
+    const char *action_name;
+    void (*action)(void);
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
@@ -169,6 +174,9 @@ void synth_redraw_page(void);
  * e.g. another part selected), and a short note in the header */
 void synth_redraw(void);
 void synth_notice(const char *text);
+/* Provided by the editor: re-read the patch list (files were added or
+ * removed by the driver) */
+void synth_patches_changed(void);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;

@@ -12,10 +12,13 @@
  *
  * A patch file is a tone: its 246 bytes as in the Tone Temporary Area.
  */
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "display.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "fonts.h"
 #include "midi.h"
 #include "storage.h"
@@ -27,6 +30,7 @@ static const char *TAG = "d110";
 #define COMMON_LEN 0x0E
 #define PARTIAL_LEN 0x3A
 #define TEMP_TONE_BASE 0x040000  /* part 1; parts 0xF6 apart (7-bit address) */
+#define TEMP_TIMBRE_BASE 0x030000  /* part 1; parts 0x10 apart */
 #define MODEL_ID 0x16
 #define PARTS 8
 
@@ -350,6 +354,137 @@ static void request_tone(void)
     midi_send_sysex(msg, sizeof(msg));
 }
 
+/* ---- import: the D-110's own tones into the library ----
+ * The part's timbre is pointed at each tone in turn (group a, b, i x 64),
+ * the tone read back and saved as patch 001-192; then the part gets its
+ * own timbre back. Needs the D-110's MIDI OUT connected. */
+#define IMPORT_GROUPS 3
+#define IMPORT_COUNT (IMPORT_GROUPS * 64)
+#define IMPORT_SETTLE_US 80000     /* after setting the timbre, before asking */
+#define IMPORT_TIMEOUT_US 1000000
+typedef enum { IMP_IDLE, IMP_ORIGINAL, IMP_SET, IMP_SETTLE, IMP_REPLY } imp_stage_t;
+static imp_stage_t imp_stage;
+static int imp_index, imp_saved;
+static uint8_t imp_original[2];  /* the part's tone group and number */
+static int64_t imp_deadline;
+
+static void send_timbre(const uint8_t *group_number)
+{
+    int a = (TEMP_TIMBRE_BASE >> 16 & 0x7F) * 16384 + (TEMP_TIMBRE_BASE >> 8 & 0x7F) * 128 + part * 0x10;
+    uint8_t msg[] = {0xF0, 0x41, device_id(), MODEL_ID, 0x12, a >> 14 & 0x7F, a >> 7 & 0x7F, a & 0x7F,
+                     group_number[0], group_number[1], 0, 0xF7};
+    int sum = 0;
+    for (int i = 5; i < 10; i++) {
+        sum += msg[i];
+    }
+    msg[10] = (128 - (sum & 0x7F)) & 0x7F;
+    midi_send_sysex(msg, sizeof(msg));
+}
+
+static void request_timbre(void)
+{
+    int a = (TEMP_TIMBRE_BASE >> 16 & 0x7F) * 16384 + (TEMP_TIMBRE_BASE >> 8 & 0x7F) * 128 + part * 0x10;
+    uint8_t msg[] = {0xF0, 0x41, device_id(), MODEL_ID, 0x11, a >> 14 & 0x7F, a >> 7 & 0x7F, a & 0x7F,
+                     0x00, 0x00, 0x02, 0, 0xF7};
+    int sum = 0;
+    for (int i = 5; i < 11; i++) {
+        sum += msg[i];
+    }
+    msg[11] = (128 - (sum & 0x7F)) & 0x7F;
+    midi_send_sysex(msg, sizeof(msg));
+}
+
+static void import_finish(const char *why)
+{
+    if (imp_stage != IMP_ORIGINAL) {
+        send_timbre(imp_original);  /* the part's own tone back */
+    }
+    imp_stage = IMP_IDLE;
+    synth_patches_changed();
+    char buf[48];
+    snprintf(buf, sizeof(buf), why ? why : "IMPORTED %d TONES", imp_saved);
+    synth_notice(buf);
+    ESP_LOGI(TAG, "import: %s (%d saved)", why ? why : "done", imp_saved);
+    request_tone();
+}
+
+static void import_save(void)
+{
+    char name[11];
+    memcpy(name, tone[part], 10);
+    name[10] = 0;
+    for (int i = 9; i >= 0 && name[i] == ' '; i--) {
+        name[i] = 0;
+    }
+    for (char *c = name; *c; c++) {
+        if (*c == '/' || *c < 32 || *c > 126) {
+            *c = '_';
+        }
+    }
+    char path[96];
+    snprintf(path, sizeof(path), STORAGE_ROOT "/d110/%03d %s", imp_index + 1, name[0] ? name : "Tone");
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        imp_saved += fwrite(tone[part], 1, TONE_LEN, f) == TONE_LEN;
+        fclose(f);
+    }
+}
+
+static void import_start(void)
+{
+    if (imp_stage != IMP_IDLE) {
+        return;
+    }
+    /* Earlier imports out of the way (001-192); own patches start at 200 */
+    DIR *dir = opendir(STORAGE_ROOT "/d110");
+    struct dirent *e;
+    while (dir && (e = readdir(dir))) {
+        int n = atoi(e->d_name);
+        if (n >= 1 && n <= IMPORT_COUNT) {
+            char path[300];
+            snprintf(path, sizeof(path), STORAGE_ROOT "/d110/%s", e->d_name);
+            remove(path);
+        }
+    }
+    if (dir) {
+        closedir(dir);
+    }
+    imp_index = imp_saved = 0;
+    imp_stage = IMP_ORIGINAL;
+    imp_deadline = esp_timer_get_time() + IMPORT_TIMEOUT_US;
+    request_timbre();
+    synth_notice("IMPORT: asking the D-110...");
+}
+
+static void tick(int64_t now)
+{
+    switch (imp_stage) {
+    case IMP_SET: {
+        uint8_t gn[2] = {imp_index / 64, imp_index % 64};
+        send_timbre(gn);
+        imp_stage = IMP_SETTLE;
+        imp_deadline = now + IMPORT_SETTLE_US;
+        break;
+    }
+    case IMP_SETTLE:
+        if (now > imp_deadline) {
+            request_tone();
+            imp_stage = IMP_REPLY;
+            imp_deadline = now + IMPORT_TIMEOUT_US;
+        }
+        break;
+    case IMP_ORIGINAL:
+    case IMP_REPLY:
+        if (now > imp_deadline) {
+            import_finish(imp_stage == IMP_ORIGINAL ? "IMPORT: no reply - D-110 MIDI OUT connected?"
+                                                    : "IMPORT stopped: no reply");
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 static void sysex_in(const uint8_t *d, size_t len)
 {
     /* DT1 from this unit: F0 41 dev 16 12 a a a data... sum F7 */
@@ -364,8 +499,16 @@ static void sysex_in(const uint8_t *d, size_t len)
         ESP_LOGW(TAG, "DT1 checksum error");
         return;
     }
-    int at = (d[5] << 14 | d[6] << 7 | d[7]) - temp_base();
     int n = (int)len - 10;
+    int timbre_at = (d[5] << 14 | d[6] << 7 | d[7]) -
+                    ((TEMP_TIMBRE_BASE >> 16 & 0x7F) * 16384 + (TEMP_TIMBRE_BASE >> 8 & 0x7F) * 128);
+    if (imp_stage == IMP_ORIGINAL && timbre_at == part * 0x10 && n >= 2) {
+        imp_original[0] = d[8];
+        imp_original[1] = d[9];
+        imp_stage = IMP_SET;
+        return;
+    }
+    int at = (d[5] << 14 | d[6] << 7 | d[7]) - temp_base();
     if (at < 0 || at + n > PARTS * TONE_LEN) {
         return;  /* not a tone temporary area */
     }
@@ -375,6 +518,20 @@ static void sysex_in(const uint8_t *d, size_t len)
         tone[p][off] = d[8 + i];
         known[p][off] = true;
         shown |= p == part;
+    }
+    if (imp_stage == IMP_REPLY) {
+        if (at == part * TONE_LEN && n == TONE_LEN) {
+            import_save();
+            char buf[32];
+            snprintf(buf, sizeof(buf), "IMPORT %d / %d", imp_index + 1, IMPORT_COUNT);
+            synth_notice(buf);
+            if (++imp_index >= IMPORT_COUNT) {
+                import_finish(NULL);
+            } else {
+                imp_stage = IMP_SET;
+            }
+        }
+        return;
     }
     ESP_LOGI(TAG, "read %d bytes of part %d's tone", n, at / TONE_LEN + 1);
     if (shown) {
@@ -388,16 +545,19 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
 }
 
-static void read_tone(void) { request_tone(); }
-
-/* Sets p to v in every selected partial (or the common part) and sends */
-static void set_value(int p, int v)
+static void read_tone(void)
 {
-    int count = is_partial_param(p) ? 4 : 1;
-    for (int i = 0; i < count; i++) {
-        if (is_partial_param(p) && !(partial_sel & (1 << i))) {
-            continue;
-        }
+    if (imp_stage != IMP_IDLE) {
+        import_finish("IMPORT stopped");  /* Auto during an import stops it */
+        return;
+    }
+    request_tone();
+}
+
+/* Sets p to v in partial i (or the common part) and sends it */
+static void set_one(int p, int i, int v)
+{
+    {
         int at = byte_of(p, i);
         uint8_t b = tone[part][at];
         switch (p) {
@@ -419,6 +579,16 @@ static void set_value(int p, int v)
     }
     if (p == P_BANK) {
         synth_redraw();  /* the PCM wave's name, in another column, depends on it */
+    }
+}
+
+/* Sets p to v in every selected partial (or the common part) */
+static void set_value(int p, int v)
+{
+    for (int i = 0; i < (is_partial_param(p) ? 4 : 1); i++) {
+        if (!is_partial_param(p) || (partial_sel & (1 << i))) {
+            set_one(p, i, v);
+        }
     }
 }
 
@@ -500,24 +670,35 @@ static int param_units(int p)
     return max <= 1 ? 80 : max <= 4 ? 70 : max <= 16 ? 40 : max <= 30 ? 25 : 10;
 }
 
+/* p's current value in partial i, or the init tone's if not known */
+static int value_or_init(int p, int i)
+{
+    if (known[part][byte_of(p, i)]) {
+        return raw_value(p, i);
+    }
+    read_init();
+    int v = init_tone[byte_of(p, i)];
+    return p == P_WAVE ? v & 1 : p == P_BANK ? (v >> 1) & 1 : v;
+}
+
+/* With several partials selected, each moves by the same steps from its
+ * own value, so their differences stay (the PG-10's absolute knobs set
+ * them all to one value instead) */
 static bool param_step(int p, int steps)
 {
-    int v;
-    if (value_known(p)) {
-        v = raw_value(p, first_partial());
-    } else {
-        read_init();
-        v = init_tone[byte_of(p, first_partial())];
-        if (p == P_WAVE) v &= 1;
-        if (p == P_BANK) v = (v >> 1) & 1;
+    bool changed = false;
+    for (int i = 0; i < (is_partial_param(p) ? 4 : 1); i++) {
+        if (is_partial_param(p) && !(partial_sel & (1 << i))) {
+            continue;
+        }
+        int v = value_or_init(p, i), nv = v + steps;
+        nv = nv < 0 ? 0 : nv > params[p].max ? params[p].max : nv;
+        if (nv != v || !known[part][byte_of(p, i)]) {
+            set_one(p, i, nv);
+            changed = true;
+        }
     }
-    int nv = v + steps;
-    nv = nv < 0 ? 0 : nv > params[p].max ? params[p].max : nv;
-    if (nv == v && value_known(p)) {
-        return false;
-    }
-    set_value(p, nv);
-    return true;
+    return changed;
 }
 
 static void param_toggle(int p) { set_value(p, value_known(p) ? !raw_value(p, first_partial()) : 0); }
@@ -820,7 +1001,7 @@ const synth_t synth_d110 = {
     .key = "d110",
     .patch_dir = STORAGE_ROOT "/d110",
     .default_patch = "000 Init",
-    .first_user_patch = 1,
+    .first_user_patch = 200,  /* 001-192: imported from the unit (Setup: IMPORT) */
     .pages = pages,
     .page_count = sizeof(pages) / sizeof(pages[0]),
     .settings = settings,
@@ -846,6 +1027,9 @@ const synth_t synth_d110 = {
     .header_tag = header_tag,
     .read = read_tone,
     .sysex_in = sysex_in,
+    .tick = tick,
+    .action_name = "IMPORT",
+    .action = import_start,
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
 };

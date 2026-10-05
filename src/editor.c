@@ -159,6 +159,8 @@ static int encoder_acc[8];
 static int page;
 static uint8_t section_last[8];  /* page each section was last left on */
 static bool shift_held;
+static int64_t action_armed_until;  /* Setup's action button pressed once */
+#define ACTION_CONFIRM_US 3000000
 static bool overview;  /* section list shown while Navigate is held */
 static bool encoder_browses;  /* Browse toggled: main encoder picks patches, not pages */
 
@@ -223,6 +225,7 @@ static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
 static void draw_page(void);
+static void end_browse(void);
 static void draw_pads(void);
 
 int synth_setting(int index)
@@ -421,6 +424,8 @@ static void update_button_leds(void)
             }
         } else if (mode == MODE_CATEGORY) {
             v = category_filter & (1 << col) ? LED_ON : LED_DIM;
+        } else if (mode == MODE_SETUP) {
+            v = col == 7 && synth->action ? (action_armed_until ? LED_ON : LED_DIM) : 0;
         } else if (mode == MODE_STORE) {
             v = store_keys[col] ? LED_DIM : 0;
         } else if (mode == MODE_NAME) {
@@ -602,6 +607,24 @@ void synth_redraw(void)
         draw_page();
         update_group_leds();
     }
+}
+
+void synth_patches_changed(void)
+{
+    /* Find the loaded patch again: its index may have moved */
+    char loaded_name[72] = "";
+    if (patch_loaded != NONE) {
+        snprintf(loaded_name, sizeof(loaded_name), "%s", patch_names[patch_loaded]);
+    }
+    end_browse();
+    load_patch_list();
+    patch_loaded = NONE;
+    for (int i = 0; i < patch_count && loaded_name[0]; i++) {
+        if (strcmp(patch_names[i], loaded_name) == 0) {
+            patch_loaded = i;
+        }
+    }
+    draw_header();
 }
 
 void synth_notice(const char *text)
@@ -1118,6 +1141,14 @@ static void draw_setup(void)
     snprintf(pct, sizeof(pct), "%d%%", led_bright * 10);
     draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "LED BRIGHT", true);
     draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, pct, true);
+    if (synth->action) {
+        /* The synth's one-off job, display button 8: press twice */
+        int x = 3 * COLUMN_WIDTH;
+        bool armed = action_armed_until != 0;
+        display_round_rect(1, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, armed, true);
+        draw_centered(1, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+                      &font_small, armed ? "SURE?" : synth->action_name, !armed);
+    }
     for (int col = 0; col < SETUP_SYNTH_COLS; col++) {
         int i = setup_setting_at(col);
         if (i == NONE) {
@@ -1727,6 +1758,21 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
+    if (mode == MODE_SETUP && down && bit == BTN_DISPLAY_1 + 7 && synth->action) {
+        if (action_armed_until) {
+            action_armed_until = 0;
+            mode = MODE_EDIT;  /* the job reports in the editor's header */
+            for (int d = 0; d < DISPLAY_COUNT; d++) {
+                display_clear(d);
+            }
+            draw_page();
+            synth->action();
+        } else {
+            action_armed_until = esp_timer_get_time() + ACTION_CONFIRM_US;
+            draw_setup();
+        }
+        return;
+    }
     if (mode == MODE_PADS || mode == MODE_SETUP) {
         return;
     }
@@ -1910,6 +1956,12 @@ static void editor_tick_impl(int64_t now_us)
     }
     if (init_armed_until && now_us > init_armed_until) {
         cancel_init();
+    }
+    if (action_armed_until && now_us > action_armed_until) {
+        action_armed_until = 0;
+        if (mode == MODE_SETUP) {
+            draw_setup();
+        }
     }
     if (notice_until && now_us > notice_until) {
         notice_until = 0;
