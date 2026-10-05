@@ -22,3 +22,9 @@ void maschine_set_group_led_lr(int group, const uint8_t left[3], const uint8_t r
  * table in docs/PROTOCOL.md), brightness 0-127. Every button except the
  * Group buttons (RGB, above) has one. */
 void maschine_set_button_led(int bit, uint8_t value);
+
+/* Every LED above is scaled by this, in percent (100 = as asked, more for
+ * daylight; off stays off). An RGB colour that can't get brighter without
+ * clipping keeps its hue at full and gets the rest of its brightness as
+ * white, at most max_white_pct of the way. */
+void maschine_set_led_gain(int pct, int max_white_pct);

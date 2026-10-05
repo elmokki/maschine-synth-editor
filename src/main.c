@@ -17,6 +17,7 @@
  * between them.
  */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -93,6 +94,12 @@ static int16_t pad_peak[16];
 static uint8_t pad_leds[PAD_LED_REPORT_SIZE];
 static uint8_t group_leds[GROUP_LED_REPORT_SIZE];
 static uint8_t other_leds[OTHER_LED_REPORT_SIZE];
+/* The values asked for, before the global brightness gain (the reports
+ * above hold what's sent) */
+static uint8_t pad_raw[PAD_LED_REPORT_SIZE], group_raw[GROUP_LED_REPORT_SIZE],
+    other_raw[OTHER_LED_REPORT_SIZE];
+static int led_gain_pct = 100;
+static float led_max_white;  /* 0-1: how far a clipping colour may go towards white */
 
 static uint8_t report_buf[REPORT_BUF_SIZE];
 static int report_len;
@@ -134,16 +141,107 @@ static void out_kick(void)
     }
 }
 
+/* A requested mono LED value after the brightness gain: v x gain,
+ * clipped at full. Off stays off. */
+static uint8_t gain(uint8_t v)
+{
+    v &= 0x7F;
+    if (!v) {
+        return 0;
+    }
+    int g = (v * led_gain_pct + 50) / 100;
+    return g < 1 ? 1 : g > 127 ? 127 : g;
+}
+
+
+/* Perceived brightness of an RGB LED colour (Rec. 709 weights) */
+static float luma(const float c[3])
+{
+    return 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+}
+
+/* An RGB LED (raw[i..i+2]) after the gain: the colour times the gain, as
+ * long as no channel clips; beyond that it stays at full in the same hue
+ * and the brightness it's still missing is added as white (at most
+ * led_max_white) - so colours only go paler when they couldn't get brighter
+ * otherwise, and only a little. */
+static bool put_rgb(uint8_t *report, uint8_t *raw, int i, const uint8_t rgb[3])
+{
+    float c[3];
+    int top = 0;
+    for (int k = 0; k < 3; k++) {
+        raw[i + k] = rgb[k] & 0x7F;
+        top = raw[i + k] > top ? raw[i + k] : top;
+    }
+    float g = led_gain_pct / 100.0f;
+    for (int k = 0; k < 3; k++) {
+        c[k] = raw[i + k] * g;
+    }
+    if (top * g > 127.0f) {
+        float target = luma(c);
+        for (int k = 0; k < 3; k++) {
+            c[k] = raw[i + k] * 127.0f / top;  /* full, same hue */
+        }
+        float have = luma(c);
+        float w = have < 127.0f ? (target - have) / (127.0f - have) : 0;
+        w = w < 0 ? 0 : w > led_max_white ? led_max_white : w;
+        for (int k = 0; k < 3; k++) {
+            c[k] += (127.0f - c[k]) * w;
+        }
+    }
+    bool changed = false;
+    for (int k = 0; k < 3; k++) {
+        int v = raw[i + k];
+        int out = (int)(c[k] + 0.5f);
+        out = v && !out ? 1 : out > 127 ? 127 : out;
+        changed |= report[i + k] != out;
+        report[i + k] = out;
+    }
+    return changed;
+}
+
+/* A mono LED: sets raw[i] (and the gained report byte); true if what's
+ * sent changed */
+static bool put(uint8_t *report, uint8_t *raw, int i, uint8_t v)
+{
+    raw[i] = v & 0x7F;
+    uint8_t g = gain(v);
+    if (report[i] == g) {
+        return false;
+    }
+    report[i] = g;
+    return true;
+}
+
+void maschine_set_led_gain(int pct, int max_white_pct)
+{
+    led_gain_pct = pct;
+    led_max_white = max_white_pct / 100.0f;
+    uint8_t rgb[3];
+    for (int i = 1; i + 3 <= PAD_LED_REPORT_SIZE; i += 3) {
+        memcpy(rgb, &pad_raw[i], 3);
+        pad_leds_dirty |= put_rgb(pad_leds, pad_raw, i, rgb);
+    }
+    for (int i = 1; i < 1 + 48; i += 3) {  /* Group buttons: 8 x two RGB LEDs */
+        memcpy(rgb, &group_raw[i], 3);
+        group_leds_dirty |= put_rgb(group_leds, group_raw, i, rgb);
+    }
+    for (int i = 1 + 48; i < GROUP_LED_REPORT_SIZE; i++) {  /* transport: mono */
+        group_leds_dirty |= put(group_leds, group_raw, i, group_raw[i]);
+    }
+    for (int i = 1; i < OTHER_LED_REPORT_SIZE; i++) {
+        other_leds_dirty |= put(other_leds, other_raw, i, other_raw[i]);
+    }
+    out_kick();
+}
+
 void maschine_set_group_led_lr(int group, const uint8_t left[3], const uint8_t right[3])
 {
     /* Each group button has two RGB LEDs: left, then right (see PROTOCOL.md) */
-    uint8_t *p = &group_leds[1 + group * 6];
+    int at = 1 + group * 6;
     bool changed = false;
-    for (int i = 0; i < 3; i++) {
-        changed |= p[i] != (left[i] & 0x7F) || p[3 + i] != (right[i] & 0x7F);
-        p[i] = left[i] & 0x7F;
-        p[3 + i] = right[i] & 0x7F;
-    }
+    changed |= put_rgb(group_leds, group_raw, at, left);
+    changed |= put_rgb(group_leds, group_raw, at + 3, right);
     if (changed) {  /* animated LEDs get set often; only send real changes */
         group_leds_dirty = true;
         out_kick();
@@ -165,43 +263,46 @@ void maschine_set_group_led(int group, uint8_t r, uint8_t g, uint8_t b)
  *   0x82 bytes 24-30 <- input byte 2 (Volume ... Note Repeat)
  *   0x81 bytes 48-55 <- input byte 4 (Restart ... Shift)
  * Byte 3 is the Group buttons (RGB, see maschine_set_group_led). */
-static uint8_t *button_led(int bit)
+/* Byte index of the button's LED in its report, *in_group = in 0x81
+ * (else 0x82); -1 if it has none */
+static int button_led(int bit, bool *in_group)
 {
     static const int8_t other_block[6] = {8, 0, 24, -1, -1, 16};
     int byte = bit / 8, i = bit % 8;
     if (bit < 0 || bit >= 48) {
-        return NULL;
+        return -1;
     }
+    *in_group = byte == 4;
     if (byte == 4) {
-        return &group_leds[1 + 48 + i];
+        return 1 + 48 + i;
     }
     if (other_block[byte] < 0 || (byte == 2 && i == 7)) {
-        return NULL;
+        return -1;
     }
-    return &other_leds[1 + other_block[byte] + i];
+    return 1 + other_block[byte] + i;
 }
 
 void maschine_set_button_led(int bit, uint8_t value)
 {
-    uint8_t *led = button_led(bit);
-    if (!led || *led == (value & 0x7F)) {
+    bool in_group;
+    int at = button_led(bit, &in_group);
+    if (at < 0) {
         return;
     }
-    *led = value & 0x7F;
-    if (led >= group_leds && led < group_leds + GROUP_LED_REPORT_SIZE) {
-        group_leds_dirty = true;
-    } else {
-        other_leds_dirty = true;
+    if (in_group ? put(group_leds, group_raw, at, value) : put(other_leds, other_raw, at, value)) {
+        if (in_group) {
+            group_leds_dirty = true;
+        } else {
+            other_leds_dirty = true;
+        }
+        out_kick();
     }
-    out_kick();
 }
 
 void maschine_set_pad_led(int pad, uint8_t r, uint8_t g, uint8_t b)
 {
-    uint8_t *p = &pad_leds[1 + pad * 3];
-    p[0] = r & 0x7F;
-    p[1] = g & 0x7F;
-    p[2] = b & 0x7F;
+    const uint8_t rgb[3] = {r, g, b};
+    put_rgb(pad_leds, pad_raw, 1 + pad * 3, rgb);
     pad_leds_dirty = true;
     out_kick();
 }

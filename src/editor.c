@@ -97,6 +97,17 @@ static const scale_t scales[] = {
  * are on the left, so at most 4) */
 #define SETUP_SYNTH_COLS 4
 #define MIDI_THRU_ID 103
+#define LED_BRIGHT_ID 104
+/* LED brightness 10-100 % in 10 % steps, as a gain on the colours as
+ * defined (see maschine_set_led_gain): 10 % = x0.5, 50 % (the default) =
+ * x1.25 (dim ones a bit brighter, full ones as they are), 100 % = x2.5 for
+ * daylight. Full colours only go a little paler, and only above 50 %. */
+#define LED_BRIGHT_MIN 1
+#define LED_BRIGHT_MAX 10
+#define LED_BRIGHT_DEFAULT 5
+static int led_bright = LED_BRIGHT_DEFAULT;  /* tens of percent */
+#define LED_GAIN_PCT(b) ((b) <= 5 ? 50 + ((b) - 1) * 75 / 4 : 125 + ((b) - 5) * 25)
+#define LED_WHITE_PCT(b) ((b) <= 5 ? 0 : ((b) - 5) * 4)  /* 20 % at 100 % */
 static int midi_thru = MIDI_THRU_OFF;
 static const char *const thru_names[] = {"OFF", "THRU", "TO SYNTH"};
 static int pad_low = PAD_LOW_DEFAULT;
@@ -107,7 +118,7 @@ static int pad_playing[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 
 /* Mono button LEDs: every button that does something right now is lit
  * dimly, brightly when it's on / active */
-#define LED_DIM 8
+#define LED_DIM 9  /* 11 at the default LED brightness (x1.25) */
 #define LED_ON 127
 
 /* Group button LEDs, in the synth's colour theme: dim = section exists
@@ -268,7 +279,8 @@ static int pad_note(int pad)
 }
 
 /* Pads at rest, in the synth's theme; the key's notes brighter, so the
- * octaves show */
+ * octaves show (at high LED brightness they go paler instead, see
+ * maschine_set_led_gain) */
 #define PAD_ROOT_GAIN 3
 static void pad_idle(int pad)
 {
@@ -1026,7 +1038,7 @@ static void format_setting(int i, char *buf, size_t len)
 static int setup_setting_at(int col)
 {
     if (col >= SETUP_SYNTH_COLS) {
-        return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : NONE;
+        return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : col == SETUP_SYNTH_COLS + 1 ? LED_BRIGHT_ID : NONE;
     }
     return col < synth->setting_count ? col : NONE;
 }
@@ -1050,6 +1062,11 @@ static void draw_setup(void)
                        : &font_small;
     draw_centered(1, 0, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf, thru,
                   true);
+    /* Global: all LEDs brighter, for daylight */
+    char pct[8];
+    snprintf(pct, sizeof(pct), "%d%%", led_bright * 10);
+    draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "LED BRIGHT", true);
+    draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, pct, true);
     for (int col = 0; col < SETUP_SYNTH_COLS; col++) {
         int i = setup_setting_at(col);
         if (i == NONE) {
@@ -1071,13 +1088,16 @@ static void setting_encoder(int i, int col, int delta)
         int steps = encoder_acc[col] / UNITS_SETTING;
         encoder_acc[col] -= steps * UNITS_SETTING;
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
-                 : i == PAD_KEY_ID ? &pad_key : &midi_thru;
-        int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11 : 2;
+                 : i == PAD_KEY_ID ? &pad_key : i == MIDI_THRU_ID ? &midi_thru : &led_bright;
+        int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
+                  : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
+        int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
         int nv = *v + steps;
-        nv = nv < 0 ? 0 : nv > max ? max : nv;
+        nv = nv < min ? min : nv > max ? max : nv;
         if (nv != *v) {
             *v = nv;
             settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+            maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
             for (int pad = 0; pad < 16; pad++) {
                 if (pad_playing[pad] < 0) {
                     pad_idle(pad);
@@ -1117,6 +1137,8 @@ static void load_global_settings(void)
         int v;
         if (sscanf(line, "PAD LOW=%d", &v) == 1 && v >= 0 && v <= 112) {
             pad_low = v;
+        } else if (sscanf(line, "LED LEVEL=%d", &v) == 1 && v >= LED_BRIGHT_MIN && v <= LED_BRIGHT_MAX) {
+            led_bright = v;
         } else if (sscanf(line, "MIDI THRU=%d", &v) == 1 && v >= 0 && v <= 2) {
             midi_thru = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
@@ -1175,7 +1197,8 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\n", pad_low, pad_scale, pad_key, midi_thru);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\n", pad_low, pad_scale, pad_key,
+                midi_thru, led_bright);
         fclose(f);
     }
 }
@@ -1902,6 +1925,7 @@ static void editor_init_impl(void)
     }
     ESP_LOGI(TAG, "synth: %s", synth->name);
     load_global_settings();
+    maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
     load_settings();
     load_patch_list();
     read_last_patch();
