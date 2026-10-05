@@ -141,6 +141,12 @@ static void queue_packet(const uint8_t *ev)
 }
 
 static midi_sysex_handler_t sysex_handler;
+static midi_note_handler_t note_handler;
+
+void midi_set_note_handler(midi_note_handler_t fn)
+{
+    note_handler = fn;
+}
 
 void midi_set_sysex_handler(midi_sysex_handler_t fn)
 {
@@ -200,6 +206,9 @@ static void in_cb(usb_transfer_t *xfer)
             int len = cin_len[cin];
             if (len == 0) {
                 continue;  /* padding / reserved */
+            }
+            if ((cin == 0x8 || cin == 0x9) && note_handler) {
+                note_handler(d[i + 1] & 0x0F, d[i + 2] & 0x7F, cin == 0x8 ? 0 : d[i + 3] & 0x7F);
             }
             if (cin >= 0x4 && cin <= 0x7) {
                 sysex_in(&d[i]);

@@ -111,9 +111,8 @@ static const synth_page_t pages[] = {
                    {_, _, _, _, _, _, _, _}},
     [PG_PART] = {1, "PART", {P_LEVEL, P_PAN, P_KEY_LOW, P_KEY_HIGH, P_CHANNEL, P_RESERVE, _, _},
                  {_, _, _, _, _, _, _, _}},
-    /* The whole patch's: reverb, and the rhythm part's level (until a
-     * rhythm level of its own) */
-    [PG_COMMON] = {2, "COMMON", {P_REVERB_MODE, P_REVERB_TIME, P_REVERB_LEVEL, P_RHYTHM_LEVEL, _, _, _, _},
+    /* The whole patch's (the rhythm part's level is on D-110 RHYTHM) */
+    [PG_COMMON] = {2, "COMMON", {P_REVERB_MODE, P_REVERB_TIME, P_REVERB_LEVEL, _, _, _, _, _},
                    {_, _, _, _, _, _, _, _}},
     /* All parts at once: each column a part, its reserve on the knob */
     [PG_RESERVE] = {3, "PARTIAL RESERVE", {P_RES1, P_RES2, P_RES3, P_RES4, P_RES5, P_RES6, P_RES7, P_RES8},
@@ -298,7 +297,7 @@ static bool param_on(int p) { return false; }
 static int param_units(int p)
 {
     int max = params[p].max;
-    return max <= 3 ? 70 : max <= 8 ? 50 : max <= 16 ? 40 : max <= 48 ? 20 : 10;
+    return max <= 3 ? 70 : max <= 8 ? 50 : max <= 16 ? 40 : max <= 48 ? 20 : 13;
 }
 
 static void set_value(int p, int v)
@@ -422,7 +421,22 @@ static void instance_step(int d)
 
 static int instance(void) { return 0; }  /* one patch for all parts */
 
-static void header_tag(char *buf, size_t len) { snprintf(buf, len, "PT%d", part + 1); }
+/* "PT2 AcouBass 1": the part and its tone (a/b by name, i by number) */
+static void header_tag(char *buf, size_t len)
+{
+    int g = M_PART + part * PART_LEN;
+    if (!known[g] || !known[g + 1]) {
+        snprintf(buf, len, "PT%d", part + 1);
+        return;
+    }
+    int group = patch[g] & 3, n = patch[g + 1] & 63;
+    read_tone_names();
+    if (group < 2 && tone_names[group * 64 + n][0]) {
+        snprintf(buf, len, "PT%d %s", part + 1, tone_names[group * 64 + n]);
+    } else {
+        snprintf(buf, len, "PT%d %s%d%d", part + 1, group_labels[group], n / 8 + 1, n % 8 + 1);
+    }
+}
 
 static bool sound_name(char *buf, size_t len)
 {
@@ -575,6 +589,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         }
     }
     if (got) {
+        synth_state_received();  /* the unit answered: no fallback */
         if (read_asked && known[M_PART]) {
             read_asked = false;
             synth_sound_replaced();

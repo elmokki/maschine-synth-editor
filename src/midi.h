@@ -36,3 +36,7 @@ void midi_set_thru(midi_thru_t mode, int channel);
  * (F0 ... F7), e.g. a synth's reply to a data request; NULL = none */
 typedef void (*midi_sysex_handler_t)(const uint8_t *data, size_t len);
 void midi_set_sysex_handler(midi_sysex_handler_t fn);
+
+/* Called with every note arriving on DIN IN: velocity 0 = note off */
+typedef void (*midi_note_handler_t)(int channel, int note, int velocity);
+void midi_set_note_handler(midi_note_handler_t fn);

@@ -4,7 +4,8 @@
 A patch file is one tone: 246 bytes as in the D-110's Tone Temporary Area
 (common 14 + 4 partials x 58, manual p. 117), named "NNN Name". This writes
 data/d110/000 Init, a plain tone to start from: partial 1 only, a square
-wave through an open filter.
+wave through an open filter; and data/d110r/000 Factory, the factory
+Rhythm Setup (src/synth_d110r.c: 85 keys x 4 bytes).
 
     python3 tools/d110_import.py
 """
@@ -47,7 +48,31 @@ def init_tone():
     return bytes(t)
 
 
+# The factory Rhythm Setup (manual p. 102, "Initial Rhythm Setting"): the
+# r tone per key from C1 (24) to C8 (108); r64 = OFF
+FACTORY_RHYTHM = {35: 15, 36: 16, 37: 25, 38: 19, 39: 39, 40: 20, 41: 30, 42: 1, 43: 33, 44: 4,
+                  45: 29, 46: 3, 47: 32, 48: 28, 49: 5, 50: 31, 51: 8, 52: 13, 53: 11, 54: 40,
+                  55: 14, 56: 41, 57: 7, 58: 21, 59: 10, 60: 42, 61: 43, 62: 44, 63: 45, 64: 46,
+                  65: 47, 66: 48, 67: 49, 68: 50, 69: 51, 70: 52, 71: 53, 72: 54, 73: 55, 74: 12,
+                  75: 56, 76: 26, 77: 27, 78: 57, 79: 38, 80: 58, 81: 37, 82: 59, 83: 60, 84: 17,
+                  85: 18, 86: 22, 87: 23, 88: 24, 89: 36, 90: 2, 91: 35, 92: 6, 93: 34, 94: 9,
+                  95: 61, 96: 62, 97: 63}
+
+
+def factory_rhythm():
+    """85 keys x (tone, level, pan, output); tone 64 + n - 1 = r<n>. The
+    manual only lists the tones: level full, pan centre, output mix."""
+    d = []
+    for key in range(24, 109):
+        d += [64 + FACTORY_RHYTHM.get(key, 64) - 1, 100, 7, 0]
+    return bytes(d)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     open(os.path.join(OUT, "000 Init"), "wb").write(init_tone())
     print("data/d110/000 Init")
+    rhythm_dir = os.path.join(ROOT, "data", "d110r")
+    os.makedirs(rhythm_dir, exist_ok=True)
+    open(os.path.join(rhythm_dir, "000 Factory"), "wb").write(factory_rhythm())
+    print("data/d110r/000 Factory")

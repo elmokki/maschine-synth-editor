@@ -633,6 +633,7 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
     ESP_LOGI(TAG, "read %d bytes of part %d's tone", n, at / TONE_LEN + 1);
     if (shown) {
+        synth_state_received();  /* the unit answered: no fallback */
         if (read_asked) {
             /* Auto (read) on purpose: the unit's tone replaces whatever
              * library patch the part had; reads on part changes don't */
@@ -778,7 +779,8 @@ static bool param_on(int p)
 static int param_units(int p)
 {
     int max = params[p].max;
-    return max <= 1 ? 80 : max <= 4 ? 70 : max <= 16 ? 40 : max <= 30 ? 25 : 10;
+    return max <= 1 ? 80 : max <= 4 ? 70 : max <= 16 ? 40 : max <= 30 ? 25
+           : params[p].kind == K_PCM ? 13 : 10;  /* picking a wave: a bit slower */
 }
 
 /* p's current value in partial i, or the init tone's if not known */

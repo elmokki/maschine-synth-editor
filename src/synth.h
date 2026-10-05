@@ -170,9 +170,14 @@ typedef struct {
     void (*action)(void);
 
     /* The instrument keeps its own state (e.g. the D-110's memory): when
-     * this synth is selected nothing is sent, the editor asks for the
-     * current state instead (read) */
+     * this synth is selected the editor asks for its current state (read)
+     * instead of sending one; only if no answer comes (no MIDI IN cable,
+     * see synth_state_received) does it load its remembered patch */
     bool keep_state;
+
+    /* Optional: a pad played this note (the lowest of a chord) - e.g. a
+     * drum kit's editor picks that key */
+    void (*note_played)(int note);
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
@@ -190,9 +195,16 @@ void synth_patches_changed(void);
 /* Provided by the editor: the current instance's sound was replaced from
  * outside the library (e.g. read back from the unit) */
 void synth_sound_replaced(void);
+/* Provided by the editor: the instrument answered a read (keep_state) -
+ * without an answer the editor falls back to its remembered patch */
+void synth_state_received(void);
+/* Provided by the editor: the note `steps` notes of the pads' scale (Pad
+ * Mode) from `note` - chromatic unless a scale is chosen; -1 if past 0-127 */
+int synth_scale_note(int note, int steps);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
 extern const synth_t synth_volca;
 extern const synth_t synth_d110;
 extern const synth_t synth_d110p;
+extern const synth_t synth_d110r;

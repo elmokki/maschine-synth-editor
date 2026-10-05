@@ -26,7 +26,7 @@ static const char *TAG = "editor";
 #define NONE SYNTH_NONE
 
 /* Encoder counter units per setting step (~1300 units per turn) */
-#define UNITS_SETTING 65
+#define UNITS_SETTING 80  /* settings step a little slower than knobs */
 
 #define BROWSE_TIMEOUT_US 4000000
 
@@ -74,7 +74,8 @@ static const char *TAG = "editor";
 
 /* The pads area of the device is never per synth: the pads' lowest note,
  * scale and key are global (Pad Mode screen). Pad notes go chromatically
- * up from the lowest note, or up the scale from its key in that octave. */
+ * up from the lowest note, or up the scale from the first scale note at or
+ * above it. */
 typedef struct {
     const char *name;
     uint8_t count;
@@ -103,6 +104,10 @@ static const scale_t scales[] = {
 #define SETUP_SYNTH_COLS 4
 #define MIDI_THRU_ID 103
 #define LED_BRIGHT_ID 104
+#define NOTES_IN_ID 106
+/* Notes arriving on DIN IN on the synth's channel act like pad hits: the
+ * pad lights, and e.g. the D-110 rhythm picks that key */
+static int notes_in;
 /* LED brightness 10-100 % in 10 % steps, as a gain on the colours as
  * defined (see maschine_set_led_gain): 10 % = x0.5, 50 % (the default) =
  * x1.25 (dim ones a bit brighter, full ones as they are), 100 % = x2.5 for
@@ -150,14 +155,15 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
 static const synth_t *synth = &synth_minimax;
 static bool usb_ready;              /* Maschine (and DIN MIDI) connected */
 static int64_t activating_until;    /* synth being made ready, patch follows */
-static int synth_confirm = -1;      /* synth column pressed once with unsaved edits */
+static int synth_confirm = -1;      /* synth pressed once with unsaved edits */
+static int synth_list_first;        /* the synth list shows 8 from here (main encoder) */
 static bool volume_held;
 static int64_t synth_confirm_until;
 
@@ -295,18 +301,55 @@ static const uint8_t *theme_dim(void)
 /* Pad 12 (bottom left) is the lowest note, rows go up like a keyboard;
  * chromatic from PAD LOW, or up the scale from its key */
 /* Note k steps up the pads' scale from the lowest pad */
+static bool in_scale(int note)
+{
+    const scale_t *sc = &scales[pad_scale];
+    int deg = ((note - pad_key) % 12 + 12) % 12;
+    for (int i = 0; i < sc->count; i++) {
+        if (sc->steps[i] == deg) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The note `steps` scale notes from `note` (chromatic: semitones); -1 if
+ * past 0-127 */
+static int scale_step(int note, int steps)
+{
+    int dir = steps < 0 ? -1 : 1;
+    for (int left = steps * dir; left > 0;) {
+        note += dir;
+        if (note < 0 || note > 127) {
+            return -1;
+        }
+        left -= pad_scale == 0 || in_scale(note);
+    }
+    return note;
+}
+
+/* The lowest pad: PAD LOW, or the first scale note from it up */
+static int lowest_pad_note(void)
+{
+    int note = pad_low;
+    while (pad_scale != 0 && note < 127 && !in_scale(note)) {
+        note++;
+    }
+    return note;
+}
+
+/* Note k steps up from the lowest pad, along the scale */
 static int scale_note(int k)
 {
-    int low = pad_low;
-    const scale_t *sc = &scales[pad_scale];
-    int note = pad_scale == 0 ? low + k
-                              : low - low % 12 + pad_key + 12 * (k / sc->count) + sc->steps[k % sc->count];
-    return note > 127 ? 127 : note;
+    int note = scale_step(lowest_pad_note(), k);
+    return note < 0 ? 127 : note;
 }
 
 static int pad_index(int pad) { return (3 - pad / 4) * 4 + pad % 4; }
 
 static int pad_note(int pad) { return scale_note(pad_index(pad)); }
+
+int synth_scale_note(int note, int steps) { return scale_step(note, steps); }
 
 /* The pad's chord: thirds up the scale (chromatic: major, dominant 7th) */
 static int pad_chord_notes(int pad, bool seventh, uint8_t out[4])
@@ -460,8 +503,9 @@ static void update_button_leds(void)
                 v = synth->param_on(sw) ? LED_ON : LED_DIM;
             }
         } else if (mode == MODE_SYNTH) {
-            if (col < SYNTH_COUNT) {
-                v = synths[col] == synth || col == synth_confirm ? LED_ON : LED_DIM;
+            int i = synth_list_first + col;
+            if (i < SYNTH_COUNT) {
+                v = synths[i] == synth || i == synth_confirm ? LED_ON : LED_DIM;
             }
         } else if (mode == MODE_CATEGORY) {
             v = category_filter & (1 << col) ? LED_ON : LED_DIM;
@@ -1168,7 +1212,8 @@ static void format_setting(int i, char *buf, size_t len)
 static int setup_setting_at(int col)
 {
     if (col >= SETUP_SYNTH_COLS) {
-        return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : col == SETUP_SYNTH_COLS + 1 ? LED_BRIGHT_ID : NONE;
+        return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : col == SETUP_SYNTH_COLS + 1 ? LED_BRIGHT_ID
+               : col == SETUP_SYNTH_COLS + 2 ? NOTES_IN_ID : NONE;
     }
     return col < synth->setting_count ? col : NONE;
 }
@@ -1197,6 +1242,9 @@ static void draw_setup(void)
     snprintf(pct, sizeof(pct), "%d%%", led_bright * 10);
     draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "LED BRIGHT", true);
     draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, pct, true);
+    /* Global: notes from DIN IN light the pads (and pick e.g. a drum key) */
+    draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "NOTES IN", true);
+    draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, notes_in ? "ON" : "OFF", true);
     if (synth->action) {
         /* The synth's one-off job, display button 8: press twice */
         int x = 3 * COLUMN_WIDTH;
@@ -1227,11 +1275,16 @@ static void setting_encoder(int i, int col, int delta)
         encoder_acc[col] -= steps * UNITS_SETTING;
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
                  : i == PAD_KEY_ID ? &pad_key : i == PAD_CHORD_ID ? &pad_chord
-                 : i == MIDI_THRU_ID ? &midi_thru : &led_bright;
+                 : i == MIDI_THRU_ID ? &midi_thru : i == NOTES_IN_ID ? &notes_in : &led_bright;
         int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
-                  : i == PAD_CHORD_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
+                  : i == PAD_CHORD_ID || i == NOTES_IN_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
         int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
         int nv = *v + steps;
+        if (i == PAD_LOW_ID && pad_scale != 0) {
+            /* In a scale, the lowest pad moves a scale note at a time */
+            int moved = scale_step(lowest_pad_note(), steps);
+            nv = moved < 0 ? *v : moved;
+        }
         nv = nv < min ? min : nv > max ? max : nv;
         if (nv != *v) {
             *v = nv;
@@ -1280,6 +1333,8 @@ static void load_global_settings(void)
             led_bright = v;
         } else if (sscanf(line, "MIDI THRU=%d", &v) == 1 && v >= 0 && v <= 2) {
             midi_thru = v;
+        } else if (sscanf(line, "NOTES IN=%d", &v) == 1 && v >= 0 && v <= 1) {
+            notes_in = v;
         } else if (sscanf(line, "CHORD=%d", &v) == 1 && v >= 0 && v <= 1) {
             pad_chord = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
@@ -1338,8 +1393,8 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\n", pad_low, pad_scale, pad_key,
-                midi_thru, led_bright, pad_chord);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\n", pad_low,
+                pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in);
         fclose(f);
     }
 }
@@ -1431,7 +1486,8 @@ static void draw_pads(void)
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS  (all synths)", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
     const char *names[4] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD"};
-    snprintf(buf, sizeof(buf), "%s%d", keys[pad_low % 12], pad_low / 12 - 2);  /* 60 = C3 */
+    int low = lowest_pad_note();  /* in a scale: the first scale note from PAD LOW */
+    snprintf(buf, sizeof(buf), "%s%d", keys[low % 12], low / 12 - 2);  /* 60 = C3 */
     const char *vals[4] = {buf, scales[pad_scale].name, keys[pad_key], pad_chord ? "ON" : "OFF"};
     for (int k = 0; k < 4; k++) {
         int x = k * COLUMN_WIDTH;
@@ -1498,10 +1554,18 @@ static void draw_synths(void)
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "SYNTH", true);
+    char head[40];
+    if (SYNTH_COUNT > 8) {
+        snprintf(head, sizeof(head), "SYNTH  %d/%d  (main encoder: more)", synth_list_first / 8 + 1,
+                 (SYNTH_COUNT + 7) / 8);
+    } else {
+        snprintf(head, sizeof(head), "SYNTH");
+    }
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, head, true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "STEP closes", true);
-    for (int i = 0; i < SYNTH_COUNT && i < 8; i++) {
-        int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
+    for (int col = 0; col < 8 && synth_list_first + col < SYNTH_COUNT; col++) {
+        int i = synth_list_first + col;
+        int disp = col / 4, x = (col % 4) * COLUMN_WIDTH;
         bool active = synths[i] == synth;
         const char *label = i == synth_confirm ? "SURE?" : synths[i]->name;
         /* Two-line boxes for all, so every name reads the same way: a name
@@ -1549,16 +1613,34 @@ static void send_device_settings(void)
     }
 }
 
+/* keep_state: when to give up waiting for the instrument's answer */
+#define KEEP_STATE_WAIT_US 1000000
+/* ...and when to ask: a moment after selecting it (at boot, right after
+ * the USB connection came up, the first request got lost) */
+#define KEEP_STATE_ASK_US 300000
+static int64_t keep_state_fallback_at, keep_state_read_at;
+static void restore_from_library(void);
+
+void synth_state_received(void)
+{
+    keep_state_fallback_at = 0;
+}
+
 static void restore_patch(void)
 {
     send_device_settings();
-    if (synth->keep_state) {
-        if (synth->read) {
-            synth->read();  /* show what the instrument has, change nothing */
-        }
+    if (synth->keep_state && synth->read) {
+        /* Show what the instrument has, change nothing - unless it doesn't
+         * answer (no MIDI IN cable): then the remembered patch after all */
+        keep_state_read_at = esp_timer_get_time() + KEEP_STATE_ASK_US;
         draw_page();
         return;
     }
+    restore_from_library();
+}
+
+static void restore_from_library(void)
+{
     const char *candidates[2] = {last_saved, synth->default_patch};
     for (int c = 0; c < 2; c++) {
         for (int i = 0; i < patch_count && candidates[c][0]; i++) {
@@ -1620,6 +1702,7 @@ static void switch_synth(int i)
     page = 0;
     memset(section_last, 0, sizeof(section_last));
     category_filter = ALL_CATEGORIES;
+    keep_state_fallback_at = keep_state_read_at = 0;  /* the previous synth's, if any */
     memset(encoder_acc, 0, sizeof(encoder_acc));
     patch_loaded = patch_browse = NONE;
     inst_init = false;  /* instances start without patches */
@@ -1819,6 +1902,13 @@ static void editor_button_impl(int bit, bool down)
         overview = false;
         synth_confirm = -1;
         mode = mode == (ui_mode_t)menu ? MODE_EDIT : (ui_mode_t)menu;
+        if (mode == MODE_SYNTH) {
+            for (int i = 0; i < SYNTH_COUNT; i++) {
+                if (synths[i] == synth) {
+                    synth_list_first = i / 8 * 8;  /* the page with the active one */
+                }
+            }
+        }
         memset(encoder_acc, 0, sizeof(encoder_acc));
         for (int d = 0; d < DISPLAY_COUNT; d++) {
             display_clear(d);
@@ -1841,8 +1931,9 @@ static void editor_button_impl(int bit, bool down)
         return;
     }
     if (mode == MODE_SYNTH) {
-        if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + SYNTH_COUNT) {
-            pick_synth(bit - BTN_DISPLAY_1);
+        int i = synth_list_first + bit - BTN_DISPLAY_1;
+        if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + 8 && i < SYNTH_COUNT) {
+            pick_synth(i);
         }
         return;
     }
@@ -2013,6 +2104,16 @@ static void editor_main_encoder_impl(int steps)
         store_main_encoder(steps);
         return;
     }
+    if (mode == MODE_SYNTH) {
+        /* More than 8 synths: the list scrolls by 8 */
+        int first = synth_list_first + (steps > 0 ? 8 : -8);
+        if (first >= 0 && first < SYNTH_COUNT) {
+            synth_list_first = first;
+            synth_confirm = -1;
+            draw_synths();
+        }
+        return;
+    }
     if (mode != MODE_EDIT) {
         return;
     }
@@ -2071,6 +2172,16 @@ static void editor_tick_impl(int64_t now_us)
     }
     if (init_armed_until && now_us > init_armed_until) {
         cancel_init();
+    }
+    if (keep_state_read_at && now_us > keep_state_read_at) {
+        keep_state_read_at = 0;
+        synth->read();
+        keep_state_fallback_at = now_us + KEEP_STATE_WAIT_US;
+    }
+    if (keep_state_fallback_at && now_us > keep_state_fallback_at) {
+        keep_state_fallback_at = 0;
+        ESP_LOGI(TAG, "%s didn't answer: loading the remembered patch", synth->name);
+        restore_from_library();
     }
     if (action_armed_until && now_us > action_armed_until) {
         action_armed_until = 0;
@@ -2140,6 +2251,27 @@ static void load_patch_list(void)
 
 static void load_settings(void);
 
+/* A note from DIN IN on the synth's channel, with NOTES IN on: lights the
+ * pad playing that note (if any) and tells the driver, like a pad hit */
+static void note_from_din(int channel, int note, int velocity)
+{
+    if (!notes_in || channel != play_channel() || mode == MODE_NAME) {
+        return;
+    }
+    for (int pad = 0; pad < 16; pad++) {
+        if (pad_note(pad) == note && !pad_note_count[pad]) {
+            if (velocity) {
+                maschine_set_pad_led(pad, 127, 127, 127);
+            } else {
+                pad_idle(pad);
+            }
+        }
+    }
+    if (velocity && synth->note_played && mode == MODE_EDIT) {
+        synth->note_played(note);
+    }
+}
+
 /* SysEx from DIN IN goes to the active synth's driver */
 static void sysex_from_din(const uint8_t *data, size_t len)
 {
@@ -2151,6 +2283,7 @@ static void sysex_from_din(const uint8_t *data, size_t len)
 static void editor_init_impl(void)
 {
     midi_set_sysex_handler(sysex_from_din);
+    midi_set_note_handler(note_from_din);
     char key[24] = "";
     FILE *f = fopen(ACTIVE_SYNTH_FILE, "r");
     if (f) {
@@ -2221,6 +2354,9 @@ static void editor_pad_impl(int pad, bool down, int raw)
             midi_send(0x90 | channel, pad_notes[pad][i], vel);
         }
         ESP_LOGD(TAG, "pad %d: %d notes from %d, vel %d", pad, pad_note_count[pad], pad_notes[pad][0], vel);
+        if (synth->note_played && mode == MODE_EDIT) {
+            synth->note_played(pad_notes[pad][0]);  /* e.g. the D-110 rhythm: pick that key */
+        }
         maschine_set_pad_led(pad, 127, 127, 127);
     } else {
         if (!pad_note_count[pad]) {
