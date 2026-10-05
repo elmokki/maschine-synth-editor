@@ -58,6 +58,7 @@ static const char *TAG = "editor";
 #define BTN_SCENE 40     /* top of its column: the synth selection */
 #define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
 #define BTN_ALL 14       /* the patch category screen */
+#define BTN_PAD_MODE 42  /* the pads' screen: lowest note, scale, key */
 #define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -65,6 +66,36 @@ static const char *TAG = "editor";
  * turning an encoder doesn't keep writing flash. */
 #define STATE_DIR STORAGE_ROOT "/state"
 #define SETTINGS_DIR STORAGE_ROOT "/settings"
+#define GLOBAL_SETTINGS_FILE SETTINGS_DIR "/global"
+
+/* The pads area of the device is never per synth: the pads' lowest note,
+ * scale and key are global (Pad Mode screen). Pad notes go chromatically
+ * up from the lowest note, or up the scale from its key in that octave. */
+typedef struct {
+    const char *name;
+    uint8_t count;
+    uint8_t steps[12];
+} scale_t;
+static const scale_t scales[] = {
+    {"CHROMATIC", 12, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+    {"MAJOR", 7, {0, 2, 4, 5, 7, 9, 11}},
+    {"MINOR", 7, {0, 2, 3, 5, 7, 8, 10}},
+    {"HARM MIN", 7, {0, 2, 3, 5, 7, 8, 11}},
+    {"DORIAN", 7, {0, 2, 3, 5, 7, 9, 10}},
+    {"MIXOLYD", 7, {0, 2, 4, 5, 7, 9, 10}},
+    {"PENTA MAJ", 5, {0, 2, 4, 7, 9}},
+    {"PENTA MIN", 5, {0, 3, 5, 7, 10}},
+    {"BLUES", 6, {0, 3, 5, 6, 7, 10}},
+};
+#define SCALE_COUNT ((int)(sizeof(scales) / sizeof(scales[0])))
+/* Pad Mode screen settings (ids beyond any synth setting index) */
+#define PAD_LOW_ID 100
+#define PAD_SCALE_ID 101
+#define PAD_KEY_ID 102
+#define PAD_LOW_DEFAULT 48  /* C2: lowest pad, bottom left */
+static int pad_low = PAD_LOW_DEFAULT;
+static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
+static int pad_playing[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 #define WRITE_DELAY_US 5000000
 #define MAX_SETTINGS 8
 
@@ -150,8 +181,15 @@ static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
-typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY } ui_mode_t;
+typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS } ui_mode_t;
 static ui_mode_t mode;
+
+/* Screens opened by their own button (Scene, All, Pad Mode, Control) */
+static bool is_menu(ui_mode_t m)
+{
+    return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP;
+}
+
 static int store_target;  /* NONE = new patch, else index of a user patch */
 static char store_name[TEXTENTRY_MAX_LEN + 1];
 static int64_t delete_armed_until;  /* DELETE pressed once, press again to confirm */
@@ -162,6 +200,7 @@ static void draw_store(void);
 static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
+static void draw_pads(void);
 
 int synth_setting(int index)
 {
@@ -210,16 +249,31 @@ static const uint8_t *theme_dim(void)
     return has_theme() ? synth->theme_dim : default_dim;
 }
 
-/* Pads at rest, in the synth's theme */
+/* Pad 12 (bottom left) is the lowest note, rows go up like a keyboard;
+ * chromatic from PAD LOW, or up the scale from its key */
+static int pad_note(int pad)
+{
+    int idx = (3 - pad / 4) * 4 + pad % 4;
+    int low = pad_low;
+    const scale_t *sc = &scales[pad_scale];
+    int note = pad_scale == 0 ? low + idx
+                              : low - low % 12 + pad_key + 12 * (idx / sc->count) + sc->steps[idx % sc->count];
+    return note > 127 ? 127 : note;
+}
+
+/* Pads at rest, in the synth's theme; the key's notes brighter, so the
+ * octaves show */
+#define PAD_ROOT_GAIN 3
 static void pad_idle(int pad)
 {
     const uint8_t *c = theme_dim();
-    maschine_set_pad_led(pad, c[0], c[1], c[2]);
+    int g = pad_note(pad) % 12 == pad_key ? PAD_ROOT_GAIN : 1;
+    maschine_set_pad_led(pad, c[0] * g, c[1] * g, c[2] * g);
 }
 
 static void update_group_leds(void)
 {
-    if (mode != MODE_EDIT) {
+    if (mode != MODE_EDIT && !is_menu(mode)) {
         for (int g = 0; g < 8; g++) {
             maschine_set_group_led(g, 0, 0, 0);  /* sections can't be picked here */
         }
@@ -228,7 +282,7 @@ static void update_group_leds(void)
     for (int g = 0; g < 8; g++) {
         uint8_t own[3];
         bool own_dim = synth->section_dim && synth->section_dim(g, own);
-        if (g == synth->pages[page].section) {
+        if (g == synth->pages[page].section && mode == MODE_EDIT) {  /* not while a menu covers it */
             int count = section_page_count(g);
             int k = page - section_first_page(g);
             bool lit_l = count == 1 || k != 1;
@@ -282,12 +336,15 @@ static void update_button_leds(void)
     bool edit = mode == MODE_EDIT, store = mode == MODE_STORE || mode == MODE_NAME;
     /* Panic works on every screen */
     maschine_set_button_led(BTN_MUTE, panic_flash_until ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : edit ? LED_DIM : 0);
-    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : edit ? LED_DIM : 0);
+    /* Menus open from the editor and from each other */
+    bool menus = edit || is_menu(mode);
+    maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
-                                     : mode == MODE_CATEGORY || (edit && category_filter != ALL_CATEGORIES)
+                                     : mode == MODE_CATEGORY || (menus && category_filter != ALL_CATEGORIES)
                                      ? LED_ON
-                                     : edit ? LED_DIM : 0);
+                                     : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_REC, store ? LED_ON : edit ? LED_DIM : 0);
     maschine_set_button_led(BTN_ENTER, store ? LED_DIM
                                        : !edit ? 0
@@ -572,6 +629,10 @@ static void draw_page(void)
     }
     if (mode == MODE_CATEGORY) {
         draw_categories();
+        return;
+    }
+    if (mode == MODE_PADS) {
+        draw_pads();
         return;
     }
     if (mode != MODE_EDIT) {
@@ -954,6 +1015,12 @@ static void format_setting(int i, char *buf, size_t len)
 }
 
 /* Same column layout as the parameters: one setting per encoder */
+/* Setup screen column -> setting index, or NONE */
+static int setup_setting_at(int col)
+{
+    return col < synth->setting_count ? col : NONE;
+}
+
 static void draw_setup(void)
 {
     char buf[48];
@@ -964,25 +1031,51 @@ static void draw_setup(void)
     snprintf(buf, sizeof(buf), "SETUP  %s", synth->name);
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "CONTROL closes", true);
-    for (int i = 0; i < synth->setting_count && i < 8; i++) {
-        int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
+    for (int col = 0; col < 8; col++) {
+        int i = setup_setting_at(col);
+        if (i == NONE) {
+            break;
+        }
+        int disp = col / 4, x = (col % 4) * COLUMN_WIDTH;
         draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, synth->settings[i].name, true);
         format_setting(i, buf, sizeof(buf));
         draw_centered(disp, x, COLUMN_INNER, VALUE_CAP_Y, &font_large, buf, true);
     }
 }
 
-static void setup_encoder(int i, int delta)
+/* Setting i (a synth setting index, PAD_SCALE_ID or PAD_KEY_ID) turned by
+ * encoder col */
+static void setting_encoder(int i, int col, int delta)
 {
-    if (i >= synth->setting_count) {
+    if (i >= PAD_LOW_ID) {
+        encoder_acc[col] += delta;
+        int steps = encoder_acc[col] / UNITS_SETTING;
+        encoder_acc[col] -= steps * UNITS_SETTING;
+        int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale : &pad_key;
+        int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : 11;
+        int nv = *v + steps;
+        nv = nv < 0 ? 0 : nv > max ? max : nv;
+        if (nv != *v) {
+            *v = nv;
+            settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+            for (int pad = 0; pad < 16; pad++) {
+                if (pad_playing[pad] < 0) {
+                    pad_idle(pad);
+                }
+            }
+            draw_page();
+        }
         return;
     }
-    encoder_acc[i] += delta;
-    int steps = encoder_acc[i] / UNITS_SETTING;
+    if (i < 0 || i >= synth->setting_count) {
+        return;
+    }
+    encoder_acc[col] += delta;
+    int steps = encoder_acc[col] / UNITS_SETTING;
     if (steps == 0) {
         return;
     }
-    encoder_acc[i] -= steps * UNITS_SETTING;
+    encoder_acc[col] -= steps * UNITS_SETTING;
     const synth_setting_t *st = &synth->settings[i];
     int v = setting_values[i] + steps;
     v = v < st->min ? st->min : v > st->max ? st->max : v;
@@ -991,11 +1084,30 @@ static void setup_encoder(int i, int delta)
     }
     setting_values[i] = v;
     settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
-    draw_setup();
+    draw_page();
 }
 
 /* Settings file: one "NAME=value" line per setting, so adding settings to
  * a driver later doesn't invalidate saved files */
+static void load_global_settings(void)
+{
+    FILE *f = fopen(GLOBAL_SETTINGS_FILE, "r");
+    char line[32];
+    while (f && fgets(line, sizeof(line), f)) {
+        int v;
+        if (sscanf(line, "PAD LOW=%d", &v) == 1 && v >= 0 && v <= 112) {
+            pad_low = v;
+        } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
+            pad_scale = v;
+        } else if (sscanf(line, "KEY=%d", &v) == 1 && v >= 0 && v < 12) {
+            pad_key = v;
+        }
+    }
+    if (f) {
+        fclose(f);
+    }
+}
+
 static void load_settings(void)
 {
     for (int i = 0; i < synth->setting_count; i++) {
@@ -1039,6 +1151,11 @@ static void save_settings(void)
     }
     fclose(f);
     ESP_LOGI(TAG, "saved settings %s", path);
+    f = fopen(GLOBAL_SETTINGS_FILE, "w");
+    if (f) {
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\n", pad_low, pad_scale, pad_key);
+        fclose(f);
+    }
 }
 
 /* ---- init / panic ---- */
@@ -1102,6 +1219,46 @@ static void load_settings(void);
 
 /* One column per synth, its display button picks it; the active one is
  * filled, one asking for confirmation says SURE? */
+/* Pads screen (Pad Mode): lowest note, scale and key on encoders 1-3, and
+ * the pads' notes on the right display laid out like the pads, the key's
+ * notes inverted */
+static void draw_pads(void)
+{
+    static const char *const keys[12] = {"C", "C#", "D", "D#", "E", "F",
+                                         "F#", "G", "G#", "A", "A#", "B"};
+    char buf[16];
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
+    }
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS  (all synths)", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
+    const char *names[3] = {"PAD LOW", "PAD SCALE", "PAD KEY"};
+    snprintf(buf, sizeof(buf), "%s%d", keys[pad_low % 12], pad_low / 12 - 2);  /* 60 = C3 */
+    const char *vals[3] = {buf, scales[pad_scale].name, keys[pad_key]};
+    for (int k = 0; k < 3; k++) {
+        int x = k * COLUMN_WIDTH;
+        draw_centered(0, x, COLUMN_INNER, NAME_CAP_Y, &font_small, names[k], true);
+        const font_t *vf = display_text_width(&font_large, vals[k]) <= COLUMN_INNER - 2 ? &font_large
+                           : display_text_width(&font_medium, vals[k]) <= COLUMN_INNER - 2 ? &font_medium
+                           : &font_small;
+        draw_centered(0, x, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf,
+                      vals[k], true);
+    }
+    const int cell_h = (DISPLAY_HEIGHT - HEADER_LINE_Y - 1) / 4;
+    for (int pad = 0; pad < 16; pad++) {
+        int x = (pad % 4) * COLUMN_WIDTH, y = HEADER_LINE_Y + 1 + (pad / 4) * cell_h;
+        int note = pad_note(pad);
+        bool root = note % 12 == pad_key;
+        snprintf(buf, sizeof(buf), "%s%d", keys[note % 12], note / 12 - 2);
+        if (root) {
+            display_round_rect(1, x + 2, y + 1, COLUMN_INNER - 4, cell_h - 1, true, true);
+        }
+        draw_centered(1, x, COLUMN_INNER, y + (cell_h - font_small.cap_height) / 2 + 1, &font_small, buf,
+                      !root);
+    }
+}
+
 /* Category screen: one box per display button, chosen ones filled (all,
  * by default), the number of patches under each; browsing only steps
  * through patches of the chosen categories */
@@ -1281,7 +1438,8 @@ static void pick_synth(int i)
 
 /* ---- input ---- */
 
-static void setup_encoder(int i, int delta);
+static void setting_encoder(int i, int col, int delta);
+static int setup_setting_at(int col);
 
 static void editor_encoder_impl(int i, int delta)
 {
@@ -1289,7 +1447,14 @@ static void editor_encoder_impl(int i, int delta)
         return;  /* the synth isn't listening yet */
     }
     if (mode == MODE_SETUP) {
-        setup_encoder(i, delta);
+        setting_encoder(setup_setting_at(i), i, delta);
+        return;
+    }
+    if (mode == MODE_PADS) {
+        static const int pad_settings[3] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID};
+        if (i < 3) {
+            setting_encoder(pad_settings[i], i, delta);
+        }
         return;
     }
     if (mode == MODE_STORE && i == 4 && synth->categories) {
@@ -1411,33 +1576,45 @@ static void editor_button_impl(int bit, bool down)
     if (activating_until) {
         return;  /* the synth isn't listening yet */
     }
-    if (bit == BTN_SCENE && down && (mode == MODE_EDIT || mode == MODE_SYNTH)) {
+    /* Menu screens (Scene, All, Pad Mode, Control): their button opens or
+     * closes them, from the editor or straight from another menu; a Group
+     * button goes straight back to the editor, at that section */
+    int menu = bit == BTN_SCENE ? MODE_SYNTH
+               : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
+               : bit == BTN_PAD_MODE ? MODE_PADS
+               : bit == BTN_CONTROL ? MODE_SETUP
+               : NONE;
+    if (menu != NONE && down && (mode == MODE_EDIT || is_menu(mode))) {
         end_browse();
         cancel_init();
         overview = false;
         synth_confirm = -1;
-        mode = mode == MODE_SYNTH ? MODE_EDIT : MODE_SYNTH;
+        mode = mode == (ui_mode_t)menu ? MODE_EDIT : (ui_mode_t)menu;
+        memset(encoder_acc, 0, sizeof(encoder_acc));
         for (int d = 0; d < DISPLAY_COUNT; d++) {
             display_clear(d);
         }
         draw_page();
+        return;
+    }
+    if (is_menu(mode) && down && bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
+        int section = bit - BTN_GROUP_A;
+        mode = MODE_EDIT;
+        memset(encoder_acc, 0, sizeof(encoder_acc));
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        if (section == synth->pages[page].section || section_first_page(section) == NONE) {
+            go_to_page(page);  /* back where the editor was */
+        } else {
+            select_section(section);
+        }
         return;
     }
     if (mode == MODE_SYNTH) {
         if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + SYNTH_COUNT) {
             pick_synth(bit - BTN_DISPLAY_1);
         }
-        return;
-    }
-    if (bit == BTN_ALL && down && synth->categories && (mode == MODE_EDIT || mode == MODE_CATEGORY)) {
-        end_browse();
-        cancel_init();
-        overview = false;
-        mode = mode == MODE_CATEGORY ? MODE_EDIT : MODE_CATEGORY;
-        for (int d = 0; d < DISPLAY_COUNT; d++) {
-            display_clear(d);
-        }
-        draw_page();
         return;
     }
     if (mode == MODE_CATEGORY) {
@@ -1447,18 +1624,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (bit == BTN_CONTROL && down && (mode == MODE_EDIT || mode == MODE_SETUP)) {
-        end_browse();
-        overview = false;
-        mode = mode == MODE_SETUP ? MODE_EDIT : MODE_SETUP;
-        memset(encoder_acc, 0, sizeof(encoder_acc));
-        for (int d = 0; d < DISPLAY_COUNT; d++) {
-            display_clear(d);
-        }
-        draw_page();
-        return;
-    }
-    if (mode == MODE_SETUP) {
+    if (mode == MODE_PADS || mode == MODE_SETUP) {
         return;
     }
     if (mode != MODE_EDIT) {
@@ -1709,6 +1875,7 @@ static void editor_init_impl(void)
         }
     }
     ESP_LOGI(TAG, "synth: %s", synth->name);
+    load_global_settings();
     load_settings();
     load_patch_list();
     read_last_patch();
@@ -1747,9 +1914,12 @@ static void editor_pad_impl(int pad, bool down, int raw)
         }
         return;
     }
-    /* Pad 12 (bottom left) is the lowest note, rows go up like a keyboard */
-    int note = synth_setting(SETTING_PAD_NOTE) + (3 - pad / 4) * 4 + pad % 4;
+    int note = down ? pad_note(pad) : pad_playing[pad];
     int channel = synth_setting(SETTING_CHANNEL);
+    if (!down && note < 0) {
+        return;
+    }
+    pad_playing[pad] = down ? note : -1;
     if (down) {
         /* Velocity from the hit's peak pressure (main.c), over the range
          * from the press threshold (~1000) to full scale (4095) */

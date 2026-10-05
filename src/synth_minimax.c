@@ -82,7 +82,6 @@ static const synth_device_cc_t device_ccs[] = {
 
 static const synth_setting_t settings[] = {
     [SETTING_CHANNEL] = {"CHANNEL", SET_CHANNEL, 0, 15, 0},
-    [SETTING_PAD_NOTE] = {"PAD LOW", SET_NOTE, 0, 112, 36},  /* lowest pad (bottom left) = C1 */
     [SETTING_PLUGIN_PC] = {"PLUGIN PC", SET_NUMBER, 0, 127, 101},
     [SETTING_VOLUME] = {"VOLUME", SET_NUMBER, 0, 127, 100},  /* Plugiator device volume */
     /* Synth/mic input balance (CC93, not part of presets): 0 = synth only */

@@ -44,17 +44,17 @@ typedef struct {
     int16_t min, max, def;
 } synth_setting_t;
 
-/* Every driver's settings start with these two; the editor uses them for
- * the pads, the driver for everything it sends */
+/* Every driver's settings start with the MIDI channel; the editor uses it
+ * for the pads, the driver for everything it sends. (The pads' notes are
+ * not per synth: nothing in the device's pads area is.) */
 #define SETTING_CHANNEL 0
-#define SETTING_PAD_NOTE 1
 /* Plugiator drivers add: the Program Change that loads their plug-in. It
  * depends on the order plug-ins were installed on the box (tested here:
  * MiniMax 101, B4000 102, Lightwave 103 - the manual has B4000 and Lightwave
  * the other way round), so it's a setting. */
-#define SETTING_PLUGIN_PC 2
-#define SETTING_VOLUME 3
-#define SETTING_SYNTH_MIC 4
+#define SETTING_PLUGIN_PC 1
+#define SETTING_VOLUME 2
+#define SETTING_SYNTH_MIC 3
 
 /* A setting sent as a Control Change after activation */
 typedef struct {

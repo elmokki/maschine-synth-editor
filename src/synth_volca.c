@@ -159,7 +159,6 @@ static const char *const categories[8] = {"PIANO/KEYS", "ORGAN", "BRASS/WIND", "
 
 static const synth_setting_t settings[] = {
     [SETTING_CHANNEL] = {"CHANNEL", SET_CHANNEL, 0, 15, 0},
-    [SETTING_PAD_NOTE] = {"PAD LOW", SET_NOTE, 0, 112, 48},
 };
 
 /* ---- the DX7's 32 algorithms ---- */
