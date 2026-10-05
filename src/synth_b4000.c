@@ -107,7 +107,8 @@ static bool param_reset(int p) { return plug_reset(&set, p); }
 static bool patch_load(const char *path) { return plug_patch_load(&set, path); }
 static bool patch_save(const char *path) { return plug_patch_save(&set, path); }
 static int unknown_count(void) { return plug_unknown_count(&set); }
-static void activate(void) { plug_activate(&set); }
+static bool activate(void) { return plug_activate(&set); }
+static bool is_loaded(void) { return plug_is_loaded(&set); }
 
 static int param_draw(int p, int disp, int x, int y, int w, int h)
 {
@@ -137,6 +138,7 @@ const synth_t synth_b4000 = {
     .patch_save = patch_save,
     .unknown_count = unknown_count,
     .activate = activate,
+    .is_loaded = is_loaded,
     .activate_ms = 1500,
     .volume_cc = 7,  /* "Plugiator Device Volume", not part of presets */
     .volume_setting = SETTING_VOLUME,

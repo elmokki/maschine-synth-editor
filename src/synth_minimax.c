@@ -225,9 +225,14 @@ static int unknown_count(void)
     return plug_unknown_count(&set);
 }
 
-static void activate(void)
+static bool activate(void)
 {
-    plug_activate(&set);
+    return plug_activate(&set);
+}
+
+static bool is_loaded(void)
+{
+    return plug_is_loaded(&set);
 }
 
 const synth_t synth_minimax = {
@@ -253,6 +258,7 @@ const synth_t synth_minimax = {
     .patch_save = patch_save,
     .unknown_count = unknown_count,
     .activate = activate,
+    .is_loaded = is_loaded,
     .activate_ms = 1500,
     .volume_cc = 7,  /* "Plugiator Device Volume", not part of presets */
     .volume_setting = SETTING_VOLUME,

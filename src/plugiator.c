@@ -1,12 +1,14 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "display.h"
 #include "fonts.h"
 #include "midi.h"
+#include "storage.h"
 #include "synth.h"
 #include "plugiator.h"
 
@@ -445,8 +447,46 @@ bool plug_reset(plug_set_t *s, int p)
     return true;
 }
 
-void plug_activate(plug_set_t *s)
+/* The plug-in the editor loaded last: "<tag> <program>" */
+#define LOADED_FILE STORAGE_ROOT "/state/plugiator_loaded"
+static char loaded[32];
+static bool loaded_read;
+
+static const char *loaded_plugin(void)
 {
+    if (!loaded_read) {
+        loaded_read = true;
+        FILE *f = fopen(LOADED_FILE, "r");
+        if (f) {
+            if (!fgets(loaded, sizeof(loaded), f)) {
+                loaded[0] = '\0';
+            }
+            fclose(f);
+        }
+    }
+    return loaded;
+}
+
+bool plug_is_loaded(plug_set_t *s)
+{
+    size_t n = strlen(s->tag);
+    return strncmp(loaded_plugin(), s->tag, n) == 0 && loaded[n] == ' ';
+}
+
+bool plug_activate(plug_set_t *s)
+{
+    char want[32];
+    snprintf(want, sizeof(want), "%s %d", s->tag, synth_setting(SETTING_PLUGIN_PC));
+    if (strcmp(loaded_plugin(), want) == 0) {
+        ESP_LOGI(s->tag, "plug-in already loaded");
+        return false;
+    }
+    snprintf(loaded, sizeof(loaded), "%s", want);
+    FILE *f = fopen(LOADED_FILE, "w");
+    if (f) {
+        fputs(loaded, f);
+        fclose(f);
+    }
     /* The Plugiator loads a plug-in on a Program Change followed by
      * any note within a short time (tested from the PC: a velocity-64 note
      * 50 ms later works and isn't heard; the new plug-in plays ~1 s later).
@@ -461,4 +501,5 @@ void plug_activate(plug_set_t *s)
     midi_send(0x90 | ch, 60, 64);
     midi_send(0x80 | ch, 60, 0);
     ESP_LOGI(s->tag, "loading plug-in (program %d)", program);
+    return true;
 }

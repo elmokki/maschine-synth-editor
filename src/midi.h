@@ -25,3 +25,9 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2);
 /* Queues a whole System Exclusive message (F0 ... F7 included) for DIN OUT;
  * false if it doesn't fit the queue right now (nothing is sent then). */
 bool midi_send_sysex(const uint8_t *data, size_t len);
+
+/* What arrives on DIN IN goes back out of DIN OUT: not at all, as is, or
+ * with channel messages moved to `channel` (the selected synth's). SysEx
+ * goes out once complete, so it never mixes with the editor's own. */
+typedef enum { MIDI_THRU_OFF, MIDI_THRU_ALL, MIDI_THRU_TO_CHANNEL } midi_thru_t;
+void midi_set_thru(midi_thru_t mode, int channel);

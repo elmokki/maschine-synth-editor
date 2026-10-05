@@ -17,7 +17,12 @@ static usb_host_client_handle_t client_hdl;
 static usb_device_handle_t dev_hdl;
 static uint8_t ep_in, ep_out;
 static int in_mps;
-static usb_transfer_t *xfer_in, *xfer_out;
+/* Several IN transfers queued, so one is always waiting while another's
+ * callback runs. (Single-byte messages sent back to back - no gaps at all -
+ * still lose some before they reach us, in the Maschine or the sender;
+ * realistic MIDI clock at 120 BPM passes complete.) */
+#define IN_XFERS 4
+static usb_transfer_t *xfer_in[IN_XFERS], *xfer_out;
 static bool attached, out_busy;
 
 /* Pending USB-MIDI event packets (4 bytes each) waiting for xfer_out */
@@ -109,6 +114,66 @@ bool midi_send_sysex(const uint8_t *data, size_t len)
     return true;
 }
 
+/* ---- MIDI thru ---- */
+
+#define THRU_SYSEX_MAX 1024
+static midi_thru_t thru_mode;
+static int thru_channel;
+static uint8_t thru_sysex[THRU_SYSEX_MAX];
+static size_t thru_sysex_len;
+static bool thru_sysex_overflow;
+
+void midi_set_thru(midi_thru_t mode, int channel)
+{
+    thru_mode = mode;
+    thru_channel = channel & 0x0F;
+}
+
+/* One USB-MIDI event packet to the OUT queue as is */
+static void queue_packet(const uint8_t *ev)
+{
+    if (q_head - q_tail >= QUEUE_LEN) {
+        return;
+    }
+    memcpy(queue[q_head % QUEUE_LEN], ev, 4);
+    queue[q_head % QUEUE_LEN][0] = (MIDI_CABLE << 4) | (ev[0] & 0x0F);
+    q_head++;
+}
+
+static void thru(const uint8_t *ev)
+{
+    int cin = ev[0] & 0x0F;
+    if (cin >= 0x4 && cin <= 0x7) {
+        /* SysEx: collected, sent whole */
+        int n = cin == 0x4 ? 3 : cin - 4;
+        if (ev[1] == 0xF0) {
+            thru_sysex_len = 0;
+            thru_sysex_overflow = false;
+        }
+        for (int k = 0; k < n; k++) {
+            if (thru_sysex_len < THRU_SYSEX_MAX) {
+                thru_sysex[thru_sysex_len++] = ev[1 + k];
+            } else {
+                thru_sysex_overflow = true;
+            }
+        }
+        if (cin != 0x4) {
+            if (!thru_sysex_overflow) {
+                midi_send_sysex(thru_sysex, thru_sysex_len);
+            } else {
+                ESP_LOGW(TAG, "thru: SysEx over %d bytes dropped", THRU_SYSEX_MAX);
+            }
+            thru_sysex_len = 0;
+        }
+        return;
+    }
+    uint8_t out[4] = {ev[0], ev[1], ev[2], ev[3]};
+    if (cin >= 0x8 && cin <= 0xE && thru_mode == MIDI_THRU_TO_CHANNEL) {
+        out[1] = (out[1] & 0xF0) | thru_channel;
+    }
+    queue_packet(out);
+}
+
 static void in_cb(usb_transfer_t *xfer)
 {
     if (xfer->status == USB_TRANSFER_STATUS_COMPLETED) {
@@ -119,12 +184,16 @@ static void in_cb(usb_transfer_t *xfer)
             if (len == 0) {
                 continue;  /* padding / reserved */
             }
+            if (thru_mode != MIDI_THRU_OFF) {
+                thru(&d[i]);
+            }
             char hex[3 * 3 + 1] = "";
             for (int k = 0; k < len; k++) {
                 sprintf(&hex[k * 3], "%02X ", d[i + 1 + k]);
             }
-            ESP_LOGI(TAG, "DIN IN (cable %d): %s", d[i] >> 4, hex);
+            ESP_LOGD(TAG, "DIN IN (cable %d): %s", d[i] >> 4, hex);
         }
+        out_kick();
     } else if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
         ESP_LOGW(TAG, "IN transfer status %d", xfer->status);
         if (attached) {
@@ -190,11 +259,13 @@ static bool find_endpoints(const usb_config_desc_t *cfg, bool full_speed)
 bool midi_attach(usb_host_client_handle_t client, usb_device_handle_t dev,
                  const usb_config_desc_t *cfg)
 {
-    if (!xfer_in) {
+    if (!xfer_out) {
         /* Allocated once and reused across reconnects */
-        ESP_ERROR_CHECK(usb_host_transfer_alloc(MIDI_BUF_SIZE, 0, &xfer_in));
-        xfer_in->callback = in_cb;
-        xfer_in->timeout_ms = 0;
+        for (int k = 0; k < IN_XFERS; k++) {
+            ESP_ERROR_CHECK(usb_host_transfer_alloc(MIDI_BUF_SIZE, 0, &xfer_in[k]));
+            xfer_in[k]->callback = in_cb;
+            xfer_in[k]->timeout_ms = 0;
+        }
         ESP_ERROR_CHECK(usb_host_transfer_alloc(MIDI_BUF_SIZE, 0, &xfer_out));
         xfer_out->callback = out_cb;
         xfer_out->timeout_ms = 1000;
@@ -217,10 +288,12 @@ bool midi_attach(usb_host_client_handle_t client, usb_device_handle_t dev,
     out_busy = false;
     q_head = q_tail = 0;
 
-    xfer_in->num_bytes = usb_round_up_to_mps(MIDI_BUF_SIZE, in_mps);
-    xfer_in->device_handle = dev_hdl;
-    xfer_in->bEndpointAddress = ep_in;
-    ESP_ERROR_CHECK(usb_host_transfer_submit(xfer_in));
+    for (int k = 0; k < IN_XFERS; k++) {
+        xfer_in[k]->num_bytes = usb_round_up_to_mps(MIDI_BUF_SIZE, in_mps);
+        xfer_in[k]->device_handle = dev_hdl;
+        xfer_in[k]->bEndpointAddress = ep_in;
+        ESP_ERROR_CHECK(usb_host_transfer_submit(xfer_in[k]));
+    }
 
     ESP_LOGI(TAG, "USB-MIDI interface claimed (DIN IN/OUT)");
     return true;

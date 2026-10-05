@@ -105,8 +105,12 @@ bool plug_patch_load(plug_set_t *s, const char *path);
 bool plug_patch_save(plug_set_t *s, const char *path);
 int plug_unknown_count(plug_set_t *s);
 /* Loads the plug-in on the Plugiator: Program Change (the driver's
- * SETTING_PLUGIN_PC) + a confirming note */
-void plug_activate(plug_set_t *s);
+ * SETTING_PLUGIN_PC) + a confirming note - unless the editor loaded it
+ * last (remembered across boots; assumes nobody else changes it); true if
+ * it was sent */
+bool plug_activate(plug_set_t *s);
+/* The editor loaded this plug-in last */
+bool plug_is_loaded(plug_set_t *s);
 
 /* For drivers' virtual parameters */
 void plug_init_values(plug_set_t *s);

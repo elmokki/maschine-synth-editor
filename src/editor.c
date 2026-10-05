@@ -93,6 +93,12 @@ static const scale_t scales[] = {
 #define PAD_SCALE_ID 101
 #define PAD_KEY_ID 102
 #define PAD_LOW_DEFAULT 48  /* C2: lowest pad, bottom left */
+/* Global settings, on the Setup screen's right display (the synth's own
+ * are on the left, so at most 4) */
+#define SETUP_SYNTH_COLS 4
+#define MIDI_THRU_ID 103
+static int midi_thru = MIDI_THRU_OFF;
+static const char *const thru_names[] = {"OFF", "THRU", "TO SYNTH"};
 static int pad_low = PAD_LOW_DEFAULT;
 static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
 static int pad_playing[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
@@ -1015,9 +1021,13 @@ static void format_setting(int i, char *buf, size_t len)
 }
 
 /* Same column layout as the parameters: one setting per encoder */
-/* Setup screen column -> setting index, or NONE */
+/* Setup screen column -> setting index (columns 1-4: the synth's), a
+ * global setting id (5-8) or NONE */
 static int setup_setting_at(int col)
 {
+    if (col >= SETUP_SYNTH_COLS) {
+        return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : NONE;
+    }
     return col < synth->setting_count ? col : NONE;
 }
 
@@ -1030,8 +1040,17 @@ static void draw_setup(void)
     }
     snprintf(buf, sizeof(buf), "SETUP  %s", synth->name);
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "ALL SYNTHS", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "CONTROL closes", true);
-    for (int col = 0; col < 8; col++) {
+    /* Global: MIDI thru (DIN IN -> DIN OUT, as is or to this synth's channel) */
+    const char *thru = thru_names[midi_thru];
+    draw_centered(1, 0, COLUMN_INNER, NAME_CAP_Y, &font_small, "MIDI THRU", true);
+    const font_t *vf = display_text_width(&font_large, thru) <= COLUMN_INNER - 2 ? &font_large
+                       : display_text_width(&font_medium, thru) <= COLUMN_INNER - 2 ? &font_medium
+                       : &font_small;
+    draw_centered(1, 0, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf, thru,
+                  true);
+    for (int col = 0; col < SETUP_SYNTH_COLS; col++) {
         int i = setup_setting_at(col);
         if (i == NONE) {
             break;
@@ -1051,8 +1070,9 @@ static void setting_encoder(int i, int col, int delta)
         encoder_acc[col] += delta;
         int steps = encoder_acc[col] / UNITS_SETTING;
         encoder_acc[col] -= steps * UNITS_SETTING;
-        int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale : &pad_key;
-        int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : 11;
+        int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
+                 : i == PAD_KEY_ID ? &pad_key : &midi_thru;
+        int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11 : 2;
         int nv = *v + steps;
         nv = nv < 0 ? 0 : nv > max ? max : nv;
         if (nv != *v) {
@@ -1097,6 +1117,8 @@ static void load_global_settings(void)
         int v;
         if (sscanf(line, "PAD LOW=%d", &v) == 1 && v >= 0 && v <= 112) {
             pad_low = v;
+        } else if (sscanf(line, "MIDI THRU=%d", &v) == 1 && v >= 0 && v <= 2) {
+            midi_thru = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
             pad_scale = v;
         } else if (sscanf(line, "KEY=%d", &v) == 1 && v >= 0 && v < 12) {
@@ -1153,7 +1175,7 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\n", pad_low, pad_scale, pad_key);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\n", pad_low, pad_scale, pad_key, midi_thru);
         fclose(f);
     }
 }
@@ -1305,6 +1327,9 @@ static void draw_synths(void)
                       &font_small, label, !active);
         if (active) {
             draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, "ACTIVE", true);
+        } else if (synths[i]->is_loaded && synths[i]->is_loaded()) {
+            /* e.g. the Plugiator's current plug-in: switching to it is instant */
+            draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, "LOADED", true);
         }
     }
     if (synth_confirm >= 0) {
@@ -1360,8 +1385,7 @@ static void start_activation(void)
     if (!usb_ready) {
         return;  /* editor_connected() does it */
     }
-    if (synth->activate) {
-        synth->activate();
+    if (synth->activate && synth->activate()) {
         activating_until = esp_timer_get_time() + synth->activate_ms * 1000LL;
         draw_page();
     } else {
@@ -1773,6 +1797,8 @@ static void save_settings(void);
 
 static void editor_tick_impl(int64_t now_us)
 {
+    /* Follows the setting and the selected synth's channel */
+    midi_set_thru((midi_thru_t)midi_thru, synth_setting(SETTING_CHANNEL));
     textentry_tick(now_us);
     if (synth->tick) {
         synth->tick(now_us);

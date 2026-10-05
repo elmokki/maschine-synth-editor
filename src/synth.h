@@ -95,10 +95,14 @@ typedef struct {
     int (*unknown_count)(void);            /* params a save would fill with defaults */
 
     /* Optional: make the instrument ready when this synth gets selected
-     * (e.g. load a Plugiator plug-in); the editor waits activate_ms before
-     * sending a patch */
-    void (*activate)(void);
+     * (e.g. load a Plugiator plug-in); true = it had to change something
+     * and the editor waits activate_ms before sending a patch, false = it
+     * was ready already */
+    bool (*activate)(void);
     int activate_ms;
+    /* Optional: the instrument has this synth loaded right now (e.g. the
+     * Plugiator's current plug-in), even when another synth is selected */
+    bool (*is_loaded)(void);
 
     /* Optional device volume (Volume button + main encoder): sent as this
      * Control Change, kept in setting volume_setting and re-sent after
