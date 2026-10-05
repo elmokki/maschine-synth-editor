@@ -97,7 +97,7 @@ and knows nothing about any particular synth; each synth is a driver behind `src
 settings, formatting/stepping/sending of parameters, an optional picture per parameter
 (waveforms; envelopes later), and patch load/save. A second synth = a new driver file.
 
-**Synths** (Scene button): one column per driver, its display button switches (asks SURE? if
+**Synths** (Step button): one column per driver, its display button switches (asks SURE? if
 the patch has unsaved edits). Switching (and every boot) runs the driver's `activate` — for
 Plugiator plug-ins a Program Change (Setup: PLUGIN PC; on this box MiniMax 101, B4000 102, Lightwave 103 - the manual has
 B4000/Lightwave the other way round, it depends on the install order) plus a confirming note 100 ms later,
@@ -122,10 +122,11 @@ input channel (for DIN IN) will be added when a synth needs it; the Plugiator do
 
 **Editor** (`src/editor.c`), the navigation model meant for every synth:
 - Group buttons A-H select a section, pressing the current one again steps to its next page;
-  the main encoder and the top arrow pair step through all pages; Navigate (held) shows the
-  section list. Parallel sections keep the page position (OP1 EG → OP3 EG).
-- Group LEDs: dim blue = section exists, dim violet = it has several pages; the selected one is
-  cyan, and its page shows on the button's two LEDs (page 1 = left, 2 = right, 3 = whole button).
+  the main encoder and the arrow pair next to Enter step through all pages; Sampling (held)
+  shows the section list. Parallel sections keep the page position (OP1 EG → OP3 EG).
+- Group LEDs, in the synth's colour theme: dim = section exists (sliding in brightness across
+  the button if it has several pages); the selected one is bright, and its page shows on the
+  button's two LEDs (page 1 = left, 2 = right, 3 = whole button).
 - MiniMax sections follow the plug-in GUI: the Main panel first in signal-chain order
   (A Oscillators, B Mixer, C Filter, D Loudness), then E Controllers, then the Add panel
   (F Additional, G Effects: Chorus / Delay / Delay Sync). Each switch sits above the knob it
@@ -133,7 +134,7 @@ input channel (for DIN IN) will be added when a synth needs it; the Plugiator do
 - 8 encoders = the page's 8 parameters (6-position knobs step every ~1/16 turn, waveforms drawn
   as a small picture), display buttons = the page's switches.
 - Header row: section/page and patch on the left display, prev/next page on the right. The
-  arrow pair next to Enter browses patches (or the main encoder, while Browse is toggled on);
+  top arrow pair browses patches (or the main encoder, while Browse is toggled on);
   a browsed patch shows inverted in the header (plain again when back on the loaded one), Enter
   loads it, any parameter encoder cancels browsing.
 - Rec = store screen: save as new (`User NNN`, numbers from 100) or over a user patch, RENAME

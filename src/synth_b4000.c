@@ -116,7 +116,7 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
 }
 
 const synth_t synth_b4000 = {
-    .name = "B4000",
+    .name = "Plugiator B4000",
     .key = "b4000",
     .patch_dir = STORAGE_ROOT "/plugiator/b4000",
     .default_patch = "024 Very Basic",

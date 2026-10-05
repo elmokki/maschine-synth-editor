@@ -236,7 +236,7 @@ static bool is_loaded(void)
 }
 
 const synth_t synth_minimax = {
-    .name = "MiniMax",
+    .name = "Plugiator MiniMax",
     .key = "minimax",
     .patch_dir = STORAGE_ROOT "/plugiator/minimax",
     .default_patch = "099 Init",

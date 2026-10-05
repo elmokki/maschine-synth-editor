@@ -168,6 +168,11 @@ typedef struct {
      * pressed twice to confirm (e.g. import the synth's own sounds) */
     const char *action_name;
     void (*action)(void);
+
+    /* The instrument keeps its own state (e.g. the D-110's memory): when
+     * this synth is selected nothing is sent, the editor asks for the
+     * current state instead (read) */
+    bool keep_state;
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
@@ -190,3 +195,4 @@ extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
 extern const synth_t synth_volca;
 extern const synth_t synth_d110;
+extern const synth_t synth_d110p;

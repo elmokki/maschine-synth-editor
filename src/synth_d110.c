@@ -181,7 +181,7 @@ static const d110_param_t params[PARAM_COUNT] = {
     [P_ABP2] = {"BIAS PT 2", 0x2D, 127, 0, K_BIAS},
     [P_ABL2] = {"BIAS LVL 2", 0x2E, 12, 12, K_SIGNED},
     [P_AENV_TKF] = {"TKF", 0x2F, 4, 0, K_EG},
-    [P_AT1_VFOL] = {"T1 V-FOLLOW", 0x30, 4, 0, K_NUM},
+    [P_AT1_VFOL] = {"VFOL", 0x30, 4, 0, K_EG},  /* T1 velocity follow; on the envelope page */
     [P_AT1] = {"T1", 0x31, 100, 0, K_EG},
     [P_AT2] = {"T2", 0x32, 100, 0, K_EG},
     [P_AT3] = {"T3", 0x33, 100, 0, K_EG},
@@ -213,17 +213,19 @@ static const synth_page_t pages[] = {
                      {P_CUTOFF, P_RESO, P_FKEYF, P_FBIAS_PT, P_FBIAS_LVL, P_FENV_DEPTH, P_FENV_VELO,
                       P_FENV_DKF},
                      {_, _, _, _, _, _, _, _}},
-    /* The PG-10 has no room for release (T5) and L3: a second page, T5
-     * after T4's column and L3 after L2's */
-    [PG_TVF_ENV] = {5, "TVF ENV", {P_FENV_TKF, P_FT1, P_FT2, P_FT3, P_FT4, P_FL1, P_FL2, P_FSUS},
+    /* Envelopes stage by stage (time, then the level it goes to), unlike
+     * the PG-10, which has no room for T5 and L3: release continues on page
+     * 2 with the envelope's scaling (time keyfollow, velocity) */
+    [PG_TVF_ENV] = {5, "TVF ENV", {P_FT1, P_FL1, P_FT2, P_FL2, P_FT3, P_FL3, P_FT4, P_FSUS},
                     {_, _, _, _, _, _, _, _}, 1},
-    [PG_TVF_ENV2] = {5, "TVF ENV", {_, _, _, _, _, P_FT5, _, P_FL3}, {_, _, _, _, _, _, _, _}, 1},
+    [PG_TVF_ENV2] = {5, "TVF ENV", {P_FT5, P_FENV_TKF, _, _, _, _, _, _}, {_, _, _, _, _, _, _, _}, 1},
     [PG_TVA_LEVEL] = {6, "TVA LEVEL",
-                      {P_LEVEL, P_AVELO, P_ABP1, P_ABL1, P_ABP2, P_ABL2, P_AT1_VFOL, _},
+                      {P_LEVEL, P_AVELO, P_ABP1, P_ABL1, P_ABP2, P_ABL2, _, _},
                       {_, _, _, _, _, _, _, _}},
-    [PG_TVA_ENV] = {7, "TVA ENV", {P_AENV_TKF, P_AT1, P_AT2, P_AT3, P_AT4, P_AL1, P_AL2, P_ASUS},
+    [PG_TVA_ENV] = {7, "TVA ENV", {P_AT1, P_AL1, P_AT2, P_AL2, P_AT3, P_AL3, P_AT4, P_ASUS},
                     {_, _, _, _, _, _, _, _}, 1},
-    [PG_TVA_ENV2] = {7, "TVA ENV", {_, _, _, _, _, P_AT5, _, P_AL3}, {_, _, _, _, _, _, _, _}, 1},
+    [PG_TVA_ENV2] = {7, "TVA ENV", {P_AT5, P_AENV_TKF, P_AT1_VFOL, _, _, _, _, _},
+                     {_, _, _, _, _, _, _, _}, 1},
 };
 #undef _
 
@@ -680,8 +682,8 @@ static void set_one(int p, int i, int v)
         known[part][at] = true;
         send_bytes(at, 1);
     }
-    if (p == P_BANK) {
-        synth_redraw();  /* the PCM wave's name, in another column, depends on it */
+    if (p == P_BANK || p == P_FBIAS_PT || p == P_ABP1 || p == P_ABP2) {
+        synth_redraw();  /* another column's picture depends on it */
     }
 }
 
@@ -828,9 +830,40 @@ static bool param_reset(int p)
 
 /* ---- pictures ---- */
 
-/* PCM wave: its number, and its name below instead of a bar */
+/* A bias over the keyboard (A1-C7, left to right): flat up to the bias
+ * point, then sloping up or down (the level's sign) towards the end the
+ * direction points to (< = below the point, > = above) */
+static void draw_bias(int disp, int x, int y, int w, int h, int point, int level, int range)
+{
+    int mid = y + h / 2;
+    for (int i = 0; i < w; i += 3) {
+        display_pixel(disp, x + i, mid, true);
+    }
+    int px = x + (point & 63) * (w - 1) / 63;
+    bool below = point < 64;
+    int end_y = mid - level * (h / 2 - 1) / range;
+    if (below) {
+        display_line(disp, x, end_y, px, mid, true);
+        display_line(disp, px, mid, x + w - 1, mid, true);
+    } else {
+        display_line(disp, x, mid, px, mid, true);
+        display_line(disp, px, mid, x + w - 1, end_y, true);
+    }
+    display_line(disp, px, mid - 2, px, mid + 2, true);  /* the point */
+}
+
+/* PCM wave: its number, and its name below instead of a bar; bias levels:
+ * the curve with their bias point */
 static int param_draw(int p, int disp, int x, int y, int w, int h)
 {
+    if ((p == P_FBIAS_LVL || p == P_ABL1 || p == P_ABL2) && value_known(p) && !not_used(p)) {
+        int pt = p == P_FBIAS_LVL ? P_FBIAS_PT : p == P_ABL1 ? P_ABP1 : P_ABP2;
+        int lvl = raw_value(p, first_partial()) - params[p].center;
+        int range = p == P_FBIAS_LVL ? 7 : 12;
+        draw_bias(disp, x + 4, y, w - 8, font_large.cap_height + 2, raw_value(pt, first_partial()), lvl,
+                  range);
+        return SYNTH_DRAW_LABEL;
+    }
     if (params[p].kind != K_PCM || !value_known(p) || not_used(p)) {
         return SYNTH_DRAW_NONE;
     }
@@ -1124,7 +1157,7 @@ static int unknown_count(void)
 }
 
 const synth_t synth_d110 = {
-    .name = "D-110",
+    .name = "D-110 TONE",
     .key = "d110",
     .patch_dir = STORAGE_ROOT "/d110",
     .default_patch = "000 Init",
@@ -1160,6 +1193,7 @@ const synth_t synth_d110 = {
     .action_name = "IMPORT",
     .action = import_start,
     .categories = categories,
+    .keep_state = true,  /* selecting it reads the part's tone, sends nothing */
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
 };

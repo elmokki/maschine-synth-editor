@@ -55,7 +55,7 @@ static const char *TAG = "editor";
 #define BTN_ERASE 38
 #define BTN_MUTE 47
 #define BTN_NAVIGATE 11  /* Sampling: next to Browse and Control */
-#define BTN_SCENE 40     /* top of its column: the synth selection */
+#define BTN_STEP 9       /* by Control: the synth selection */
 #define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
 #define BTN_ALL 14       /* the patch category screen */
 #define BTN_PAD_MODE 42  /* the pads' screen: lowest note, scale, key */
@@ -149,8 +149,8 @@ static const uint8_t default_bright[3] = {30, 90, 127}, default_dim[3] = {0, 4, 
 static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
-/* The synths to pick from (Scene), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110};
+/* The synths to pick from (Step), and the active one */
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -219,7 +219,7 @@ static int64_t settings_save_at;   /* when to write the settings file, 0 = nothi
 typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS } ui_mode_t;
 static ui_mode_t mode;
 
-/* Screens opened by their own button (Scene, All, Pad Mode, Control) */
+/* Screens opened by their own button (Step, All, Pad Mode, Control) */
 static bool is_menu(ui_mode_t m)
 {
     return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP;
@@ -423,7 +423,7 @@ static void update_button_leds(void)
     /* Menus open from the editor and from each other */
     bool menus = edit || is_menu(mode);
     maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
-    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_STEP, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
                                      : mode == MODE_CATEGORY || (menus && category_filter != ALL_CATEGORIES)
@@ -711,7 +711,7 @@ static void draw_overview(void)
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
         draw_text_cap(d, 1, HEADER_CAP_Y, &font_small,
-                      d == 0 ? "SECTIONS  (Group buttons)" : "release NAVIGATE to close", true);
+                      d == 0 ? "SECTIONS  (Group buttons)" : "release SAMPLING to close", true);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
     for (int g = 0; g < 8; g++) {
@@ -751,9 +751,14 @@ static void draw_loading(void)
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
     }
-    snprintf(buf, sizeof(buf), "LOADING %s ...", synth->name);
-    draw_centered(0, 0, DISPLAY_USABLE_WIDTH, 24, &font_large, buf, true);
-    draw_centered(1, 0, DISPLAY_USABLE_WIDTH, 28, &font_small, "one moment", true);
+    /* "LOADING" on the left, the synth's name on the right (long names
+     * don't fit on one display with it) */
+    draw_centered(0, 0, DISPLAY_USABLE_WIDTH, 24, &font_large, "LOADING", true);
+    snprintf(buf, sizeof(buf), "%s", synth->name);
+    const font_t *f = display_text_width(&font_large, buf) <= DISPLAY_USABLE_WIDTH - 4 ? &font_large
+                                                                                       : &font_medium;
+    draw_centered(1, 0, DISPLAY_USABLE_WIDTH, 20, f, buf, true);
+    draw_centered(1, 0, DISPLAY_USABLE_WIDTH, 48, &font_small, "one moment", true);
 }
 
 static void draw_page(void)
@@ -1385,16 +1390,27 @@ static void revert_patch(void)
     draw_page();
 }
 
+/* Silence everything, on every channel: multi-part synths (the D-110's
+ * parts) play on several, and not every synth knows All Sound Off - the
+ * D-110 only takes All Notes Off, which Hold overrides */
 static void panic(void)
 {
     int ch = play_channel();
-    midi_send(0xB0 | ch, 120, 0);  /* All Sound Off */
-    midi_send(0xB0 | ch, 123, 0);  /* All Notes Off */
+    for (int pad = 0; pad < 16; pad++) {
+        for (int i = 0; i < pad_note_count[pad]; i++) {
+            midi_send(0x80 | ch, pad_notes[pad][i], 0);
+        }
+    }
+    for (int c = 0; c < 16; c++) {
+        midi_send(0xB0 | c, 64, 0);   /* Hold off */
+        midi_send(0xB0 | c, 120, 0);  /* All Sound Off */
+        midi_send(0xB0 | c, 123, 0);  /* All Notes Off */
+    }
     panic_flash_until = esp_timer_get_time() + PANIC_FLASH_US;
-    ESP_LOGI(TAG, "panic on channel %d", ch + 1);
+    ESP_LOGI(TAG, "panic on all channels");
 }
 
-/* ---- synth selection (Scene) ---- */
+/* ---- synth selection (Step) ---- */
 
 static void load_settings(void);
 
@@ -1474,6 +1490,8 @@ static void draw_categories(void)
     }
 }
 
+#define SYNTH_BOX_H 26
+#define SYNTH_STATUS_CAP_Y 45
 static void draw_synths(void)
 {
     for (int d = 0; d < DISPLAY_COUNT; d++) {
@@ -1481,24 +1499,34 @@ static void draw_synths(void)
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "SYNTH", true);
-    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "SCENE closes", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "STEP closes", true);
     for (int i = 0; i < SYNTH_COUNT && i < 8; i++) {
         int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
         bool active = synths[i] == synth;
         const char *label = i == synth_confirm ? "SURE?" : synths[i]->name;
-        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, active, true);
-        draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
-                      &font_small, label, !active);
+        /* Two-line boxes for all, so every name reads the same way: a name
+         * too wide for one line splits at its first space ("Plugiator" /
+         * "MiniMax"), a short one sits centred */
+        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SYNTH_BOX_H, active, true);
+        const char *sp = strchr(label, ' ');
+        if (display_text_width(&font_small, label) > COLUMN_INNER - 6 && sp) {
+            char first[24];
+            snprintf(first, sizeof(first), "%.*s", (int)(sp - label), label);
+            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + 4, &font_small, first, !active);
+            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + 14, &font_small, sp + 1, !active);
+        } else {
+            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SYNTH_BOX_H - font_small.cap_height) / 2,
+                          &font_small, label, !active);
+        }
         if (active) {
-            draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, "ACTIVE", true);
+            draw_centered(disp, x, COLUMN_INNER, SYNTH_STATUS_CAP_Y, &font_small, "ACTIVE", true);
         } else if (synths[i]->is_loaded && synths[i]->is_loaded()) {
             /* e.g. the Plugiator's current plug-in: switching to it is instant */
-            draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, "LOADED", true);
+            draw_centered(disp, x, COLUMN_INNER, SYNTH_STATUS_CAP_Y, &font_small, "LOADED", true);
         }
     }
     if (synth_confirm >= 0) {
-        draw_text_cap(1, 4, 30, &font_small, "The patch has unsaved edits.", true);
-        draw_text_cap(1, 4, 44, &font_small, "Press again to switch anyway.", true);
+        draw_text_cap(1, 4, 55, &font_small, "Unsaved edits: press again to switch", true);
     }
 }
 
@@ -1524,6 +1552,13 @@ static void send_device_settings(void)
 static void restore_patch(void)
 {
     send_device_settings();
+    if (synth->keep_state) {
+        if (synth->read) {
+            synth->read();  /* show what the instrument has, change nothing */
+        }
+        draw_page();
+        return;
+    }
     const char *candidates[2] = {last_saved, synth->default_patch};
     for (int c = 0; c < 2; c++) {
         for (int i = 0; i < patch_count && candidates[c][0]; i++) {
@@ -1770,10 +1805,10 @@ static void editor_button_impl(int bit, bool down)
     if (activating_until) {
         return;  /* the synth isn't listening yet */
     }
-    /* Menu screens (Scene, All, Pad Mode, Control): their button opens or
+    /* Menu screens (Step, All, Pad Mode, Control): their button opens or
      * closes them, from the editor or straight from another menu; a Group
      * button goes straight back to the editor, at that section */
-    int menu = bit == BTN_SCENE ? MODE_SYNTH
+    int menu = bit == BTN_STEP ? MODE_SYNTH
                : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
                : bit == BTN_PAD_MODE ? MODE_PADS
                : bit == BTN_CONTROL ? MODE_SETUP
@@ -1917,13 +1952,13 @@ static void editor_button_impl(int bit, bool down)
             }
         }
     } else if (bit == BTN_ARROW_LEFT) {
-        change_page(-1);  /* top arrows, by the display buttons: pages */
+        browse_patches(-1);  /* top arrows: patches (less often pressed by accident) */
     } else if (bit == BTN_ARROW_RIGHT) {
-        change_page(1);
-    } else if (bit == BTN_ARROW_LEFT_2) {
-        browse_patches(-1);  /* arrows under the main encoder, by Enter: patches */
-    } else if (bit == BTN_ARROW_RIGHT_2) {
         browse_patches(1);
+    } else if (bit == BTN_ARROW_LEFT_2) {
+        change_page(-1);  /* arrows by Enter, under the main encoder: pages */
+    } else if (bit == BTN_ARROW_RIGHT_2) {
+        change_page(1);
     } else if (bit == BTN_BROWSE) {
         encoder_browses = !encoder_browses;
         draw_header();
