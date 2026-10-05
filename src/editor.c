@@ -96,6 +96,7 @@ static const scale_t scales[] = {
 #define PAD_LOW_ID 100
 #define PAD_SCALE_ID 101
 #define PAD_KEY_ID 102
+#define PAD_CHORD_ID 105
 #define PAD_LOW_DEFAULT 48  /* C2: lowest pad, bottom left */
 /* Global settings, on the Setup screen's right display (the synth's own
  * are on the left, so at most 4) */
@@ -116,7 +117,12 @@ static int midi_thru = MIDI_THRU_OFF;
 static const char *const thru_names[] = {"OFF", "THRU", "TO SYNTH"};
 static int pad_low = PAD_LOW_DEFAULT;
 static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
-static int pad_playing[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+/* The notes each pad started (a chord in chord mode), so a release stops
+ * exactly those even if the settings changed meanwhile */
+static uint8_t pad_notes[16][4], pad_note_count[16];
+/* Chord mode: a pad plays the triad built on its note (thirds up the
+ * scale), with Shift held the seventh chord */
+static int pad_chord;
 #define WRITE_DELAY_US 5000000
 #define MAX_SETTINGS 8
 
@@ -288,14 +294,42 @@ static const uint8_t *theme_dim(void)
 
 /* Pad 12 (bottom left) is the lowest note, rows go up like a keyboard;
  * chromatic from PAD LOW, or up the scale from its key */
-static int pad_note(int pad)
+/* Note k steps up the pads' scale from the lowest pad */
+static int scale_note(int k)
 {
-    int idx = (3 - pad / 4) * 4 + pad % 4;
     int low = pad_low;
     const scale_t *sc = &scales[pad_scale];
-    int note = pad_scale == 0 ? low + idx
-                              : low - low % 12 + pad_key + 12 * (idx / sc->count) + sc->steps[idx % sc->count];
+    int note = pad_scale == 0 ? low + k
+                              : low - low % 12 + pad_key + 12 * (k / sc->count) + sc->steps[k % sc->count];
     return note > 127 ? 127 : note;
+}
+
+static int pad_index(int pad) { return (3 - pad / 4) * 4 + pad % 4; }
+
+static int pad_note(int pad) { return scale_note(pad_index(pad)); }
+
+/* The pad's chord: thirds up the scale (chromatic: major, dominant 7th) */
+static int pad_chord_notes(int pad, bool seventh, uint8_t out[4])
+{
+    int k = pad_index(pad), n = seventh ? 4 : 3;
+    for (int i = 0; i < n; i++) {
+        int note = pad_scale == 0 ? scale_note(k) + (int[]){0, 4, 7, 10}[i] : scale_note(k + 2 * i);
+        out[i] = note > 127 ? 127 : note;
+    }
+    return n;
+}
+
+/* "Dm3", "G7 2"-style name of a pad's chord, from its intervals */
+static void chord_name(int pad, char *buf, size_t len)
+{
+    static const char *const names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    uint8_t n[4];
+    pad_chord_notes(pad, false, n);
+    int third = n[1] - n[0], fifth = n[2] - n[0];
+    const char *q = third == 4 && fifth == 7 ? "" : third == 3 && fifth == 7 ? "m"
+                    : third == 3 && fifth == 6 ? "dim" : third == 4 && fifth == 8 ? "aug"
+                    : third == 2 && fifth == 7 ? "sus2" : third == 5 && fifth == 7 ? "sus4" : "*";
+    snprintf(buf, len, "%s%s%d", names[n[0] % 12], q, n[0] / 12 - 2);
 }
 
 /* Pads at rest, in the synth's theme; the key's notes brighter, so the
@@ -1187,9 +1221,10 @@ static void setting_encoder(int i, int col, int delta)
         int steps = encoder_acc[col] / UNITS_SETTING;
         encoder_acc[col] -= steps * UNITS_SETTING;
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
-                 : i == PAD_KEY_ID ? &pad_key : i == MIDI_THRU_ID ? &midi_thru : &led_bright;
+                 : i == PAD_KEY_ID ? &pad_key : i == PAD_CHORD_ID ? &pad_chord
+                 : i == MIDI_THRU_ID ? &midi_thru : &led_bright;
         int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
-                  : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
+                  : i == PAD_CHORD_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
         int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
         int nv = *v + steps;
         nv = nv < min ? min : nv > max ? max : nv;
@@ -1198,7 +1233,7 @@ static void setting_encoder(int i, int col, int delta)
             settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
             maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
             for (int pad = 0; pad < 16; pad++) {
-                if (pad_playing[pad] < 0) {
+                if (!pad_note_count[pad]) {
                     pad_idle(pad);
                 }
             }
@@ -1240,6 +1275,8 @@ static void load_global_settings(void)
             led_bright = v;
         } else if (sscanf(line, "MIDI THRU=%d", &v) == 1 && v >= 0 && v <= 2) {
             midi_thru = v;
+        } else if (sscanf(line, "CHORD=%d", &v) == 1 && v >= 0 && v <= 1) {
+            pad_chord = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
             pad_scale = v;
         } else if (sscanf(line, "KEY=%d", &v) == 1 && v >= 0 && v < 12) {
@@ -1296,8 +1333,8 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\n", pad_low, pad_scale, pad_key,
-                midi_thru, led_bright);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\n", pad_low, pad_scale, pad_key,
+                midi_thru, led_bright, pad_chord);
         fclose(f);
     }
 }
@@ -1377,10 +1414,10 @@ static void draw_pads(void)
     }
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS  (all synths)", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
-    const char *names[3] = {"PAD LOW", "PAD SCALE", "PAD KEY"};
+    const char *names[4] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD"};
     snprintf(buf, sizeof(buf), "%s%d", keys[pad_low % 12], pad_low / 12 - 2);  /* 60 = C3 */
-    const char *vals[3] = {buf, scales[pad_scale].name, keys[pad_key]};
-    for (int k = 0; k < 3; k++) {
+    const char *vals[4] = {buf, scales[pad_scale].name, keys[pad_key], pad_chord ? "ON" : "OFF"};
+    for (int k = 0; k < 4; k++) {
         int x = k * COLUMN_WIDTH;
         draw_centered(0, x, COLUMN_INNER, NAME_CAP_Y, &font_small, names[k], true);
         const font_t *vf = display_text_width(&font_large, vals[k]) <= COLUMN_INNER - 2 ? &font_large
@@ -1394,7 +1431,11 @@ static void draw_pads(void)
         int x = (pad % 4) * COLUMN_WIDTH, y = HEADER_LINE_Y + 1 + (pad / 4) * cell_h;
         int note = pad_note(pad);
         bool root = note % 12 == pad_key;
-        snprintf(buf, sizeof(buf), "%s%d", keys[note % 12], note / 12 - 2);
+        if (pad_chord) {
+            chord_name(pad, buf, sizeof(buf));
+        } else {
+            snprintf(buf, sizeof(buf), "%s%d", keys[note % 12], note / 12 - 2);
+        }
         if (root) {
             display_round_rect(1, x + 2, y + 1, COLUMN_INNER - 4, cell_h - 1, true, true);
         }
@@ -1599,8 +1640,8 @@ static void editor_encoder_impl(int i, int delta)
         return;
     }
     if (mode == MODE_PADS) {
-        static const int pad_settings[3] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID};
-        if (i < 3) {
+        static const int pad_settings[4] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID, PAD_CHORD_ID};
+        if (i < 4) {
             setting_encoder(pad_settings[i], i, delta);
         }
         return;
@@ -2129,21 +2170,31 @@ static void editor_pad_impl(int pad, bool down, int raw)
         }
         return;
     }
-    int note = down ? pad_note(pad) : pad_playing[pad];
     int channel = play_channel();
-    if (!down && note < 0) {
-        return;
-    }
-    pad_playing[pad] = down ? note : -1;
     if (down) {
         /* Velocity from the hit's peak pressure (main.c), over the range
          * from the press threshold (~1000) to full scale (4095) */
         int vel = 1 + (raw - 1000) * 126 / 3095;
-        ESP_LOGD(TAG, "pad %d note %d peak %d vel %d", pad, note, raw, vel);
-        midi_send(0x90 | channel, note, vel < 1 ? 1 : vel > 127 ? 127 : vel);
+        vel = vel < 1 ? 1 : vel > 127 ? 127 : vel;
+        if (pad_chord) {
+            pad_note_count[pad] = pad_chord_notes(pad, shift_held, pad_notes[pad]);
+        } else {
+            pad_notes[pad][0] = pad_note(pad);
+            pad_note_count[pad] = 1;
+        }
+        for (int i = 0; i < pad_note_count[pad]; i++) {
+            midi_send(0x90 | channel, pad_notes[pad][i], vel);
+        }
+        ESP_LOGD(TAG, "pad %d: %d notes from %d, vel %d", pad, pad_note_count[pad], pad_notes[pad][0], vel);
         maschine_set_pad_led(pad, 127, 127, 127);
     } else {
-        midi_send(0x80 | channel, note, 0);
+        if (!pad_note_count[pad]) {
+            return;
+        }
+        for (int i = 0; i < pad_note_count[pad]; i++) {
+            midi_send(0x80 | channel, pad_notes[pad][i], 0);
+        }
+        pad_note_count[pad] = 0;
         pad_idle(pad);
     }
 }
