@@ -19,6 +19,7 @@
 #include "fonts.h"
 #include "midi.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 static const char *TAG = "d110r";
@@ -469,6 +470,19 @@ static int unknown_count(void)
     return n;
 }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"DRUM KIT", {"Each key C1-C8 plays its own drum.", "Hit a pad: that key is edited.",
+                  "STEP arrows: the next key, along the", "pads' scale (Pad Mode).",
+                  "B KIT: 8 keys at once, one per knob.", "Setup's NOTES IN: notes coming in pick",
+                  "keys too."},
+     {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_GROUP_A + 1, BTN_PAD_MODE, -1, -1, -1, -1}},
+    {"READ, VOLUME", {"AUTO: read the D-110's kit.", "The D-110 has one kit, no slots: save",
+                      "your kits in the library (REC).", "Hold VOLUME + main encoder: Main Volume",
+                      "on all the D-110's parts."},
+     {BTN_AUTO, BTN_REC, BTN_VOLUME, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_d110r = {
     .name = "D-110 RHYTHM",
     .key = "d110r",
@@ -504,4 +518,6 @@ const synth_t synth_d110r = {
     .note_played = note_played,
     .theme_bright = {0, 100, 127},  /* cyan, as the other D-110 levels */
     .theme_dim = {0, 9, 12},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

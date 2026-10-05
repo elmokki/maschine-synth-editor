@@ -42,27 +42,7 @@ static const char *TAG = "editor";
 #define BAR_H 6
 
 /* Button bits in report 0x01, see docs/PROTOCOL.md */
-#define BTN_DISPLAY_1 0
-#define BTN_CONTROL 8
-#define BTN_BROWSE 10
-#define BTN_ARROW_LEFT 12
-#define BTN_ARROW_RIGHT 13
-#define BTN_ARROW_LEFT_2 19
-#define BTN_ARROW_RIGHT_2 20
-#define BTN_ENTER 21
-#define BTN_GROUP_A 24
-#define BTN_REC 37
-#define BTN_ERASE 38
-#define BTN_MUTE 47
-#define BTN_NAVIGATE 11  /* Sampling: next to Browse and Control */
-#define BTN_STEP 9       /* by Control: the synth selection */
-#define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
-#define BTN_ALL 14       /* the patch category screen */
-#define BTN_PAD_MODE 42  /* the pads' screen: lowest note, scale, key */
-#define BTN_STEP_LEFT 33   /* transport arrows: synth_t.instance_step */
-#define BTN_STEP_RIGHT 34
-#define BTN_SHIFT 39       /* + Group: synth_t.shift_group */
-#define BTN_AUTO 15        /* synth_t.read: fetch the synth's current sound */
+#include "buttons.h"
 #define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -171,6 +151,7 @@ static int encoder_acc[8];
 static int page;
 static uint8_t section_last[8];  /* page each section was last left on */
 static bool shift_held;
+static int tip_page;  /* tutorial (Shift + Control): the page shown */
 /* Per instance (synth_t.instance, e.g. D-110 part): its library patch */
 #define MAX_INSTANCES 16
 static int inst_loaded[MAX_INSTANCES];
@@ -225,13 +206,14 @@ static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
-typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS } ui_mode_t;
+typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL } ui_mode_t;
 static ui_mode_t mode;
 
 /* Screens opened by their own button (Step, All, Pad Mode, Control) */
 static bool is_menu(ui_mode_t m)
 {
-    return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP;
+    return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP ||
+           m == MODE_TUTORIAL;
 }
 
 static int store_target;  /* NONE = new patch, else index of a user patch */
@@ -247,10 +229,28 @@ static void draw_categories(void);
 static void draw_page(void);
 static void end_browse(void);
 static void draw_pads(void);
+static void draw_tutorial(void);
 
 int synth_setting(int index)
 {
     return index < synth->setting_count ? setting_values[index] : 0;
+}
+
+/* While Shift is held, the buttons with a Shift function pulse: a factor
+ * 40-100 %, stepped every 50 ms (an LED changing on every editor tick would
+ * keep the LED reports so busy that the displays never get sent) */
+#define SHIFT_PULSE_PERIOD_US 900000
+#define SHIFT_PULSE_STEP_US 50000
+static int shift_pulse_pct(void)
+{
+    int64_t t = esp_timer_get_time() / SHIFT_PULSE_STEP_US * SHIFT_PULSE_STEP_US;
+    float ph = (float)(t % SHIFT_PULSE_PERIOD_US) / SHIFT_PULSE_PERIOD_US;
+    return 70 + (int)(30.0f * cosf(2.0f * (float)M_PI * ph));
+}
+
+static uint8_t pulse(uint8_t v)
+{
+    return shift_held ? (uint8_t)(v * shift_pulse_pct() / 100) : v;
 }
 
 /* Device volume (Volume button + main encoder): a CC kept in a setting, or
@@ -406,6 +406,19 @@ static void update_group_leds(void)
         }
         return;
     }
+    if (mode == MODE_TUTORIAL) {
+        /* The page's Group buttons lit, the rest dark */
+        const synth_tip_t *tip = &synth->tips[tip_page];
+        for (int g = 0; g < 8; g++) {
+            bool lit = false;
+            for (int k = 0; k < 8; k++) {
+                lit |= tip->buttons[k] == BTN_GROUP_A + g;
+            }
+            const uint8_t *c = theme_bright();
+            maschine_set_group_led(g, lit ? c[0] : 0, lit ? c[1] : 0, lit ? c[2] : 0);
+        }
+        return;
+    }
     if (shift_held && synth->shift_group_led) {
         for (int g = 0; g < 8; g++) {
             int v = synth->shift_group_led(g);
@@ -413,7 +426,7 @@ static void update_group_leds(void)
             if (v < 0) {
                 maschine_set_group_led(g, 0, 0, 0);
             } else {
-                maschine_set_group_led(g, c[0], c[1], c[2]);
+                maschine_set_group_led(g, pulse(c[0]), pulse(c[1]), pulse(c[2]));
             }
         }
         return;
@@ -472,12 +485,38 @@ static void update_group_leds(void)
  * bright when active); everything else is dark */
 static void update_button_leds(void)
 {
+    if (mode == MODE_TUTORIAL) {
+        /* Only the page's buttons lit; the arrows (pages) and Control (out)
+         * dim; everything else dark */
+        /* Each LED set once to its final value: this runs on every tick,
+         * and an LED changed twice per call kept the LED reports so busy
+         * that the displays never got sent */
+        const synth_tip_t *tip = &synth->tips[tip_page];
+        for (int bit = 0; bit < 48; bit++) {
+            if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
+                continue;  /* RGB: update_group_leds */
+            }
+            uint8_t v = bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 ||
+                                bit == BTN_ARROW_RIGHT_2 || bit == BTN_CONTROL
+                            ? LED_DIM
+                            : 0;
+            for (int k = 0; k < 8; k++) {
+                if (tip->buttons[k] == bit) {
+                    v = LED_ON;
+                }
+            }
+            maschine_set_button_led(bit, v);
+        }
+        return;
+    }
     bool edit = mode == MODE_EDIT, store = mode == MODE_STORE || mode == MODE_NAME;
     /* Panic works on every screen */
     maschine_set_button_led(BTN_MUTE, panic_flash_until ? LED_ON : LED_DIM);
     /* Menus open from the editor and from each other */
     bool menus = edit || is_menu(mode);
-    maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
+    /* Shift + Control: the tutorial */
+    maschine_set_button_led(BTN_CONTROL, shift_held && synth->tips && menus ? pulse(LED_ON)
+                                         : mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
@@ -494,11 +533,15 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_ERASE, mode == MODE_CATEGORY ? LED_DIM
                                        : !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_SHIFT, mode == MODE_CATEGORY ? (shift_held ? LED_ON : LED_DIM)
-                                       : !edit || !synth->shift_group ? 0 : shift_held ? LED_ON : LED_DIM);
+    /* Shift does something everywhere the menus are (Shift + Control: the
+     * tutorial), and more on some synths and screens */
+    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || (edit && synth->shift_group);
+    maschine_set_button_led(BTN_SHIFT, !shift_useful ? 0 : shift_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
-    maschine_set_button_led(BTN_STEP_LEFT, edit && synth->instance_step ? LED_DIM : 0);
-    maschine_set_button_led(BTN_STEP_RIGHT, edit && synth->instance_step ? LED_DIM : 0);
+    uint8_t step_led = !edit || !synth->instance_step ? 0
+                       : shift_held && synth->shift_step ? pulse(LED_ON) : LED_DIM;
+    maschine_set_button_led(BTN_STEP_LEFT, step_led);
+    maschine_set_button_led(BTN_STEP_RIGHT, step_led);
     static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
     for (size_t i = 0; i < sizeof(arrows) / sizeof(arrows[0]); i++) {
         maschine_set_button_led(arrows[i], edit ? LED_DIM : 0);
@@ -522,6 +565,7 @@ static void update_button_leds(void)
             }
         } else if (mode == MODE_CATEGORY) {
             v = category_filter & (1 << col) ? LED_ON : LED_DIM;
+            v = shift_held ? pulse(v) : v;  /* Shift + category: solo */
         } else if (mode == MODE_SETUP) {
             v = col == 7 && synth->action ? (action_armed_until ? LED_ON : LED_DIM) : 0;
         } else if (mode == MODE_STORE) {
@@ -838,6 +882,10 @@ static void draw_page(void)
     }
     if (mode == MODE_PADS) {
         draw_pads();
+        return;
+    }
+    if (mode == MODE_TUTORIAL) {
+        draw_tutorial();
         return;
     }
     if (mode != MODE_EDIT) {
@@ -1557,6 +1605,28 @@ static void draw_pads(void)
     }
 }
 
+/* Tutorial (Shift + Control): one page of the synth's special controls;
+ * the buttons it's about are lit (update_button_leds) */
+static void draw_tutorial(void)
+{
+    const synth_tip_t *tip = &synth->tips[tip_page];
+    char buf[64];
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
+    }
+    snprintf(buf, sizeof(buf), "TUTORIAL  %s  %d/%d", synth->name, tip_page + 1, synth->tip_count);
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "< > pages", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "CONTROL closes", true);
+    draw_text_cap(0, 2, 16, &font_medium, tip->title, true);
+    /* Lines 1-3 under the title, 4-7 on the right display */
+    for (int i = 0; i < TIP_LINES && tip->lines[i]; i++) {
+        int disp = i < 3 ? 0 : 1, y = i < 3 ? 32 + i * 11 : 16 + (i - 3) * 12;
+        draw_text_cap(disp, 2, y, &font_small, tip->lines[i], true);
+    }
+}
+
 /* Category screen: one box per display button, chosen ones filled (all,
  * by default), the number of patches under each; browsing only steps
  * through patches of the chosen categories */
@@ -1947,6 +2017,28 @@ static void editor_button_impl(int bit, bool down)
     /* Menu screens (Step, All, Pad Mode, Control): their button opens or
      * closes them, from the editor or straight from another menu; a Group
      * button goes straight back to the editor, at that section */
+    if (bit == BTN_CONTROL && down && synth->tips && (shift_held || mode == MODE_TUTORIAL) &&
+        (mode == MODE_EDIT || is_menu(mode))) {
+        /* Shift + Control: the tutorial (again, or Control: out) */
+        mode = mode == MODE_TUTORIAL ? MODE_EDIT : MODE_TUTORIAL;
+        tip_page = 0;
+        overview = false;
+        end_browse();
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        draw_page();
+        update_group_leds();
+        return;
+    }
+    if (mode == MODE_TUTORIAL && down &&
+        (bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 || bit == BTN_ARROW_RIGHT_2)) {
+        int d = bit == BTN_ARROW_LEFT || bit == BTN_ARROW_LEFT_2 ? -1 : 1;
+        tip_page = (tip_page + d + synth->tip_count) % synth->tip_count;
+        draw_tutorial();
+        update_group_leds();
+        return;
+    }
     int menu = bit == BTN_STEP ? MODE_SYNTH
                : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
                : bit == BTN_PAD_MODE ? MODE_PADS
@@ -2020,7 +2112,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (mode == MODE_PADS || mode == MODE_SETUP) {
+    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL) {
         return;
     }
     if (mode != MODE_EDIT) {
@@ -2171,6 +2263,12 @@ static void editor_main_encoder_impl(int steps)
     cancel_init();
     if (mode == MODE_STORE) {
         store_main_encoder(steps);
+        return;
+    }
+    if (mode == MODE_TUTORIAL) {
+        tip_page = (tip_page + (steps > 0 ? 1 : -1) + synth->tip_count) % synth->tip_count;
+        draw_tutorial();
+        update_group_leds();
         return;
     }
     if (mode == MODE_SYNTH) {

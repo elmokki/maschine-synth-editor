@@ -6,6 +6,7 @@
 #include "b4000_params.h"
 #include "plugiator.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 /* The organ's three parts first: Upper and Lower manual are parallel
@@ -115,6 +116,21 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return plug_draw(&set, p, disp, x, y, w, h);
 }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"PLUGIATOR", {"Picking B4000 loads the plug-in on the", "Plugiator (about a second). It stays",
+                   "loaded: coming back is instant (LOADED", "in the synth list, STEP).",
+                   "The Plugiator can't send its sound back:", "values show -- until a patch is loaded",
+                   "or the knob is turned."},
+     {BTN_STEP, -1, -1, -1, -1, -1, -1, -1}},
+    {"MANUALS", {"A UPPER and B LOWER: 9 drawbars over two", "pages each - press the button again for",
+                 "page 2 (1', volume, octave, split,", "vibrato). C: the pedal's drawbars.",
+                 "Upper page 2 and Lower page 2 line up:", "switching A <-> B keeps the page."},
+     {BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2, -1, -1, -1, -1, -1}},
+    {"VOLUME", {"Hold VOLUME and turn the main encoder:", "the Plugiator's own output volume."},
+     {BTN_VOLUME, -1, -1, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_b4000 = {
     .name = "Plugiator B4000",
     .key = "b4000",
@@ -146,4 +162,6 @@ const synth_t synth_b4000 = {
     .categories = b4000_categories,
     .theme_bright = {90, 0, 127},  /* violet */
     .theme_dim = {9, 0, 14},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

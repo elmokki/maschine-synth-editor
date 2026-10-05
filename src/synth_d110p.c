@@ -23,6 +23,7 @@
 #include "fonts.h"
 #include "midi.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 static const char *TAG = "d110p";
@@ -688,6 +689,21 @@ static int unknown_count(void)
     return n;
 }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"PATCH LEVEL", {"What each part plays (its tone), level,", "pan, key range, channel and partial",
+                     "reserve; the reverb. STEP arrows: part.", "D: all parts' reserves against the",
+                     "D-110's 32 partials - a part with 0", "still plays if partials are free.",
+                     "Patches are setups, not sounds."},
+     {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_GROUP_A + 3, -1, -1, -1, -1, -1}},
+    {"READ, IMPORT, WRITE", {"AUTO: read the D-110's current patch.", "CONTROL > IMPORT: its 64 patches",
+                             "into the library (001-064).", "REC > TO D-110 (twice): write the patch",
+                             "into its memory, I-11..I-88."},
+     {BTN_AUTO, BTN_CONTROL, BTN_REC, -1, -1, -1, -1, -1}},
+    {"VOLUME", {"Hold VOLUME and turn the main encoder:", "Main Volume on all the D-110's parts."},
+     {BTN_VOLUME, -1, -1, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_d110p = {
     .name = "D-110 PATCH",
     .key = "d110p",
@@ -730,4 +746,6 @@ const synth_t synth_d110p = {
     .keep_state = true,
     .theme_bright = {0, 100, 127},  /* cyan, as the tone level */
     .theme_dim = {0, 9, 12},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

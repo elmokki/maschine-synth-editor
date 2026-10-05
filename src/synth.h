@@ -62,6 +62,16 @@ typedef struct {
     uint8_t cc;
 } synth_device_cc_t;
 
+/* A tutorial page (Shift + Control): the synth's own special controls -
+ * up to 7 lines of up to 42 characters, and the buttons it's about, which
+ * light up (everything else goes dark) */
+#define TIP_LINES 7
+typedef struct {
+    const char *title;
+    const char *lines[TIP_LINES];
+    int8_t buttons[8];  /* button bits (buttons.h), -1 = unused */
+} synth_tip_t;
+
 typedef struct {
     const char *name;           /* shown in the UI, e.g. "MiniMax" */
     const char *key;            /* file names: settings, remembered patch */
@@ -191,6 +201,10 @@ typedef struct {
     int unit_store_slots;
     void (*unit_slot_name)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
+
+    /* Optional: the tutorial's pages (Shift + Control) */
+    const synth_tip_t *tips;
+    int tip_count;
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */

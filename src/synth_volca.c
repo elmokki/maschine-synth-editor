@@ -24,6 +24,7 @@
 #include "fonts.h"
 #include "midi.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 static const char *TAG = "volca";
@@ -849,6 +850,25 @@ static bool patch_save(const char *path)
 
 static int unknown_count(void) { return 0; }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"WHOLE VOICES", {"The Volca only takes whole voices:", "each edit sends the voice again - a short",
+                      "delay, and a held note may drop out.",
+                      "It can't send voices back: the editor", "keeps them (the DX7's banks are in the",
+                      "library). H: chorus, reverb, arp -", "saved with the patch."},
+     {BTN_GROUP_A + 7, -1, -1, -1, -1, -1, -1, -1}},
+    {"OPERATORS", {"A-F: OP1-OP6, three pages each; moving", "between them keeps the page.",
+                   "Green = carrier, magenta = modulator,", "dark = switched off.",
+                   "OP ON turns an operator off and keeps", "its level (OSC and KEY SCALING pages;",
+                   "all six on G's ALGORITHM page)."},
+     {BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2, BTN_GROUP_A + 3, BTN_GROUP_A + 4, BTN_GROUP_A + 5,
+      -1, -1}},
+    {"ALGORITHM", {"G ALGORITHM draws the algorithm; the", "encoders under it (6, 7) change the",
+                   "algorithm and feedback.", "The feedback loop's dashes run faster",
+                   "and closer the more feedback (0: still).", "No volume over MIDI on the Volca."},
+     {BTN_GROUP_A + 6, -1, -1, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_volca = {
     .name = "Volca FM2",
     .key = "volca",
@@ -878,4 +898,6 @@ const synth_t synth_volca = {
     .column_draw = column_draw,
     .theme_bright = {0, 127, 40},  /* green */
     .theme_dim = {0, 12, 4},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

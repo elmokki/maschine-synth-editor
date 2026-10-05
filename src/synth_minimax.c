@@ -7,6 +7,7 @@
 #include "minimax_params.h"
 #include "plugiator.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 /* Main panel of the plug-in GUI first, in signal-chain order (OSC -> MIX
@@ -235,6 +236,19 @@ static bool is_loaded(void)
     return plug_is_loaded(&set);
 }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"PLUGIATOR", {"Picking MiniMax loads the plug-in on", "the Plugiator (about a second). It stays",
+                   "loaded: coming back is instant (LOADED", "in the synth list, STEP).",
+                   "The Plugiator can't send its sound back:", "values show -- until a patch is loaded",
+                   "or the knob is turned."},
+     {BTN_STEP, -1, -1, -1, -1, -1, -1, -1}},
+    {"VOLUME", {"Hold VOLUME and turn the main encoder:", "the Plugiator's own output volume.", "",
+                "Which Program Change loads the plug-in", "(PLUGIN PC) and SYNTH/MIC are in Setup",
+                "(CONTROL)."},
+     {BTN_VOLUME, BTN_CONTROL, -1, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_minimax = {
     .name = "Plugiator MiniMax",
     .key = "minimax",
@@ -266,4 +280,6 @@ const synth_t synth_minimax = {
     .categories = minimax_categories,
     .theme_bright = {127, 35, 0},  /* red-orange, like the Minimoog's orange switches */
     .theme_dim = {20, 4, 0},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

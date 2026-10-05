@@ -24,6 +24,7 @@
 #include "fonts.h"
 #include "midi.h"
 #include "storage.h"
+#include "buttons.h"
 #include "synth.h"
 
 static const char *TAG = "d110";
@@ -1220,6 +1221,31 @@ static int unknown_count(void)
     return n;
 }
 
+/* Tutorial (Shift + Control): what's special here */
+static const synth_tip_t tips[] = {
+    {"D-110 LEVELS", {"Patch: 8 parts + rhythm on their own", "channels (D-110 PATCH). A part plays a",
+                      "timbre: a tone and how it plays.", "A tone: up to 4 partials, in two pairs a",
+                      "STRUCTURE mixes or ring-modulates.", "Rhythm: one drum kit (D-110 RHYTHM).",
+                      "This level edits the tones. STEP: levels"},
+     {BTN_STEP, -1, -1, -1, -1, -1, -1, -1}},
+    {"PARTIALS", {"STEP arrows: the next partial.", "SHIFT + A-D: pick several - a knob then",
+                  "moves them all alike (differences stay).", "While SHIFT is held, A-D show the pick;",
+                  "the header shows it too (PT1 P13).", "PCM partials have no filter (TVF): n/a.",
+                  "P1-P4 ON on A COMMON mute partials."},
+     {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_SHIFT, BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2,
+      BTN_GROUP_A + 3, -1}},
+    {"PARTS", {"SHIFT + STEP arrows: the part (1-8).", "The pads play its channel; each part",
+               "keeps its own tone and loaded patch.", "Header: PT2 = part 2."},
+     {BTN_SHIFT, BTN_STEP_LEFT, BTN_STEP_RIGHT, -1, -1, -1, -1, -1}},
+    {"READ, IMPORT, WRITE", {"AUTO: read the part's tone from the", "D-110 (its MIDI OUT to the Maschine).",
+                             "CONTROL > IMPORT: all its tones into", "the library (001-192).",
+                             "REC > TO D-110 (twice): write the tone", "into the D-110's memory, i11-i88."},
+     {BTN_AUTO, BTN_CONTROL, BTN_REC, -1, -1, -1, -1, -1}},
+    {"VOLUME", {"Hold VOLUME and turn the main encoder:", "Main Volume on all the D-110's parts",
+                "(the same for its three levels)."},
+     {BTN_VOLUME, -1, -1, -1, -1, -1, -1, -1}},
+};
+
 const synth_t synth_d110 = {
     .name = "D-110 TONE",
     .key = "d110",
@@ -1267,4 +1293,6 @@ const synth_t synth_d110 = {
     .keep_state = true,  /* selecting it reads the part's tone, sends nothing */
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
+    .tips = tips,
+    .tip_count = sizeof(tips) / sizeof(tips[0]),
 };
