@@ -59,7 +59,8 @@ static void out_cb(usb_transfer_t *xfer)
     out_busy = false;
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         ESP_LOGW(TAG, "OUT transfer status %d", xfer->status);
-        if (attached && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+        if (attached && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
+            xfer->status != USB_TRANSFER_STATUS_CANCELED) {
             usb_recover_endpoint(dev_hdl, ep_out, TAG);
         }
     }
@@ -222,7 +223,9 @@ static void in_cb(usb_transfer_t *xfer)
             ESP_LOGD(TAG, "DIN IN (cable %d): %s", d[i] >> 4, hex);
         }
         out_kick();
-    } else if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+    } else if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE && xfer->status != USB_TRANSFER_STATUS_CANCELED) {
+        /* (CANCELED is what a recovery's own flush does to the other queued
+         * transfers: recovering again would cancel them again, for ever) */
         ESP_LOGW(TAG, "IN transfer status %d", xfer->status);
         if (attached) {
             usb_recover_endpoint(dev_hdl, ep_in, TAG);

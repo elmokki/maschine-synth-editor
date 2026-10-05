@@ -314,7 +314,8 @@ static void out_cb(usb_transfer_t *xfer)
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         ESP_LOGW(TAG, "OUT transfer status %d (report 0x%02X)",
                  xfer->status, xfer->data_buffer[0]);
-        if (connected && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+        if (connected && xfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
+            xfer->status != USB_TRANSFER_STATUS_CANCELED) {  /* canceled by a recovery's flush */
             usb_recover_endpoint(dev_hdl, ep_out, TAG);
         }
     }
@@ -322,13 +323,28 @@ static void out_cb(usb_transfer_t *xfer)
 }
 
 /* 8 endless encoders: free-running 0-999 counter, wraps both ways */
-static int encoder_delta(uint16_t cur, uint16_t prev)
+static int encoder_delta(int i, uint16_t cur, uint16_t prev)
 {
+    /* Last direction of each encoder and when, to read big jumps */
+    static int last_dir[8];
+    static int64_t last_us[8];
+    int64_t now = esp_timer_get_time();
     int d = (int)cur - (int)prev;
     if (d > 500) {
         d -= 1000;
     } else if (d < -500) {
         d += 1000;
+    }
+    /* A jump of several hundred counts means the loop stalled (a slow
+     * redraw) while the knob kept turning, and the true distance may be
+     * past half the counter's range: read it the way the knob was going
+     * rather than the other way round */
+    if ((d > 250 || d < -250) && last_dir[i] && now - last_us[i] < 400000 && (d > 0) != (last_dir[i] > 0)) {
+        d += d > 0 ? -1000 : 1000;
+    }
+    if (d) {
+        last_dir[i] = d > 0 ? 1 : -1;
+        last_us[i] = now;
     }
     return d;
 }
@@ -362,7 +378,7 @@ static void handle_report01(const uint8_t *buf, int len)
         }
         for (int i = 0; i < 8; i++) {
             if (enc[i] != prev_enc[i]) {
-                editor_encoder(i, encoder_delta(enc[i], prev_enc[i]));
+                editor_encoder(i, encoder_delta(i, enc[i], prev_enc[i]));
             }
         }
         out_kick();
@@ -495,7 +511,7 @@ static void dispatch_report(const uint8_t *buf, int len)
 static void in_cb(usb_transfer_t *xfer)
 {
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
-        if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
+        if (xfer->status != USB_TRANSFER_STATUS_NO_DEVICE && xfer->status != USB_TRANSFER_STATUS_CANCELED) {
             ESP_LOGW(TAG, "IN transfer status %d", xfer->status);
             if (connected) {
                 usb_recover_endpoint(dev_hdl, ep_in, TAG);
