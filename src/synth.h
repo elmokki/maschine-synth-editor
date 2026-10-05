@@ -152,6 +152,12 @@ typedef struct {
     bool (*shift_group)(int g);
     int (*shift_group_led)(int g);
     void (*header_tag)(char *buf, size_t len);  /* shown after the page title */
+
+    /* Optional, for synths that can send their data back (needs their MIDI
+     * OUT on the Maschine's MIDI IN - never required): read = ask for the
+     * current sound (Auto button); sysex_in gets every SysEx arriving */
+    void (*read)(void);
+    void (*sysex_in)(const uint8_t *data, size_t len);
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */

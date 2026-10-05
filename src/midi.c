@@ -140,11 +140,19 @@ static void queue_packet(const uint8_t *ev)
     q_head++;
 }
 
-static void thru(const uint8_t *ev)
+static midi_sysex_handler_t sysex_handler;
+
+void midi_set_sysex_handler(midi_sysex_handler_t fn)
+{
+    sysex_handler = fn;
+}
+
+/* Incoming SysEx is collected whole: for the handler (e.g. a synth's dump
+ * reply) and for thru */
+static void sysex_in(const uint8_t *ev)
 {
     int cin = ev[0] & 0x0F;
-    if (cin >= 0x4 && cin <= 0x7) {
-        /* SysEx: collected, sent whole */
+    {
         int n = cin == 0x4 ? 3 : cin - 4;
         if (ev[1] == 0xF0) {
             thru_sysex_len = 0;
@@ -158,15 +166,24 @@ static void thru(const uint8_t *ev)
             }
         }
         if (cin != 0x4) {
-            if (!thru_sysex_overflow) {
-                midi_send_sysex(thru_sysex, thru_sysex_len);
+            if (thru_sysex_overflow) {
+                ESP_LOGW(TAG, "SysEx over %d bytes dropped", THRU_SYSEX_MAX);
             } else {
-                ESP_LOGW(TAG, "thru: SysEx over %d bytes dropped", THRU_SYSEX_MAX);
+                if (sysex_handler) {
+                    sysex_handler(thru_sysex, thru_sysex_len);
+                }
+                if (thru_mode != MIDI_THRU_OFF) {
+                    midi_send_sysex(thru_sysex, thru_sysex_len);
+                }
             }
             thru_sysex_len = 0;
         }
-        return;
     }
+}
+
+static void thru(const uint8_t *ev)
+{
+    int cin = ev[0] & 0x0F;
     uint8_t out[4] = {ev[0], ev[1], ev[2], ev[3]};
     if (cin >= 0x8 && cin <= 0xE && thru_mode == MIDI_THRU_TO_CHANNEL) {
         out[1] = (out[1] & 0xF0) | thru_channel;
@@ -184,7 +201,9 @@ static void in_cb(usb_transfer_t *xfer)
             if (len == 0) {
                 continue;  /* padding / reserved */
             }
-            if (thru_mode != MIDI_THRU_OFF) {
+            if (cin >= 0x4 && cin <= 0x7) {
+                sysex_in(&d[i]);
+            } else if (thru_mode != MIDI_THRU_OFF) {
                 thru(&d[i]);
             }
             char hex[3 * 3 + 1] = "";

@@ -31,3 +31,8 @@ bool midi_send_sysex(const uint8_t *data, size_t len);
  * goes out once complete, so it never mixes with the editor's own. */
 typedef enum { MIDI_THRU_OFF, MIDI_THRU_ALL, MIDI_THRU_TO_CHANNEL } midi_thru_t;
 void midi_set_thru(midi_thru_t mode, int channel);
+
+/* Called with every complete System Exclusive message arriving on DIN IN
+ * (F0 ... F7), e.g. a synth's reply to a data request; NULL = none */
+typedef void (*midi_sysex_handler_t)(const uint8_t *data, size_t len);
+void midi_set_sysex_handler(midi_sysex_handler_t fn);

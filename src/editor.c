@@ -62,6 +62,7 @@ static const char *TAG = "editor";
 #define BTN_STEP_LEFT 33   /* transport arrows: synth_t.instance_step */
 #define BTN_STEP_RIGHT 34
 #define BTN_SHIFT 39       /* + Group: synth_t.shift_group */
+#define BTN_AUTO 15        /* synth_t.read: fetch the synth's current sound */
 #define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -396,6 +397,7 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_ERASE, !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_SHIFT, !edit || !synth->shift_group ? 0 : shift_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP_LEFT, edit && synth->instance_step ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP_RIGHT, edit && synth->instance_step ? LED_DIM : 0);
     static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
@@ -1821,6 +1823,8 @@ static void editor_button_impl(int bit, bool down)
         }
     } else if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
         select_section(bit - BTN_GROUP_A);
+    } else if (bit == BTN_AUTO && synth->read) {
+        synth->read();
     } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) && synth->instance_step) {
         synth->instance_step(bit == BTN_STEP_LEFT ? -1 : 1);
     } else if (bit == BTN_ENTER && patch_browse != NONE) {
@@ -1969,8 +1973,17 @@ static void load_patch_list(void)
 
 static void load_settings(void);
 
+/* SysEx from DIN IN goes to the active synth's driver */
+static void sysex_from_din(const uint8_t *data, size_t len)
+{
+    if (synth->sysex_in) {
+        synth->sysex_in(data, len);
+    }
+}
+
 static void editor_init_impl(void)
 {
+    midi_set_sysex_handler(sysex_from_din);
     char key[24] = "";
     FILE *f = fopen(ACTIVE_SYNTH_FILE, "r");
     if (f) {

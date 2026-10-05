@@ -330,6 +330,66 @@ static void send_bytes(int from, int len)
     midi_send_sysex(msg, n);
 }
 
+/* ---- reading back (optional: needs the D-110's MIDI OUT on the
+ * Maschine's MIDI IN) ---- */
+
+static int temp_base(void) { return (TEMP_TONE_BASE >> 16 & 0x7F) * 16384 + (TEMP_TONE_BASE >> 8 & 0x7F) * 128; }
+
+/* RQ1 for the current part's whole tone; the reply is a DT1 (sysex_in) */
+static void request_tone(void)
+{
+    int a = temp_base() + part * TONE_LEN;
+    uint8_t msg[] = {0xF0, 0x41, device_id(), MODEL_ID, 0x11,
+                     a >> 14 & 0x7F, a >> 7 & 0x7F, a & 0x7F,
+                     0x00, TONE_LEN >> 7, TONE_LEN & 0x7F, 0, 0xF7};
+    int sum = 0;
+    for (int i = 5; i < 11; i++) {
+        sum += msg[i];
+    }
+    msg[11] = (128 - (sum & 0x7F)) & 0x7F;
+    midi_send_sysex(msg, sizeof(msg));
+}
+
+static void sysex_in(const uint8_t *d, size_t len)
+{
+    /* DT1 from this unit: F0 41 dev 16 12 a a a data... sum F7 */
+    if (len < 11 || d[1] != 0x41 || d[2] != device_id() || d[3] != MODEL_ID || d[4] != 0x12) {
+        return;
+    }
+    int sum = 0;
+    for (size_t i = 5; i < len - 1; i++) {
+        sum += d[i];
+    }
+    if (sum & 0x7F) {
+        ESP_LOGW(TAG, "DT1 checksum error");
+        return;
+    }
+    int at = (d[5] << 14 | d[6] << 7 | d[7]) - temp_base();
+    int n = (int)len - 10;
+    if (at < 0 || at + n > PARTS * TONE_LEN) {
+        return;  /* not a tone temporary area */
+    }
+    bool shown = false;
+    for (int i = 0; i < n; i++) {
+        int p = (at + i) / TONE_LEN, off = (at + i) % TONE_LEN;
+        tone[p][off] = d[8 + i];
+        known[p][off] = true;
+        shown |= p == part;
+    }
+    ESP_LOGI(TAG, "read %d bytes of part %d's tone", n, at / TONE_LEN + 1);
+    if (shown) {
+        char name[11];
+        memcpy(name, tone[part], 10);
+        name[10] = 0;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "READ PART %d: %s", part + 1, name);
+        synth_notice(buf);
+        synth_redraw();
+    }
+}
+
+static void read_tone(void) { request_tone(); }
+
 /* Sets p to v in every selected partial (or the common part) and sends */
 static void set_value(int p, int v)
 {
@@ -666,6 +726,7 @@ static void instance_step(int d)
     snprintf(buf, sizeof(buf), "PART %d  (channel %d)", part + 1, play_channel() + 1);
     synth_notice(buf);
     synth_redraw();
+    request_tone();  /* fills the values in if the D-110's MIDI OUT is connected */
 }
 
 static bool shift_group(int g)
@@ -783,6 +844,8 @@ const synth_t synth_d110 = {
     .shift_group = shift_group,
     .shift_group_led = shift_group_led,
     .header_tag = header_tag,
+    .read = read_tone,
+    .sysex_in = sysex_in,
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
 };
