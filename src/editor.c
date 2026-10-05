@@ -78,14 +78,10 @@ static const char *TAG = "editor";
  * button. */
 /* Default colour theme, for synths without their own (see synth_t) */
 static const uint8_t default_bright[3] = {30, 90, 127}, default_dim[3] = {0, 4, 12};
-/* A section with several pages: a gradient between the theme's dim colour
- * and its complementary colour (hue + 180 degrees) across the button's
- * left/right LEDs, a bit brighter than a one-page section, so it stands out
- * in any theme without going pale */
+/* A section with several pages: its dim colour as a brightness gradient
+ * across the button's left/right LEDs (a second colour got muddy at these
+ * levels and clashed with sections' own colours) */
 #define MULTI_PAGE_GAIN_PCT 150
-/* Sections with their own colours (synth_t.section_dim, e.g. carrier vs.
- * modulator operators) would clash with a second colour: theirs slides
- * between bright and dim of the same colour */
 #define MULTI_PAGE_LOW_PCT 40
 /* ...and the gradient slowly slides from side to side (0 = static) */
 #define MULTI_PAGE_SLIDE_PERIOD_US 4000000
@@ -107,6 +103,7 @@ static int64_t synth_confirm_until;
 
 static int encoder_acc[8];
 static int page;
+static uint8_t section_last[8];  /* page each section was last left on */
 static bool overview;  /* section list shown while Navigate is held */
 static bool encoder_browses;  /* Browse toggled: main encoder picks patches, not pages */
 
@@ -215,30 +212,33 @@ static void update_group_leds(void)
             bool lit_r = count == 1 || k >= 1;
             int left = lit_l ? 100 : LED_HALF_DIM;
             int right = lit_r ? 100 : LED_HALF_DIM;
-            uint8_t l[3], r[3];
+            /* A section with its own colour brightens in that colour */
+            uint8_t bright[3], l[3], r[3];
+            memcpy(bright, theme_bright(), 3);
+            int top = own[0] > own[1] ? (own[0] > own[2] ? own[0] : own[2])
+                                      : (own[1] > own[2] ? own[1] : own[2]);
+            if (own_dim && top) {
+                for (int i = 0; i < 3; i++) {
+                    bright[i] = own[i] * 127 / top;
+                }
+            }
             for (int i = 0; i < 3; i++) {
-                l[i] = theme_bright()[i] * left / 100;
-                r[i] = theme_bright()[i] * right / 100;
+                l[i] = bright[i] * left / 100;
+                r[i] = bright[i] * right / 100;
             }
             maschine_set_group_led_lr(g, l, r);
         } else if (section_page_count(g) > 1) {
-            /* f: 0 = colour left / white right, 1 = the other way round */
+            /* f: 0 = bright left / dim right, 1 = the other way round */
             float f = 0.0f;
             if (MULTI_PAGE_SLIDE_PERIOD_US) {
                 int64_t t = esp_timer_get_time() % MULTI_PAGE_SLIDE_PERIOD_US;
                 f = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * t / MULTI_PAGE_SLIDE_PERIOD_US);
             }
             const uint8_t *d = own_dim ? own : theme_dim();
-            int hi = d[0] > d[1] ? (d[0] > d[2] ? d[0] : d[2]) : (d[1] > d[2] ? d[1] : d[2]);
-            int lo = d[0] < d[1] ? (d[0] < d[2] ? d[0] : d[2]) : (d[1] < d[2] ? d[1] : d[2]);
             uint8_t l[3], r[3];
-            const uint8_t *acc = synth->theme_accent;
-            bool own_accent = !own_dim && has_theme() && (acc[0] || acc[1] || acc[2]);
             for (int i = 0; i < 3; i++) {
                 float c = d[i] * MULTI_PAGE_GAIN_PCT / 100.0f;
-                float w = own_dim ? d[i] * MULTI_PAGE_LOW_PCT / 100.0f  /* same colour, dimmer */
-                          : own_accent ? acc[i]
-                                       : (hi + lo - d[i]) * MULTI_PAGE_GAIN_PCT / 100.0f;  /* complement */
+                float w = d[i] * MULTI_PAGE_LOW_PCT / 100.0f;
                 l[i] = (uint8_t)(c + (w - c) * f + 0.5f);
                 r[i] = (uint8_t)(w + (c - w) * f + 0.5f);
             }
@@ -1121,6 +1121,7 @@ static void switch_synth(int i)
     }
     /* Everything the editor holds about the previous synth goes */
     page = 0;
+    memset(section_last, 0, sizeof(section_last));
     memset(encoder_acc, 0, sizeof(encoder_acc));
     patch_loaded = patch_browse = NONE;
     modified = false;
@@ -1207,6 +1208,8 @@ static void editor_encoder_impl(int i, int delta)
 static void go_to_page(int new_page)
 {
     page = new_page;
+    int section = synth->pages[page].section;
+    section_last[section] = page - section_first_page(section);
     memset(encoder_acc, 0, sizeof(encoder_acc));
     draw_page();
     update_group_leds();
@@ -1242,8 +1245,13 @@ static void select_section(int section)
         go_to_page(first + (page - first + 1) % count);
         return;
     }
-    /* Keep the position within the section, clamped to its length */
-    int offset = page - section_first_page(synth->pages[page].section);
+    /* Parallel sections: keep the position within the section, clamped to
+     * its length; others: back where that section was left */
+    int offset = section_last[section];
+    uint8_t par = synth->pages[page].parallel;
+    if (par && synth->pages[first].parallel == par) {
+        offset = page - section_first_page(synth->pages[page].section);
+    }
     go_to_page(first + (offset < count ? offset : count - 1));
 }
 

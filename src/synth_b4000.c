@@ -9,7 +9,7 @@
 #include "synth.h"
 
 /* The organ's three parts first: Upper and Lower manual are parallel
- * two-page sections (9 drawbars don't fit 8 encoders: page 1 = 16'-1 1/3',
+ * (parallel = 1) two-page sections (9 drawbars don't fit 8 encoders: page 1 = 16'-1 1/3',
  * page 2 = 1' and the manual's own settings, so Upper 2 <-> Lower 2 line
  * up), then the pedal, then the panel's sound sections, the rotary
  * speaker (horn | bass), the rest of the organ model, and the effects
@@ -20,19 +20,19 @@ static const synth_page_t pages[] = {
     {0, "UPPER",
      {B4000_UPPER_16, B4000_UPPER_5_1_3, B4000_UPPER_8, B4000_UPPER_4,
       B4000_UPPER_2_2_3, B4000_UPPER_2, B4000_UPPER_1_3_5, B4000_UPPER_1_1_3},
-     {_, _, _, _, _, _, _, _}},
+     {_, _, _, _, _, _, _, _}, 1},
     {0, "UPPER",
      {B4000_UPPER_1, B4000_UPPER_VOL, B4000_UPP_OCT, B4000_UPP_SPLIT,
       B4000_VIB_TYPE, _, _, _},
-     {_, _, _, _, B4000_VIB_UPPER, _, _, _}},
+     {_, _, _, _, B4000_VIB_UPPER, _, _, _}, 1},
     {1, "LOWER",
      {B4000_LOWER_16, B4000_LOWER_5_1_3, B4000_LOWER_8, B4000_LOWER_4,
       B4000_LOWER_2_2_3, B4000_LOWER_2, B4000_LOWER_1_3_5, B4000_LOWER_1_1_3},
-     {_, _, _, _, _, _, _, _}},
+     {_, _, _, _, _, _, _, _}, 1},
     {1, "LOWER",
      {B4000_LOWER_1, B4000_LOWER_VOL, B4000_LOW_OCT, B4000_LOW_SPLIT,
       B4000_VIB_TYPE, _, _, _},
-     {_, _, _, _, B4000_VIB_LOWER, _, _, _}},
+     {_, _, _, _, B4000_VIB_LOWER, _, _, _}, 1},
     {2, "PEDAL",
      {B4000_PEDAL_16, B4000_PEDAL_5_1_3, B4000_PEDAL_8, B4000_PEDAL_4,
       B4000_PEDAL_2_2_3, B4000_PEDAL_2, B4000_PEDAL_VOL, B4000_PED_OCT},

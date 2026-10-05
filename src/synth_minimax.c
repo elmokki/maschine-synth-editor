@@ -260,5 +260,4 @@ const synth_t synth_minimax = {
     .device_ccs = device_ccs,
     .theme_bright = {127, 35, 0},  /* red-orange, like the Minimoog's orange switches */
     .theme_dim = {20, 4, 0},
-    .theme_accent = {0, 4, 26},  /* blue: the computed cyan outshone the orange */
 };

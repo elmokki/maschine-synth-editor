@@ -3,11 +3,12 @@
  * single-voice SysEx dump), no single-parameter changes, and can't send its
  * voices back over MIDI - so the editor owns the voice, and every edit is
  * sent as a full dump, throttled: the Volca needs time per dump and drops
- * sounding notes when one arrives. Its own extras (chorus, reverb, arp...)
+ * sounding notes when one arrives. No volume control over MIDI (CC7 tried:
+ * ignored). Its own extras (chorus, reverb, arp...)
  * are Control Changes and not part of the voice.
  *
  * A patch file is the voice's 155 bytes of DX7 edit data (VCED), from
- * tools/dx7_import.py.
+ * tools/dx7_import.py, optionally followed by the Volca controls (page H).
  *
  * Layout: Group A-F = OP1-OP6, parallel 3-page sections (OSC, EG, KEY
  * SCALING); G = the voice's common part (algorithm, pitch EG, LFO); H = the
@@ -72,13 +73,20 @@ typedef enum {
     K_SWITCH,
     K_EG,       /* envelope rate/level: value only, the envelope is drawn */
     K_PEG,      /* pitch EG level: signed, envelope drawn */
+    K_LIST,     /* labels[0..max]; a CC sends the middle of its value range */
 } kind_t;
 
 typedef struct {
     const char *name;
     kind_t kind;
     uint8_t max, center;
+    const char *const *labels;  /* K_LIST */
 } param_info_t;
+
+static const char *const arp_types[] = {"OFF", "RISE 1", "RISE 2", "RISE 3", "FALL 1",
+                                        "FALL 2", "FALL 3", "RAND 1", "RAND 2", "RAND 3"};
+static const char *const arp_divs[] = {"1/12", "1/8", "1/4", "1/3", "1/2", "2/3",
+                                       "1/1", "3/2", "2/1", "3/1", "4/1"};
 
 static const param_info_t op_info[F_COUNT] = {
     [F_R1] = {"R1", K_EG, 99}, [F_R2] = {"R2", K_EG, 99},
@@ -92,7 +100,7 @@ static const param_info_t op_info[F_COUNT] = {
     [F_KVS] = {"VEL SENS", K_NUM, 7}, [F_OL] = {"LEVEL", K_NUM, 99},
     [F_MODE] = {"FIXED", K_SWITCH, 1}, [F_FC] = {"COARSE", K_FREQ, 31},
     [F_FF] = {"FINE", K_FREQ, 99}, [F_DET] = {"DETUNE", K_PLUSMINUS, 14, 7},
-    [F_ON] = {"ON", K_SWITCH, 1},
+    [F_ON] = {"OP ON", K_SWITCH, 1},
 };
 
 static const param_info_t common_info[] = {
@@ -105,7 +113,7 @@ static const param_info_t common_info[] = {
     {"PM SENS", K_NUM, 7}, {"TRANSPOSE", K_PLUSMINUS, 48, 24},
     /* Volca CCs */
     {"CHORUS", K_NUM, 127}, {"REVERB", K_NUM, 127}, {"VELOCITY", K_NUM, 127},
-    {"ARP TYPE", K_NUM, 127}, {"ARP DIV", K_NUM, 127},
+    {"ARP TYPE", K_LIST, 9, 0, arp_types}, {"ARP DIV", K_LIST, 10, 0, arp_divs},
 };
 
 static const uint8_t volca_cc[] = {93, 91, 41, 49, 50};  /* from V_FIRST */
@@ -120,15 +128,15 @@ static const char *const wave_names[] = {"TRI", "SAW DN", "SAW UP", "SQUARE", "S
     {op, "OP" n " OSC",                                                                  \
      {OP_PARAM(op, F_FC), OP_PARAM(op, F_FF), OP_PARAM(op, F_DET), OP_PARAM(op, F_OL),  \
       OP_PARAM(op, F_KVS), OP_PARAM(op, F_AMS), _, _},                                   \
-     {OP_PARAM(op, F_MODE), _, _, OP_PARAM(op, F_ON), _, _, _, _}},                      \
+     {OP_PARAM(op, F_MODE), _, _, OP_PARAM(op, F_ON), _, _, _, _}, 1},                   \
     {op, "OP" n " EG",                                                                   \
      {OP_PARAM(op, F_R1), OP_PARAM(op, F_L1), OP_PARAM(op, F_R2), OP_PARAM(op, F_L2),   \
       OP_PARAM(op, F_R3), OP_PARAM(op, F_L3), OP_PARAM(op, F_R4), OP_PARAM(op, F_L4)},  \
-     {_, _, _, _, _, _, _, _}},                                                          \
+     {_, _, _, _, _, _, _, _}, 1},                                                       \
     {op, "OP" n " KEY SCALING",                                                          \
      {OP_PARAM(op, F_BP), OP_PARAM(op, F_LC), OP_PARAM(op, F_LD), OP_PARAM(op, F_RD),   \
       OP_PARAM(op, F_RC), OP_PARAM(op, F_RS), _, _},                                     \
-     {_, _, _, _, _, _, _, _}}
+     {_, _, _, OP_PARAM(op, F_ON), _, _, _, _}, 1}
 
 #define PAGE_ALGORITHM 18
 #define PAGE_PITCH_EG 19
@@ -201,8 +209,11 @@ static const algorithm_t algorithms[32] = {
 
 static uint8_t voice[VCED_LEN], init_voice[VCED_LEN];
 static bool op_on[6] = {true, true, true, true, true, true};
-static uint8_t cc_values[P_COUNT - V_FIRST];
-static bool cc_known[P_COUNT - V_FIRST];
+/* The Volca's own controls are saved with the patch, after the voice; a
+ * patch without them (e.g. imported) gets these */
+#define EXTRAS (P_COUNT - V_FIRST)
+static const uint8_t cc_defaults[EXTRAS] = {0, 0, 0, 0, 2};  /* arp off, 1/4 */
+static uint8_t cc_values[EXTRAS] = {0, 0, 0, 0, 2};
 static bool init_read, dirty;
 static int64_t changed_at, sent_at;
 
@@ -283,8 +294,8 @@ static void set_value(int p, int v)
 {
     if (p >= V_FIRST) {
         cc_values[p - V_FIRST] = v;
-        cc_known[p - V_FIRST] = true;
-        midi_send(0xB0 | synth_setting(SETTING_CHANNEL), volca_cc[p - V_FIRST], v);
+        int cc = info(p)->kind == K_LIST ? (v * 128 + 64) / (info(p)->max + 1) : v;
+        midi_send(0xB0 | synth_setting(SETTING_CHANNEL), volca_cc[p - V_FIRST], cc);
         return;
     }
     kind_t k = info(p)->kind;
@@ -367,10 +378,6 @@ static const char *param_name(int p) { return info(p)->name; }
 static void param_format(int p, char *buf, size_t len)
 {
     const param_info_t *in = info(p);
-    if (p >= V_FIRST && !cc_known[p - V_FIRST]) {
-        snprintf(buf, len, "--");
-        return;
-    }
     int v = value(p);
     switch (in->kind) {
     case K_PLUSMINUS:
@@ -396,6 +403,9 @@ static void param_format(int p, char *buf, size_t len)
     case K_ALG:
         snprintf(buf, len, "%d", v + 1);
         break;
+    case K_LIST:
+        snprintf(buf, len, "%s", in->labels[v <= in->max ? v : 0]);
+        break;
     default:
         snprintf(buf, len, "%d", v);
         break;
@@ -405,7 +415,7 @@ static void param_format(int p, char *buf, size_t len)
 static int param_bar(int p)
 {
     const param_info_t *in = info(p);
-    if (in->kind == K_EG || in->kind == K_PEG || (p >= V_FIRST && !cc_known[p - V_FIRST])) {
+    if (in->kind == K_EG || in->kind == K_PEG) {
         return -1;
     }
     return value(p) * 1000 / in->max;
@@ -423,7 +433,7 @@ static bool param_step(int p, int steps)
 {
     int v = value(p) + steps, max = info(p)->max;
     v = v < 0 ? 0 : v > max ? max : v;
-    if (p >= V_FIRST ? cc_known[p - V_FIRST] && v == value(p) : v == value(p)) {
+    if (v == value(p)) {
         return false;
     }
     set_value(p, v);
@@ -434,11 +444,10 @@ static void param_toggle(int p) { set_value(p, !value(p)); }
 
 static bool param_reset(int p)
 {
-    if (p >= V_FIRST) {
-        return false;  /* not part of the voice */
-    }
     int v;
-    if (offset(p) < 0) {
+    if (p >= V_FIRST) {
+        v = cc_defaults[p - V_FIRST];
+    } else if (offset(p) < 0) {
         v = 1;  /* operator on */
     } else {
         read_init();
@@ -709,14 +718,14 @@ static void page_draw(int pg, int disp)
     }
 }
 
-/* Group buttons: carriers green, modulators blue, switched-off operators
- * nearly dark */
+/* Group buttons: carriers in the theme colour, modulators in its
+ * complementary colour, switched-off operators nearly dark */
 static bool section_dim(int section, uint8_t rgb[3])
 {
     if (section > 5) {
         return false;
     }
-    static const uint8_t carrier[3] = {0, 12, 4}, modulator[3] = {0, 5, 14}, off[3] = {2, 2, 2};
+    static const uint8_t carrier[3] = {0, 12, 4}, modulator[3] = {12, 0, 8}, off[3] = {2, 2, 2};
     const uint8_t *c = !op_on[section] ? off
                        : algorithms[voice[VCED_ALGORITHM] & 31].carriers & (1 << section) ? carrier
                        : modulator;
@@ -728,12 +737,27 @@ static bool section_dim(int section, uint8_t rgb[3])
 
 static bool patch_load(const char *path)
 {
-    if (!read_voice(path, voice)) {
+    FILE *f = fopen(path, "rb");
+    uint8_t extras[EXTRAS];
+    size_t n = 0;
+    if (f) {
+        n = fread(voice, 1, VCED_LEN, f);
+        if (n == VCED_LEN && fread(extras, 1, EXTRAS, f) == EXTRAS) {
+            memcpy(cc_values, extras, EXTRAS);
+        } else {
+            memcpy(cc_values, cc_defaults, EXTRAS);
+        }
+        fclose(f);
+    }
+    if (n != VCED_LEN) {
         ESP_LOGE(TAG, "can't read %s", path);
         return false;
     }
     for (int op = 0; op < 6; op++) {
         op_on[op] = true;
+    }
+    for (int p = V_FIRST; p < P_COUNT; p++) {
+        set_value(p, cc_values[p - V_FIRST]);
     }
     send_voice();
     return true;
@@ -753,7 +777,8 @@ static bool patch_save(const char *path)
     if (!f) {
         return false;
     }
-    bool ok = fwrite(voice, 1, VCED_LEN, f) == VCED_LEN;
+    bool ok = fwrite(voice, 1, VCED_LEN, f) == VCED_LEN &&
+              fwrite(cc_values, 1, EXTRAS, f) == EXTRAS;
     fclose(f);
     return ok;
 }

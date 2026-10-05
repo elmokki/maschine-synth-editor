@@ -21,13 +21,15 @@
 
 /* Navigation is two-level, the same for every synth: Group buttons A-H pick
  * a section (e.g. an operator, tone or partial), the main encoder steps
- * through pages. Switching between sections keeps the page position within
- * the section, so parallel sections (OP1 page 2 -> OP2 page 2) line up. */
+ * through pages. Switching between parallel sections (same nonzero
+ * `parallel` on their pages) keeps the page position, so OP1 page 2 -> OP2
+ * page 2; any other section opens on the page it was last left on. */
 typedef struct {
     uint8_t section;      /* 0-7 = Group A-H */
     const char *title;
     int16_t knobs[8];     /* parameter index per encoder, or SYNTH_NONE */
     int16_t switches[8];  /* parameter index per display button, or SYNTH_NONE */
+    uint8_t parallel;     /* sections with the same nonzero value line up */
 } synth_page_t;
 
 typedef enum {
@@ -111,11 +113,6 @@ typedef struct {
      * bright = the selected section's Group button, dim = other sections
      * and the pads at rest. All zero = the editor's default blue. */
     uint8_t theme_bright[3], theme_dim[3];
-    /* Optional: the other end of a multi-page section's gradient; all zero
-     * = theme_dim's complementary colour. LED channels differ a lot in
-     * brightness (green >> blue > red), so a computed complement can drown
-     * a reddish theme. */
-    uint8_t theme_accent[3];
 
     /* Optional: called often from the UI loop (e.g. to send throttled
      * updates) */
