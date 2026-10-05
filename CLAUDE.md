@@ -19,8 +19,10 @@ firmware notes: `docs/ESP32_NOTES.md`. The user writes in Finnish; the UI and co
 - `src/editor.c`: the generic editor (pages/sections, patches, store/name, menus, pads, tutorial).
   `src/synth.h`: the driver interface - one driver per synth entry (`synths[]` in editor.c).
 - Drivers: `synth_minimax.c`, `synth_b4000.c` (+ `plugiator.c`), `synth_volca.c` (DX7 voices),
-  `synth_d110.c` (TONE), `synth_d110p.c` (PATCH), `synth_d110r.c` (RHYTHM), `d110_common.c`.
-- Importers in `tools/`: `plugiator_import.py`, `dx7_import.py`, `d110_import.py`.
+  `synth_d110.c` (TONE), `synth_d110p.c` (PATCH), `synth_d110r.c` (RHYTHM), `d110_common.c`,
+  `synth_jv880.c` (Patch mode; SysEx helpers in `jv880_common.c`).
+- Importers in `tools/`: `plugiator_import.py`, `dx7_import.py`, `d110_import.py`, `jv880_import.py` (Init patch),
+  `jv880_names.py` (waveform names from `reference/JV880/` lists -> `data/jv880/waves/`; never reads the `.bin` images).
 
 ## Working with the user (agreed rules)
 - Plan UI/layout changes with the user before implementing; small liberties are fine if listed afterwards.
@@ -40,6 +42,13 @@ firmware notes: `docs/ESP32_NOTES.md`. The user writes in Finnish; the UI and co
 
 ## State (2026-10-05)
 Done: Plugiator MiniMax/B4000, Volca FM2, D-110 (TONE, PATCH, RHYTHM: import, read, write to unit, volume),
-categories, pad scales/chords, MIDI thru, LED brightness, tutorial (Shift + Control).
-Next: JV-880 (manual digest in `reference/JV880/NOTES.md`; plan its layout from its own panel with the user).
+categories, pad scales/chords, MIDI thru, LED brightness, tutorial (Shift + Control), JV-880 PATCH (all params,
+Group = function block, tones via Step arrows / Shift + Group A-D, read, write, store to I01-I64), Rec + Erase
+reverts a sound read from the unit (all D-110 and JV-880 drivers).
+JV-880 expansion boards: Setup CARD (0-22; 20-22 = boards 97-99) picks a library (`jv880/cardNN`; `jv880/` itself is
+shown with every board); IMPORT reads Internal as the board's 001-064, as own patches (200+) or the presets A+B
+(065-192). Wave names from `data/jv880/waves/` (int, cardNN). Unit settings needed: Unit # 17, Exclusive Rx ON, patch
+Rx channel = PATCH CH, Program change / Bank select Rx ON for the preset import, JV MIDI OUT -> Maschine MIDI IN to read.
+Next: JV-880 PERF and RHYTHM entries (plan with the user); board 19 and 97 have no waveform list; remove the user's own
+patch among the card-04 imports.
 Ideas waiting: synth list as per-device card stacks; Scene = saved multi-synth scenes; Volca Drum.

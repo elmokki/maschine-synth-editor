@@ -76,6 +76,14 @@ typedef struct {
     const char *name;           /* shown in the UI, e.g. "MiniMax" */
     const char *key;            /* file names: settings, remembered patch */
     const char *patch_dir;      /* patch library directory on LittleFS */
+    /* Optional: the library directory right now, e.g. one per expansion
+     * card so a card's patches are hidden while another is in; the editor
+     * lists it again whenever a setting changes */
+    const char *(*patch_dir_fn)(void);
+    /* Optional: a directory whose patches show in every library (e.g. the
+     * presets, which no expansion board changes); same names as in the
+     * main one are listed once */
+    const char *(*common_dir_fn)(void);
     const char *default_patch;  /* loaded at boot if nothing is remembered */
     int first_user_patch;       /* lower numbers are factory, read-only */
 
@@ -83,6 +91,9 @@ typedef struct {
     int page_count;
     const synth_setting_t *settings;
     int setting_count;
+    /* Optional: a few small words under a setting's value on Setup (up to
+     * 12 characters fit), e.g. what the number stands for; empty = none */
+    void (*setting_note)(int setting, char *buf, size_t len);
 
     /* Parameters, by index */
     const char *(*param_name)(int p);
@@ -102,6 +113,13 @@ typedef struct {
     /* Patches */
     bool (*patch_load)(const char *path);  /* read, send everything, update values */
     bool (*patch_save)(const char *path);
+    /* Optional: Rec + Erase when the sound isn't a library patch (e.g. it
+     * was read from the instrument): back to how it was read; false if it
+     * can't */
+    bool (*revert)(void);
+    /* Optional: after a save, a short warning about what was saved (shown
+     * in the header instead of the file name), or NULL */
+    const char *(*save_warning)(void);
     int (*unknown_count)(void);            /* params a save would fill with defaults */
 
     /* Optional: make the instrument ready when this synth gets selected
@@ -235,3 +253,4 @@ extern const synth_t synth_volca;
 extern const synth_t synth_d110;
 extern const synth_t synth_d110p;
 extern const synth_t synth_d110r;
+extern const synth_t synth_jv880;

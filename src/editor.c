@@ -135,7 +135,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -912,9 +912,36 @@ static void end_browse(void)
 
 /* ---- patches ---- */
 
+#define PATCH_RELOAD_DELAY_US 400000
+static int64_t patch_reload_at;  /* a setting may have changed the library: list it again then */
+static char listed_dir[48];      /* the library directory the list was made from */
+
+static const char *patch_dir(void)
+{
+    return synth->patch_dir_fn ? synth->patch_dir_fn() : synth->patch_dir;
+}
+
+static const char *common_dir(void)
+{
+    const char *dir = synth->common_dir_fn ? synth->common_dir_fn() : NULL;
+    return dir && strcmp(dir, patch_dir()) ? dir : NULL;
+}
+
+/* The file in the library, or - if only the common directory has it - there */
 static void patch_path(char *buf, size_t len, const char *file)
 {
-    snprintf(buf, len, "%s/%s", synth->patch_dir, file);
+    snprintf(buf, len, "%s/%s", patch_dir(), file);
+    const char *common = common_dir();
+    if (common) {
+        struct stat st;
+        if (stat(buf, &st) != 0) {
+            char other[MAX_PATH];
+            snprintf(other, sizeof(other), "%s/%s", common, file);
+            if (stat(other, &st) == 0) {
+                snprintf(buf, len, "%s", other);
+            }
+        }
+    }
 }
 
 static void load_patch(int idx)
@@ -1167,7 +1194,12 @@ static void save_patch(void)
         remove(old);  /* renamed */
     }
     ESP_LOGI(TAG, "stored %s", file);
-    snprintf(notice, sizeof(notice), "SAVED  %s", file);
+    const char *warning = synth->save_warning ? synth->save_warning() : NULL;
+    if (warning) {
+        snprintf(notice, sizeof(notice), "SAVED.  %s", warning);
+    } else {
+        snprintf(notice, sizeof(notice), "SAVED  %s", file);
+    }
     notice_until = esp_timer_get_time() + NOTICE_US;
 
     load_patch_list();
@@ -1351,6 +1383,13 @@ static void draw_setup(void)
         draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, synth->settings[i].name, true);
         format_setting(i, buf, sizeof(buf));
         draw_centered(disp, x, COLUMN_INNER, VALUE_CAP_Y, &font_large, buf, true);
+        char note[16] = "";
+        if (synth->setting_note) {
+            synth->setting_note(i, note, sizeof(note));
+        }
+        if (note[0]) {
+            draw_centered(disp, x, COLUMN_INNER, BAR_Y, &font_tiny, note, true);
+        }
     }
 }
 
@@ -1405,6 +1444,11 @@ static void setting_encoder(int i, int col, int delta)
     }
     setting_values[i] = v;
     settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+    if (synth->patch_dir_fn) {
+        /* The library may be another one now: listed again once the knob
+         * rests (a long list takes most of a second) */
+        patch_reload_at = esp_timer_get_time() + PATCH_RELOAD_DELAY_US;
+    }
     draw_page();
 }
 
@@ -1526,6 +1570,11 @@ static void init_patch(void)
 static void revert_patch(void)
 {
     rec_used = erase_used = true;
+    if (patch_loaded == NONE && modified && synth->revert && synth->revert()) {
+        modified = false;  /* the instrument's own sound, back as it was read */
+        draw_page();
+        return;
+    }
     if (patch_loaded == NONE || !modified) {
         return;  /* nothing to revert */
     }
@@ -1769,6 +1818,10 @@ static void restore_from_library(void)
         }
     }
     ESP_LOGW(TAG, "default patch %s not found either", synth->default_patch);
+    if (patch_count > 0) {
+        load_patch(0);  /* the library's first */
+        remember_at = 0;
+    }
     draw_page();
 }
 
@@ -2320,6 +2373,12 @@ static void editor_tick_impl(int64_t now_us)
     if (synth->tick) {
         synth->tick(now_us);
     }
+    if (patch_reload_at && now_us > patch_reload_at) {
+        patch_reload_at = 0;
+        if (strcmp(listed_dir, patch_dir()) != 0) {
+            synth_patches_changed();
+        }
+    }
     if (MULTI_PAGE_SLIDE_PERIOD_US && now_us > led_anim_at) {
         led_anim_at = now_us + LED_ANIM_INTERVAL_US;
         update_group_leds();
@@ -2407,19 +2466,31 @@ static void load_patch_list(void)
         free(patch_names[i]);
     }
     patch_count = 0;
-    DIR *dir = opendir(synth->patch_dir);
-    if (dir) {
+    const char *dirs[2] = {patch_dir(), common_dir()};
+    snprintf(listed_dir, sizeof(listed_dir), "%s", dirs[0]);
+    for (int d = 0; d < 2; d++) {
+        DIR *dir = dirs[d] ? opendir(dirs[d]) : NULL;
+        if (!dir) {
+            continue;
+        }
         struct dirent *e;
         while ((e = readdir(dir)) && patch_count < MAX_PATCHES) {
-            if (isdigit((unsigned char)e->d_name[0])) {  /* "NNN Name"; not e.g. categories */
+            if (!isdigit((unsigned char)e->d_name[0])) {  /* "NNN Name"; not e.g. categories */
+                continue;
+            }
+            bool listed = false;
+            for (int i = 0; d && i < patch_count; i++) {
+                listed |= strcmp(patch_names[i], e->d_name) == 0;
+            }
+            if (!listed) {
                 patch_names[patch_count++] = strdup(e->d_name);
             }
         }
         closedir(dir);
-        qsort(patch_names, patch_count, sizeof(char *), cmp_names);
     }
+    qsort(patch_names, patch_count, sizeof(char *), cmp_names);
     read_categories();
-    ESP_LOGI(TAG, "%d %s patches in %s", patch_count, synth->name, synth->patch_dir);
+    ESP_LOGI(TAG, "%d %s patches in %s", patch_count, synth->name, patch_dir());
 }
 
 static void load_settings(void);
