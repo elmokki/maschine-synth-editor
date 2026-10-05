@@ -98,7 +98,7 @@ static const scale_t scales[] = {
 #define PAD_SCALE_ID 101
 #define PAD_KEY_ID 102
 #define PAD_CHORD_ID 105
-#define PAD_LOW_DEFAULT 48  /* C2: lowest pad, bottom left */
+#define PAD_LOW_DEFAULT 48  /* C3: lowest pad, bottom left */
 /* Global settings, on the Setup screen's right display (the synth's own
  * are on the left, so at most 4) */
 #define SETUP_SYNTH_COLS 4
@@ -192,6 +192,9 @@ static char *patch_names[MAX_PATCHES];
 static uint8_t category_by_number[MAX_PATCH_NUMBER];
 static uint8_t category_filter = ALL_CATEGORIES;
 static uint8_t store_category;  /* given to the patch being stored */
+static int unit_slot;                /* synth_t.unit_store: slot in the instrument */
+static int64_t unit_store_armed_until;
+#define UNIT_SLOT_UNITS 40
 static int patch_count;
 static int patch_loaded = NONE;
 static int patch_browse = NONE;  /* selection while browsing, not loaded yet */
@@ -248,6 +251,15 @@ static void draw_pads(void);
 int synth_setting(int index)
 {
     return index < synth->setting_count ? setting_values[index] : 0;
+}
+
+/* Device volume (Volume button + main encoder): a CC kept in a setting, or
+ * the driver's own */
+static bool has_volume(void) { return synth->volume_cc || synth->volume_set; }
+
+static int volume_value(void)
+{
+    return synth->volume_get ? synth->volume_get() : synth_setting(synth->volume_setting);
 }
 
 /* The channel the pads, MIDI thru and panic use */
@@ -372,7 +384,7 @@ static void chord_name(int pad, char *buf, size_t len)
     const char *q = third == 4 && fifth == 7 ? "" : third == 3 && fifth == 7 ? "m"
                     : third == 3 && fifth == 6 ? "dim" : third == 4 && fifth == 8 ? "aug"
                     : third == 2 && fifth == 7 ? "sus2" : third == 5 && fifth == 7 ? "sus4" : "*";
-    snprintf(buf, len, "%s%s%d", names[n[0] % 12], q, n[0] / 12 - 2);
+    snprintf(buf, len, "%s%s%d", names[n[0] % 12], q, n[0] / 12 - 1);
 }
 
 /* Pads at rest, in the synth's theme; the key's notes brighter, so the
@@ -477,7 +489,7 @@ static void update_button_leds(void)
                                        : !edit ? 0
                                        : patch_browse != NONE && patch_browse != patch_loaded ? LED_ON
                                        : LED_DIM);
-    maschine_set_button_led(BTN_VOLUME, !edit || !synth->volume_cc ? 0 : volume_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_VOLUME, !edit || !has_volume() ? 0 : volume_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_BROWSE, !edit ? 0 : encoder_browses ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_ERASE, mode == MODE_CATEGORY ? LED_DIM
                                        : !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
@@ -493,7 +505,8 @@ static void update_button_leds(void)
     }
 
     /* Display buttons: what the screen offers */
-    bool store_keys[8] = {true, true, store_target != NONE, true, synth->categories != NULL};
+    bool store_keys[8] = {true, true, store_target != NONE, true, synth->categories != NULL,
+                          false, false, synth->unit_store != NULL};
     static const bool name_keys[8] = {true, false, false, true};
     for (int col = 0; col < 8; col++) {
         uint8_t v = 0;
@@ -612,7 +625,7 @@ static void draw_header(void)
 
     if (volume_held || notice_until) {
         if (volume_held) {
-            snprintf(buf, sizeof(buf), "VOLUME %d", synth_setting(synth->volume_setting));
+            snprintf(buf, sizeof(buf), "VOLUME %d", volume_value());
         } else {
             fit_text(&font_small, notice, DISPLAY_USABLE_WIDTH - 4, buf, sizeof(buf));
         }
@@ -1004,11 +1017,29 @@ static void draw_store(void)
                       &font_medium, store_category ? synth->categories[store_category - 1] : "(none)",
                       true);
     }
-    draw_text_cap(1, 4, 29, &font_small, "SAVE or ENTER stores the current sound.", true);
-    snprintf(buf, sizeof(buf), "Factory patches (below %03d) are read-only.", synth->first_user_patch);
-    draw_text_cap(1, 4, 38, &font_small, buf, true);
+    if (synth->unit_store) {
+        /* The instrument's own memory: display button 8 (twice), slot on
+         * encoder 8 */
+        int x = 3 * COLUMN_WIDTH;
+        bool armed = unit_store_armed_until != 0;
+        display_round_rect(1, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, armed, true);
+        draw_centered(1, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+                      &font_small, armed ? "SURE?" : synth->unit_store_label, !armed);
+        /* The slot, large under its button (encoder 8 picks it) */
+        char slot[12];
+        synth->unit_slot_name(unit_slot, slot, sizeof(slot));
+        draw_centered(1, x, COLUMN_INNER, VALUE_CAP_Y, &font_large, slot, true);
+        draw_text_cap(1, 4, 29, &font_small, "Encoder 8: the slot,", true);
+        snprintf(buf, sizeof(buf), "%s twice writes it.", synth->unit_store_label);
+        draw_text_cap(1, 4, 38, &font_small, buf, true);
+    } else {
+        draw_text_cap(1, 4, 29, &font_small, "SAVE or ENTER stores the current sound.", true);
+        snprintf(buf, sizeof(buf), "Factory patches (below %03d) are read-only.", synth->first_user_patch);
+        draw_text_cap(1, 4, 38, &font_small, buf, true);
+    }
     if (store_target != NONE) {
-        draw_text_cap(1, 4, 47, &font_small, "DELETE twice removes this patch.", true);
+        draw_text_cap(1, 4, 47, &font_small, synth->unit_store ? "DELETE twice removes it." :
+                                                                 "DELETE twice removes this patch.", true);
     }
     int unknown = synth->unknown_count();
     if (unknown) {
@@ -1156,6 +1187,16 @@ static void store_button(int bit)
         }
         return;
     }
+    if (mode == MODE_STORE && key == 7 && synth->unit_store) {
+        if (unit_store_armed_until) {
+            unit_store_armed_until = 0;
+            synth->unit_store(unit_slot, store_name[0] ? store_name : "Untitled");
+        } else {
+            unit_store_armed_until = esp_timer_get_time() + DELETE_CONFIRM_US;
+        }
+        draw_store();
+        return;
+    }
     if (mode == MODE_STORE && key == 4 && synth->categories) {
         store_category = (store_category + 1) % 9;  /* 1-8, then (none) */
         draw_store();
@@ -1197,8 +1238,8 @@ static void format_setting(int i, char *buf, size_t len)
     case SET_CHANNEL:
         snprintf(buf, len, "%d", v + 1);
         break;
-    case SET_NOTE:  /* 60 = C3, so the default pad note 36 is C1 */
-        snprintf(buf, len, "%s%d", names[v % 12], v / 12 - 2);
+    case SET_NOTE:  /* 60 = C4, as Roland and most of MIDI name it */
+        snprintf(buf, len, "%s%d", names[v % 12], v / 12 - 1);
         break;
     default:
         snprintf(buf, len, "%d", v);
@@ -1487,7 +1528,7 @@ static void draw_pads(void)
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
     const char *names[4] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD"};
     int low = lowest_pad_note();  /* in a scale: the first scale note from PAD LOW */
-    snprintf(buf, sizeof(buf), "%s%d", keys[low % 12], low / 12 - 2);  /* 60 = C3 */
+    snprintf(buf, sizeof(buf), "%s%d", keys[low % 12], low / 12 - 1);  /* 60 = C4 */
     const char *vals[4] = {buf, scales[pad_scale].name, keys[pad_key], pad_chord ? "ON" : "OFF"};
     for (int k = 0; k < 4; k++) {
         int x = k * COLUMN_WIDTH;
@@ -1506,7 +1547,7 @@ static void draw_pads(void)
         if (pad_chord) {
             chord_name(pad, buf, sizeof(buf));
         } else {
-            snprintf(buf, sizeof(buf), "%s%d", keys[note % 12], note / 12 - 2);
+            snprintf(buf, sizeof(buf), "%s%d", keys[note % 12], note / 12 - 1);
         }
         if (root) {
             display_round_rect(1, x + 2, y + 1, COLUMN_INNER - 4, cell_h - 1, true, true);
@@ -1597,7 +1638,9 @@ static void draw_synths(void)
 /* Patch to bring the synth back to: the remembered one, or the default */
 static void send_volume(void)
 {
-    if (synth->volume_cc) {
+    if (synth->volume_set) {
+        synth->volume_set(synth->volume_get());  /* the driver sends it */
+    } else if (synth->volume_cc) {
         midi_send(0xB0 | synth_setting(SETTING_CHANNEL), synth->volume_cc,
                   synth_setting(synth->volume_setting));
     }
@@ -1761,6 +1804,19 @@ static void editor_encoder_impl(int i, int delta)
         static const int pad_settings[4] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID, PAD_CHORD_ID};
         if (i < 4) {
             setting_encoder(pad_settings[i], i, delta);
+        }
+        return;
+    }
+    if (mode == MODE_STORE && i == 7 && synth->unit_store) {
+        encoder_acc[i] += delta;
+        int steps = encoder_acc[i] / UNIT_SLOT_UNITS;
+        encoder_acc[i] -= steps * UNIT_SLOT_UNITS;
+        int s = unit_slot + steps;
+        s = s < 0 ? 0 : s >= synth->unit_store_slots ? synth->unit_store_slots - 1 : s;
+        if (s != unit_slot) {
+            unit_slot = s;
+            unit_store_armed_until = 0;
+            draw_store();
         }
         return;
     }
@@ -1973,7 +2029,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (bit == BTN_VOLUME && synth->volume_cc) {
+    if (bit == BTN_VOLUME && has_volume()) {
         volume_held = down;
         if (down) {
             end_browse();
@@ -2062,8 +2118,10 @@ static void editor_button_impl(int bit, bool down)
         select_section(bit - BTN_GROUP_A);
     } else if (bit == BTN_AUTO && synth->read) {
         synth->read();
-    } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) && synth->instance_step) {
-        /* Each instance keeps its own loaded patch */
+    } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) &&
+               (shift_held ? synth->shift_step != NULL : synth->instance_step != NULL)) {
+        /* Step arrows (Shift: the driver's other step) - either may change
+         * the instance (e.g. the D-110 part); each keeps its own patch */
         if (!inst_init) {
             for (int i = 0; i < MAX_INSTANCES; i++) {
                 inst_loaded[i] = NONE;
@@ -2074,11 +2132,17 @@ static void editor_button_impl(int bit, bool down)
         inst_loaded[old] = patch_loaded;
         inst_modified[old] = modified;
         end_browse();
-        synth->instance_step(bit == BTN_STEP_LEFT ? -1 : 1);
+        int d = bit == BTN_STEP_LEFT ? -1 : 1;
+        if (shift_held) {
+            synth->shift_step(d);
+        } else {
+            synth->instance_step(d);
+        }
         int now = synth->instance ? synth->instance() % MAX_INSTANCES : 0;
         patch_loaded = inst_loaded[now];
         modified = inst_modified[now];
-        draw_header();
+        draw_page();
+        update_group_leds();
     } else if (bit == BTN_ENTER && patch_browse != NONE) {
         load_patch(patch_browse);
         patch_browse = NONE;
@@ -2092,10 +2156,15 @@ static void editor_main_encoder_impl(int steps)
         return;
     }
     if (volume_held && mode == MODE_EDIT) {
-        int v = setting_values[synth->volume_setting] + steps * VOLUME_STEP;
-        setting_values[synth->volume_setting] = v < 0 ? 0 : v > 127 ? 127 : v;
-        settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
-        send_volume();
+        int v = volume_value() + steps * VOLUME_STEP;
+        v = v < 0 ? 0 : v > 127 ? 127 : v;
+        if (synth->volume_set) {
+            synth->volume_set(v);
+        } else {
+            setting_values[synth->volume_setting] = v;
+            settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+            send_volume();
+        }
         draw_header();
         return;
     }
@@ -2203,6 +2272,12 @@ static void editor_tick_impl(int64_t now_us)
     if (remember_at && now_us > remember_at) {
         remember_at = 0;
         remember_loaded_patch();
+    }
+    if (unit_store_armed_until && now_us > unit_store_armed_until) {
+        unit_store_armed_until = 0;
+        if (mode == MODE_STORE) {
+            draw_store();
+        }
     }
     if (delete_armed_until && now_us > delete_armed_until) {
         delete_armed_until = 0;  /* not confirmed */

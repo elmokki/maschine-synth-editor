@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "d110_common.h"
 #include "display.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -475,6 +476,32 @@ static void read_state(void)
     rq1(addr7(TIMBRE_TEMP), 0x80 + 0x10);
 }
 
+/* ---- writing into the unit's own memory (Store: TO D-110) ----
+ * Write Request (40 02 00): the patch as now in the temporary areas into
+ * internal patch memory (I-11..I-88); the unit answers at 40 10 00 */
+#define WRITE_RESULT (0x40 * 16384 + 0x10 * 128)
+
+static void unit_slot_name(int slot, char *buf, size_t len)
+{
+    snprintf(buf, len, "I-%d%d", slot / 8 + 1, slot % 8 + 1);
+}
+
+static void unit_store(int slot, const char *name)
+{
+    for (int i = 0; i < 10; i++) {
+        char c = *name ? *name++ : ' ';
+        patch[M_NAME + i] = c >= 32 && c < 127 ? c : ' ';
+        known[M_NAME + i] = true;
+    }
+    send_patch_bytes(M_NAME, 10);
+    uint8_t req[2] = {slot & 63, 0};  /* slot, internal */
+    dt1(0x40 * 16384 + 0x02 * 128, req, 2);
+    char slot_name[8], buf[40];
+    unit_slot_name(slot, slot_name, sizeof(slot_name));
+    snprintf(buf, sizeof(buf), "WRITING PATCH TO %s", slot_name);
+    synth_notice(buf);
+}
+
 static void import_next(void)
 {
     imp_deadline = esp_timer_get_time() + IMPORT_TIMEOUT_US;
@@ -551,6 +578,12 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
     int a = d[5] << 14 | d[6] << 7 | d[7], n = (int)len - 10;
     const uint8_t *data = d + 8;
+    if (a == WRITE_RESULT) {
+        static const char *const results[] = {"WRITTEN TO D-110", "WRITE: CARD NOT READY",
+                                              "WRITE: MEMORY PROTECTED", "WRITE: WRONG MODE"};
+        synth_notice(results[data[0] & 3]);
+        return;
+    }
     if (importing && a == addr7(PATCH_MEMORY) + imp_index * PATCH_LEN && n == PATCH_LEN) {
         import_save(data);
         char buf[32];
@@ -590,6 +623,13 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
     if (got) {
         synth_state_received();  /* the unit answered: no fallback */
+        uint16_t mask = 0;
+        for (int i = 0; i < 9; i++) {
+            if (known[M_CHANNEL + i] && patch[M_CHANNEL + i] < 16) {
+                mask |= 1 << patch[M_CHANNEL + i];
+            }
+        }
+        d110_set_channels(mask);  /* Volume goes to these */
         if (read_asked && known[M_PART]) {
             read_asked = false;
             synth_sound_replaced();
@@ -679,8 +719,14 @@ const synth_t synth_d110p = {
     .read = read_state,
     .sysex_in = sysex_in,
     .tick = tick,
+    .unit_store_label = "TO D-110",
+    .unit_store_slots = 64,
+    .unit_slot_name = unit_slot_name,
+    .unit_store = unit_store,
     .action_name = "IMPORT",
     .action = import_start,
+    .volume_get = d110_volume_get,
+    .volume_set = d110_volume_set,
     .keep_state = true,
     .theme_bright = {0, 100, 127},  /* cyan, as the tone level */
     .theme_dim = {0, 9, 12},

@@ -144,7 +144,8 @@ static const synth_page_t pages[] = {
     OP_PAGES(0, "1"), OP_PAGES(1, "2"), OP_PAGES(2, "3"),
     OP_PAGES(3, "4"), OP_PAGES(4, "5"), OP_PAGES(5, "6"),
     /* Operators on/off right on the algorithm page, OP1-OP6 in order */
-    {6, "ALGORITHM", {G_ALG, G_FB, G_TRNSP, _, _, _, _, _},
+    /* Encoders 6 and 7, under the diagram, change it too */
+    {6, "ALGORITHM", {G_ALG, G_FB, G_TRNSP, _, _, G_ALG, G_FB, _},
      {OP_PARAM(0, F_ON), OP_PARAM(1, F_ON), OP_PARAM(2, F_ON), OP_PARAM(3, F_ON),
       OP_PARAM(4, F_ON), OP_PARAM(5, F_ON), _, G_OKS}},
     {6, "PITCH EG", {G_PR1, G_PL1, G_PR2, G_PL2, G_PR3, G_PL3, G_PR4, G_PL4},
@@ -413,7 +414,7 @@ static void param_format(int p, char *buf, size_t len)
     case K_NOTE: {
         static const char *const names[] = {"C", "C#", "D", "D#", "E", "F",
                                             "F#", "G", "G#", "A", "A#", "B"};
-        int n = v + 9;  /* 0 = A-1 */
+        int n = v + 21;  /* the MIDI note: 0 = A0 (DX7: "A-1"), 39 = C4, middle C */
         snprintf(buf, len, "%s%d", names[n % 12], n / 12 - 1);
         break;
     }

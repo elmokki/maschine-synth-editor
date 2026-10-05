@@ -109,6 +109,10 @@ typedef struct {
      * activate. volume_cc 0 = none. */
     uint8_t volume_cc;
     int8_t volume_setting;
+    /* ...or the driver does it all (e.g. CC7 on every part's channel, the
+     * value shared by several synth entries): get / set (+ send, store) */
+    int (*volume_get)(void);
+    void (*volume_set)(int value);
     /* Optional: other device-level settings sent the same way after
      * activate, as (setting index, CC) pairs, terminated by cc 0 */
     const synth_device_cc_t *device_ccs;
@@ -151,6 +155,8 @@ typedef struct {
      * shift_group_led(g): -1 dark, 0 dim, 1 lit. */
     bool (*shift_group)(int g);
     int (*shift_group_led)(int g);
+    void (*shift_step)(int d);  /* Shift + transport Step arrows: e.g. the
+                                   partial selection one step along */
     void (*header_tag)(char *buf, size_t len);  /* shown after the page title */
     /* The instance (e.g. part) being edited, so the editor keeps which
      * library patch is loaded per instance; and the sound's own name when
@@ -178,6 +184,13 @@ typedef struct {
     /* Optional: a pad played this note (the lowest of a chord) - e.g. a
      * drum kit's editor picks that key */
     void (*note_played)(int note);
+
+    /* Optional: store into the instrument's own memory as well (Store
+     * screen: display button 8, twice; encoder 8 picks the slot) */
+    const char *unit_store_label;                 /* e.g. "TO D-110" */
+    int unit_store_slots;
+    void (*unit_slot_name)(int slot, char *buf, size_t len);
+    void (*unit_store)(int slot, const char *name);
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */

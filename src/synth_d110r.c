@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "d110_common.h"
 #include "display.h"
 #include "esp_log.h"
 #include "fonts.h"
@@ -497,6 +498,8 @@ const synth_t synth_d110r = {
     .sound_name = sound_name,
     .read = read_state,
     .sysex_in = sysex_in,
+    .volume_get = d110_volume_get,
+    .volume_set = d110_volume_set,
     .keep_state = true,
     .note_played = note_played,
     .theme_bright = {0, 100, 127},  /* cyan, as the other D-110 levels */

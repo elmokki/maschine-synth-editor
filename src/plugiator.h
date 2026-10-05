@@ -28,7 +28,7 @@ typedef enum {
     PT_RAW,     /* meaning of the value not known yet, 0-127 shown raw */
     PT_LIST,    /* value = index into labels, 0..label_count-1 */
     PT_MIX,     /* 0-127 crossfade between labels[0] and labels[1], shown as a ratio */
-    PT_NOTE,    /* a key, 0-127, shown as a note name (0 = C-2) */
+    PT_NOTE,    /* a key, 0-127, shown as a note name (0 = C-1, 60 = C4) */
 } plug_type_t;
 
 typedef enum {

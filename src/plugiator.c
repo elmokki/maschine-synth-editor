@@ -143,8 +143,8 @@ void plug_format(plug_set_t *s, int p, char *buf, size_t len)
         } else {
             snprintf(buf, len, "%d", pos);
         }
-    } else if (pp->type == PT_NOTE) {  /* 60 = C3, like the pad note setting */
-        snprintf(buf, len, "%s%d", notes[v % 12], v / 12 - 2);
+    } else if (pp->type == PT_NOTE) {  /* 60 = C4, as everywhere in the editor */
+        snprintf(buf, len, "%s%d", notes[v % 12], v / 12 - 1);
     } else if (pp->type == PT_MIX) {
         /* Ends by name, in between as a ratio of the two, e.g. 70/30 */
         int b = (kv * 100 + 63) / 127;

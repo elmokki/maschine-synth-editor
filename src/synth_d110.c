@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "d110_common.h"
 #include "display.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -32,6 +33,8 @@ static const char *TAG = "d110";
 #define PARTIAL_LEN 0x3A
 #define TEMP_TONE_BASE 0x040000  /* part 1; parts 0xF6 apart (7-bit address) */
 #define TEMP_TIMBRE_BASE 0x030000  /* part 1; parts 0x10 apart */
+#define WRITE_REQUEST 0x400000     /* manual p. 120 */
+#define WRITE_RESULT (0x40 * 16384 + 0x10 * 128)  /* 40 10 00 */
 #define MODEL_ID 0x16
 #define PARTS 8
 
@@ -199,7 +202,8 @@ static const d110_param_t params[PARAM_COUNT] = {
 enum { PG_COMMON, PG_WG_PITCH, PG_WG_FORM, PG_PITCH_ENV, PG_TVF_FREQ, PG_TVF_ENV, PG_TVF_ENV2,
        PG_TVA_LEVEL, PG_TVA_ENV, PG_TVA_ENV2 };
 static const synth_page_t pages[] = {
-    [PG_COMMON] = {0, "COMMON", {P_STRUCT12, P_STRUCT34, P_ENV_MODE, _, _, _, _, _},
+    /* Encoders 5 and 7, under the structure pictures, change them too */
+    [PG_COMMON] = {0, "COMMON", {P_STRUCT12, P_STRUCT34, P_ENV_MODE, _, P_STRUCT12, _, P_STRUCT34, _},
                    {P_ON1, P_ON2, P_ON3, P_ON4, _, _, _, _}},
     [PG_WG_PITCH] = {1, "WG PITCH/MOD",
                      {P_COARSE, P_FINE, P_KEYF, P_LFO_RATE, P_LFO_DEPTH, P_LFO_MOD, _, _},
@@ -606,6 +610,12 @@ static void sysex_in(const uint8_t *d, size_t len)
         imp_stage = IMP_SET;
         return;
     }
+    if ((d[5] << 14 | d[6] << 7 | d[7]) == WRITE_RESULT && len >= 11) {
+        static const char *const results[] = {"WRITTEN TO D-110", "WRITE: CARD NOT READY",
+                                              "WRITE: MEMORY PROTECTED", "WRITE: WRONG MODE"};
+        synth_notice(results[d[8] & 3]);
+        return;
+    }
     int at = (d[5] << 14 | d[6] << 7 | d[7]) - temp_base();
     if (at < 0 || at + n > PARTS * TONE_LEN) {
         return;  /* not a tone temporary area */
@@ -648,6 +658,40 @@ static void sysex_in(const uint8_t *d, size_t len)
         synth_notice(buf);
         synth_redraw();
     }
+}
+
+/* ---- writing into the unit's own memory (Store: TO D-110) ----
+ * Its Write Request area (40 xx xx, manual p. 120) does what its WRITE
+ * button does: the part's tone, as now in the temporary area, into an
+ * internal tone (i11-i88). The unit answers with a result (40 10 00). */
+
+static void unit_slot_name(int slot, char *buf, size_t len)
+{
+    snprintf(buf, len, "i%d%d", slot / 8 + 1, slot % 8 + 1);
+}
+
+static void unit_store(int slot, const char *name)
+{
+    /* The name first (the temporary tone's), then the write */
+    for (int i = 0; i < 10; i++) {
+        char c = *name ? *name++ : ' ';
+        tone[part][i] = c >= 32 && c < 127 ? c : ' ';
+        known[part][i] = true;
+    }
+    send_bytes(0, 10);
+    int a = (WRITE_REQUEST >> 16 & 0x7F) * 16384 + part * 2;
+    uint8_t msg[] = {0xF0, 0x41, device_id(), MODEL_ID, 0x12, a >> 14 & 0x7F, a >> 7 & 0x7F, a & 0x7F,
+                     slot & 63, 0, 0, 0xF7};  /* slot, internal */
+    int sum = 0;
+    for (int i = 5; i < 10; i++) {
+        sum += msg[i];
+    }
+    msg[10] = (128 - (sum & 0x7F)) & 0x7F;
+    midi_send_sysex(msg, sizeof(msg));
+    char slot_name[8], buf[40];
+    unit_slot_name(slot, slot_name, sizeof(slot_name));
+    snprintf(buf, sizeof(buf), "WRITING PART %d TO %s", part + 1, slot_name);
+    synth_notice(buf);
 }
 
 static void read_tone(void)
@@ -1067,6 +1111,24 @@ static bool shift_group(int g)
     return true;
 }
 
+/* Step arrows: every selected partial moves one along (1 -> 2, 1+3 ->
+ * 2+4), round from 4 to 1; Shift + arrows change the part */
+static void shift_step(int d)
+{
+    partial_sel = d > 0 ? ((partial_sel << 1) | (partial_sel >> 3)) & 0x0F
+                        : ((partial_sel >> 1) | (partial_sel << 3)) & 0x0F;
+    char buf[16], tag[16];
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (partial_sel & (1 << i)) {
+            tag[n++] = '1' + i;
+        }
+    }
+    tag[n] = 0;
+    snprintf(buf, sizeof(buf), "PARTIAL %s", tag);
+    synth_notice(buf);
+}
+
 static int shift_group_led(int g) { return g > 3 ? -1 : (partial_sel >> g) & 1; }
 
 static int instance(void) { return part; }
@@ -1183,18 +1245,25 @@ const synth_t synth_d110 = {
     .page_draw = page_draw,
     .column_draw = column_draw,
     .play_channel = play_channel,
-    .instance_step = instance_step,
+    .instance_step = shift_step,  /* arrows: the partial (most used) */
     .shift_group = shift_group,
     .shift_group_led = shift_group_led,
+    .shift_step = instance_step,  /* Shift + arrows: the part */
     .header_tag = header_tag,
     .instance = instance,
     .sound_name = sound_name,
     .read = read_tone,
     .sysex_in = sysex_in,
     .tick = tick,
+    .unit_store_label = "TO D-110",
+    .unit_store_slots = 64,
+    .unit_slot_name = unit_slot_name,
+    .unit_store = unit_store,
     .action_name = "IMPORT",
     .action = import_start,
     .categories = categories,
+    .volume_get = d110_volume_get,
+    .volume_set = d110_volume_set,
     .keep_state = true,  /* selecting it reads the part's tone, sends nothing */
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
