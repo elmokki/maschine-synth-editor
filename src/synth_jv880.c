@@ -36,7 +36,7 @@ static const char *TAG = "jv880";
 #define PATCH_LEN JV880_PATCH_LEN
 #define BLOCKS 5  /* block 0 = common, 1-4 = tones */
 #define WAVE_NAME_LEN 16
-#define WAVE_UNITS 40  /* encoder counter units per wave number step (others 10-80) */
+#define WAVE_UNITS 13  /* encoder counter units per wave number step (others 10-80); fast turns accelerate */
 #define TONE_GAP 128  /* tones sit 01 00 apart: 128 addresses */
 
 /* ---- parameters ---- */

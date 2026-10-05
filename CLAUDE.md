@@ -49,6 +49,9 @@ JV-880 expansion boards: Setup CARD (0-22; 20-22 = boards 97-99) picks a library
 shown with every board); IMPORT reads Internal as the board's 001-064, as own patches (200+) or the presets A+B
 (065-192). Wave names from `data/jv880/waves/` (int, cardNN). Unit settings needed: Unit # 17, Exclusive Rx ON, patch
 Rx channel = PATCH CH, Program change / Bank select Rx ON for the preset import, JV MIDI OUT -> Maschine MIDI IN to read.
-Next: JV-880 PERF and RHYTHM entries (plan with the user); board 19 and 97 have no waveform list; remove the user's own
-patch among the card-04 imports.
+Editor feel (all synths): held arrows repeat (faster after 2 s), Shift + main encoder browses 8 patches a detent,
+wide-range parameter knobs accelerate when turned fast (`accelerated()` in editor.c), the header gives the patch name
+the room while browsing. JV-880 PATCH is done; the user tests on the real unit.
+Next: JV-880 PERF and RHYTHM entries (plan with the user first; three entries agreed, like the D-110). Boards 19 (House) and 97
+(Experience III) have no waveform list in `reference/JV880/` - left as they are on purpose (names show as numbers).
 Ideas waiting: synth list as per-device card stacks; Scene = saved multi-synth scenes; Volca Drum.

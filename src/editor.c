@@ -641,7 +641,8 @@ static void draw_header(void)
             synth->header_tag(buf + n, sizeof(buf) - n);
         }
     }
-    int title_end = draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    char title[64];
+    snprintf(title, sizeof(title), "%s", buf);
 
     int shown = patch_browse != NONE ? patch_browse : patch_loaded;
     /* While browsing, a patch other than the loaded one is shown inverted
@@ -658,6 +659,15 @@ static void draw_header(void)
                  patch_names[shown]);
     }
     int right = DISPLAY_USABLE_WIDTH - 2;
+    /* Browsing patches, the name comes first: the page title keeps what room
+     * is left of the row */
+    int title_room = patch_browse != NONE ? right - display_text_width(&font_small, buf) - 10 : right;
+    int title_end = 1;
+    if (patch_browse == NONE || title_room >= 3 * font_small.height / 2) {
+        char fitted[64];
+        fit_text(&font_small, title, title_room, fitted, sizeof(fitted));
+        title_end = draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, fitted, true);
+    }
     fit_text(&font_small, buf, right - title_end - 10, name, sizeof(name));
     if (pending) {
         int w = display_text_width(&font_small, name);
@@ -1914,6 +1924,26 @@ static void pick_synth(int i)
 static void setting_encoder(int i, int col, int delta);
 static int setup_setting_at(int col);
 
+/* Wide-range parameters (a step takes ACCEL_UNITS_MAX counter units or
+ * less): turning fast steps further. A slow turn stays exact; beyond
+ * ACCEL_FREE counts per report the step grows by one per ACCEL_PER, up
+ * to ACCEL_GAIN_MAX. A jump of many reports at once (the loop was stalled)
+ * is just the distance travelled and is left as it is. */
+#define ACCEL_UNITS_MAX 20
+#define ACCEL_FREE 12
+#define ACCEL_PER 10
+#define ACCEL_GAIN_MAX 6
+#define ACCEL_STALL 150
+static int accelerated(int d)
+{
+    int a = d < 0 ? -d : d;
+    if (a <= ACCEL_FREE || a > ACCEL_STALL) {
+        return d;
+    }
+    int gain = 1 + (a - ACCEL_FREE) / ACCEL_PER;
+    return d * (gain > ACCEL_GAIN_MAX ? ACCEL_GAIN_MAX : gain);
+}
+
 static void editor_encoder_impl(int i, int delta)
 {
     if (activating_until) {
@@ -1975,6 +2005,9 @@ static void editor_encoder_impl(int i, int delta)
         return;
     }
     int units = synth->param_units(p);
+    if (units <= ACCEL_UNITS_MAX) {
+        delta = accelerated(delta);
+    }
     encoder_acc[i] += delta;
     int steps = encoder_acc[i] / units;
     if (steps == 0) {
@@ -2051,8 +2084,38 @@ static void select_section(int section)
     go_to_page(first + (offset < count ? offset : count - 1));
 }
 
+/* Held arrows repeat: after a moment, and faster after a couple of seconds */
+#define ARROW_REPEAT_DELAY_US 450000
+#define ARROW_FAST_AFTER_US 2000000
+#define ARROW_PATCH_US 100000   /* patch arrows: one patch per repeat, four when fast */
+#define ARROW_PAGE_US 250000    /* page arrows: 120 ms when fast */
+#define ARROW_PAGE_FAST_US 120000
+static int arrow_bit = NONE;
+static int64_t arrow_pressed_at, arrow_repeat_at;
+
+static bool is_arrow(int bit)
+{
+    return bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 || bit == BTN_ARROW_RIGHT_2;
+}
+
+static void arrow_action(int bit, bool fast)
+{
+    if (bit == BTN_ARROW_LEFT) {
+        browse_patches(fast ? -4 : -1);  /* top arrows: patches (less often pressed by accident) */
+    } else if (bit == BTN_ARROW_RIGHT) {
+        browse_patches(fast ? 4 : 1);
+    } else if (bit == BTN_ARROW_LEFT_2) {
+        change_page(-1);  /* arrows by Enter, under the main encoder: pages */
+    } else {
+        change_page(1);
+    }
+}
+
 static void editor_button_impl(int bit, bool down)
 {
+    if (!down && bit == arrow_bit) {
+        arrow_bit = NONE;  /* let go: stop repeating */
+    }
     if (bit == BTN_MUTE) {
         if (down) {
             panic();
@@ -2243,14 +2306,11 @@ static void editor_button_impl(int bit, bool down)
                 draw_column(c);
             }
         }
-    } else if (bit == BTN_ARROW_LEFT) {
-        browse_patches(-1);  /* top arrows: patches (less often pressed by accident) */
-    } else if (bit == BTN_ARROW_RIGHT) {
-        browse_patches(1);
-    } else if (bit == BTN_ARROW_LEFT_2) {
-        change_page(-1);  /* arrows by Enter, under the main encoder: pages */
-    } else if (bit == BTN_ARROW_RIGHT_2) {
-        change_page(1);
+    } else if (is_arrow(bit)) {
+        arrow_action(bit, false);
+        arrow_bit = bit;
+        arrow_pressed_at = esp_timer_get_time();
+        arrow_repeat_at = arrow_pressed_at + ARROW_REPEAT_DELAY_US;
     } else if (bit == BTN_BROWSE) {
         encoder_browses = !encoder_browses;
         draw_header();
@@ -2295,6 +2355,9 @@ static void editor_button_impl(int bit, bool down)
     }
 }
 
+/* Shift + main encoder: this many patches per detent */
+#define SHIFT_BROWSE_STEPS 8
+
 static void editor_main_encoder_impl(int steps)
 {
     if (activating_until) {
@@ -2315,7 +2378,7 @@ static void editor_main_encoder_impl(int steps)
     }
     cancel_init();
     if (mode == MODE_STORE) {
-        store_main_encoder(steps);
+        store_main_encoder(shift_held ? steps * SHIFT_BROWSE_STEPS : steps);
         return;
     }
     if (mode == MODE_TUTORIAL) {
@@ -2338,7 +2401,7 @@ static void editor_main_encoder_impl(int steps)
         return;
     }
     if (encoder_browses) {
-        browse_patches(steps);
+        browse_patches(shift_held ? steps * SHIFT_BROWSE_STEPS : steps);  /* Shift: faster */
     } else {
         change_page(steps);
     }
@@ -2367,6 +2430,16 @@ static void save_settings(void);
 
 static void editor_tick_impl(int64_t now_us)
 {
+    if (arrow_bit != NONE) {
+        if (mode != MODE_EDIT) {
+            arrow_bit = NONE;
+        } else if (now_us >= arrow_repeat_at) {
+            bool fast = now_us - arrow_pressed_at > ARROW_FAST_AFTER_US;
+            bool patches = arrow_bit == BTN_ARROW_LEFT || arrow_bit == BTN_ARROW_RIGHT;
+            arrow_action(arrow_bit, fast);
+            arrow_repeat_at = now_us + (patches ? ARROW_PATCH_US : fast ? ARROW_PAGE_FAST_US : ARROW_PAGE_US);
+        }
+    }
     /* Follows the setting and the selected synth's channel */
     midi_set_thru((midi_thru_t)midi_thru, play_channel());
     textentry_tick(now_us);
