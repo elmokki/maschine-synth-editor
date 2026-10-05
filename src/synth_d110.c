@@ -12,6 +12,7 @@
  *
  * A patch file is a tone: its 246 bytes as in the Tone Temporary Area.
  */
+#include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +63,7 @@ typedef struct {
     kind_t kind;
     bool synth_only;  /* not used by PCM partials (manual p. 99) */
     const char *const *labels;
+    bool pcm_only;    /* not used by synth partials */
 } d110_param_t;
 
 static const char *const keyf_labels[] = {"-1", "-1/2", "-1/4", "0", "1/8", "1/4", "3/8", "1/2",
@@ -136,8 +138,8 @@ static const d110_param_t params[PARAM_COUNT] = {
     [P_KEYF] = {"KEY FOLLOW", 0x02, 16, 0, K_KEYF},
     [P_BENDER] = {"BENDER", 0x03, 1, 0, K_SWITCH},
     [P_WAVE] = {"WAVE", WAVE_BANK_OFFSET, 1, 0, K_LIST, true, wave_labels},
-    [P_BANK] = {"PCM BANK", WAVE_BANK_OFFSET, 1, 0, K_LIST, false, bank_labels},
-    [P_PCM] = {"PCM WAVE", 0x05, 127, 0, K_PCM},
+    [P_BANK] = {"PCM BANK", WAVE_BANK_OFFSET, 1, 0, K_LIST, false, bank_labels, true},
+    [P_PCM] = {"PCM WAVE", 0x05, 127, 0, K_PCM, false, NULL, true},
     [P_PW] = {"PULSE W", 0x06, 100, 0, K_NUM, true},
     [P_PW_VELO] = {"PW VELO", 0x07, 14, 7, K_SIGNED, true},
     [P_PENV_DEPTH] = {"PENV DEPTH", 0x08, 10, 0, K_NUM},
@@ -337,6 +339,8 @@ static void send_bytes(int from, int len)
 /* ---- reading back (optional: needs the D-110's MIDI OUT on the
  * Maschine's MIDI IN) ---- */
 
+static bool read_asked;  /* Auto pressed: the reply replaces the part's patch */
+
 static int temp_base(void) { return (TEMP_TONE_BASE >> 16 & 0x7F) * 16384 + (TEMP_TONE_BASE >> 8 & 0x7F) * 128; }
 
 /* RQ1 for the current part's whole tone; the reply is a DT1 (sysex_in) */
@@ -364,7 +368,65 @@ static void request_tone(void)
 #define IMPORT_TIMEOUT_US 1000000
 typedef enum { IMP_IDLE, IMP_ORIGINAL, IMP_SET, IMP_SETTLE, IMP_REPLY } imp_stage_t;
 static imp_stage_t imp_stage;
-static int imp_index, imp_saved;
+static int imp_index, imp_saved, imp_skipped;
+/* The presets' contents, to skip internal tones that are just copies */
+static uint32_t imp_hash[128];
+static uint8_t imp_cats[1000];  /* the library's category file, by patch number */
+#define CATEGORY_PATH STORAGE_ROOT "/d110/categories"
+
+/* Categories (one per display button), guessed from the tone names at
+ * import: the first matching rule wins; what's left is bells, percussion
+ * and effects. Must match the order of categories[]. */
+static const char *const categories[8] = {"PIANO/KEYS", "ORGAN", "STRINGS", "BRASS/WIND",
+                                          "SYNTH/PAD", "BASS", "PLUCK/GTR", "BELL/PERC"};
+static int category_of(const char *name)
+{
+    static const struct { uint8_t cat; const char *words; } rules[] = {
+        {5, "FANTASY|HARMO PAN|CHORALE|GLASSES|SOUNDTRACK|ATMOSPHERE|SPACE HORN|ICE RAINS|"
+            "OBOE 2002|ECHO PAN|RESO SYNTH|STEAM PAD|VIBESTRING|SYN LEAD|PAD"},
+        {3, "CONTRABASS"},
+        {4, "BASSOON"},
+        {6, "BASS|FRETLESS"},
+        {1, "PIANO|HONKY|HARPSI|CLAV|CELESTA"},
+        {2, "ORGAN|ACCORDION"},
+        {3, "VIOLIN|CELLO|PIZZ|STRING"},
+        {4, "BRASS|TRUMPET|TROMBONE|HORN|TUBA|FLUTE|PICCOLO|RECORDER|PAN PIPE|BOTTLE|BREATH|"
+            "WHISTLE|SAX|CLARINET|OBOE|HARMONICA|SHAKUHACHI"},
+        {7, "GUITAR|GTR|HARP|KOTO|SHAMISEN|JAMISEN|SITAR"},
+    };
+    char up[16];
+    size_t n = 0;
+    for (; name[n] && n < sizeof(up) - 1; n++) {
+        up[n] = toupper((unsigned char)name[n]);
+    }
+    up[n] = 0;
+    if (strcmp(up, "SHO") == 0) {
+        return 4;
+    }
+    for (size_t r = 0; r < sizeof(rules) / sizeof(rules[0]); r++) {
+        const char *w = rules[r].words;
+        while (*w) {
+            const char *bar = strchr(w, '|');
+            size_t len = bar ? (size_t)(bar - w) : strlen(w);
+            char word[24];
+            snprintf(word, sizeof(word), "%.*s", (int)len, w);
+            if (strstr(up, word)) {
+                return rules[r].cat;
+            }
+            w += len + (bar ? 1 : 0);
+        }
+    }
+    return 8;
+}
+
+static uint32_t tone_hash(const uint8_t *t)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < TONE_LEN; i++) {
+        h = (h ^ t[i]) * 16777619u;
+    }
+    return h;
+}
 static uint8_t imp_original[2];  /* the part's tone group and number */
 static int64_t imp_deadline;
 
@@ -400,9 +462,18 @@ static void import_finish(const char *why)
         send_timbre(imp_original);  /* the part's own tone back */
     }
     imp_stage = IMP_IDLE;
+    FILE *cf = fopen(CATEGORY_PATH, "wb");
+    if (cf) {
+        fwrite(imp_cats, 1, sizeof(imp_cats), cf);
+        fclose(cf);
+    }
     synth_patches_changed();
     char buf[48];
-    snprintf(buf, sizeof(buf), why ? why : "IMPORTED %d TONES", imp_saved);
+    if (why) {
+        snprintf(buf, sizeof(buf), "%s", why);
+    } else {
+        snprintf(buf, sizeof(buf), "IMPORTED %d TONES (%d COPIES SKIPPED)", imp_saved, imp_skipped);
+    }
     synth_notice(buf);
     ESP_LOGI(TAG, "import: %s (%d saved)", why ? why : "done", imp_saved);
     request_tone();
@@ -410,6 +481,18 @@ static void import_finish(const char *why)
 
 static void import_save(void)
 {
+    /* An internal tone that is just a copy of a preset isn't saved */
+    uint32_t h = tone_hash(tone[part]);
+    if (imp_index < 128) {
+        imp_hash[imp_index] = h;
+    } else {
+        for (int k = 0; k < 128; k++) {
+            if (imp_hash[k] == h) {
+                imp_skipped++;
+                return;
+            }
+        }
+    }
     char name[11];
     memcpy(name, tone[part], 10);
     name[10] = 0;
@@ -427,6 +510,7 @@ static void import_save(void)
     if (f) {
         imp_saved += fwrite(tone[part], 1, TONE_LEN, f) == TONE_LEN;
         fclose(f);
+        imp_cats[imp_index + 1] = category_of(name);
     }
 }
 
@@ -449,7 +533,19 @@ static void import_start(void)
     if (dir) {
         closedir(dir);
     }
-    imp_index = imp_saved = 0;
+    /* Keep the categories of everything else (own patches) */
+    memset(imp_cats, 0, sizeof(imp_cats));
+    FILE *cf = fopen(CATEGORY_PATH, "rb");
+    if (cf) {
+        if (fread(imp_cats, 1, sizeof(imp_cats), cf) == 0) {
+            memset(imp_cats, 0, sizeof(imp_cats));
+        }
+        fclose(cf);
+    }
+    for (int n = 1; n <= IMPORT_COUNT; n++) {
+        imp_cats[n] = 0;
+    }
+    imp_index = imp_saved = imp_skipped = 0;
     imp_stage = IMP_ORIGINAL;
     imp_deadline = esp_timer_get_time() + IMPORT_TIMEOUT_US;
     request_timbre();
@@ -535,6 +631,12 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
     ESP_LOGI(TAG, "read %d bytes of part %d's tone", n, at / TONE_LEN + 1);
     if (shown) {
+        if (read_asked) {
+            /* Auto (read) on purpose: the unit's tone replaces whatever
+             * library patch the part had; reads on part changes don't */
+            read_asked = false;
+            synth_sound_replaced();
+        }
         char name[11];
         memcpy(name, tone[part], 10);
         name[10] = 0;
@@ -547,6 +649,7 @@ static void sysex_in(const uint8_t *d, size_t len)
 
 static void read_tone(void)
 {
+    read_asked = true;
     if (imp_stage != IMP_IDLE) {
         import_finish("IMPORT stopped");  /* Auto during an import stops it */
         return;
@@ -598,9 +701,15 @@ static const char *const note_names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "
 
 static const char *param_name(int p) { return params[p].name; }
 
+/* Parameters the partial's kind doesn't use: the WG waveform, pulse width
+ * and the whole TVF for PCM partials, the PCM wave for synth ones */
 static bool not_used(int p)
 {
-    return is_partial_param(p) && params[p].synth_only && partial_is_pcm(first_partial());
+    if (!is_partial_param(p)) {
+        return false;
+    }
+    bool pcm = partial_is_pcm(first_partial());
+    return pcm ? params[p].synth_only : params[p].pcm_only;
 }
 
 static void param_format(int p, char *buf, size_t len)
@@ -722,7 +831,7 @@ static bool param_reset(int p)
 /* PCM wave: its number, and its name below instead of a bar */
 static int param_draw(int p, int disp, int x, int y, int w, int h)
 {
-    if (params[p].kind != K_PCM || !value_known(p)) {
+    if (params[p].kind != K_PCM || !value_known(p) || not_used(p)) {
         return SYNTH_DRAW_NONE;
     }
     char num[8], name[16];
@@ -925,6 +1034,24 @@ static bool shift_group(int g)
 
 static int shift_group_led(int g) { return g > 3 ? -1 : (partial_sel >> g) & 1; }
 
+static int instance(void) { return part; }
+
+/* The part's tone name, when its values are known (e.g. read back) */
+static bool sound_name(char *buf, size_t len)
+{
+    if (!known[part][0]) {
+        return false;
+    }
+    char name[11];
+    memcpy(name, tone[part], 10);
+    name[10] = 0;
+    for (int i = 9; i >= 0 && name[i] == ' '; i--) {
+        name[i] = 0;
+    }
+    snprintf(buf, len, "%s", name);
+    return true;
+}
+
 static void header_tag(char *buf, size_t len)
 {
     char p[8];
@@ -1025,11 +1152,14 @@ const synth_t synth_d110 = {
     .shift_group = shift_group,
     .shift_group_led = shift_group_led,
     .header_tag = header_tag,
+    .instance = instance,
+    .sound_name = sound_name,
     .read = read_tone,
     .sysex_in = sysex_in,
     .tick = tick,
     .action_name = "IMPORT",
     .action = import_start,
+    .categories = categories,
     .theme_bright = {0, 100, 127},  /* cyan */
     .theme_dim = {0, 9, 12},
 };

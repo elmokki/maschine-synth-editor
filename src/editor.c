@@ -159,6 +159,11 @@ static int encoder_acc[8];
 static int page;
 static uint8_t section_last[8];  /* page each section was last left on */
 static bool shift_held;
+/* Per instance (synth_t.instance, e.g. D-110 part): its library patch */
+#define MAX_INSTANCES 16
+static int inst_loaded[MAX_INSTANCES];
+static bool inst_modified[MAX_INSTANCES];
+static bool inst_init;
 static int64_t action_armed_until;  /* Setup's action button pressed once */
 #define ACTION_CONFIRM_US 3000000
 static bool overview;  /* section list shown while Navigate is held */
@@ -397,9 +402,11 @@ static void update_button_leds(void)
                                        : LED_DIM);
     maschine_set_button_led(BTN_VOLUME, !edit || !synth->volume_cc ? 0 : volume_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_BROWSE, !edit ? 0 : encoder_browses ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_ERASE, !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_ERASE, mode == MODE_CATEGORY ? LED_DIM
+                                       : !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_SHIFT, !edit || !synth->shift_group ? 0 : shift_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_SHIFT, mode == MODE_CATEGORY ? (shift_held ? LED_ON : LED_DIM)
+                                       : !edit || !synth->shift_group ? 0 : shift_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP_LEFT, edit && synth->instance_step ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP_RIGHT, edit && synth->instance_step ? LED_DIM : 0);
@@ -506,7 +513,10 @@ static void draw_header(void)
      * with an Enter hint; landing back on the loaded one shows it plain */
     bool pending = patch_browse != NONE && patch_browse != patch_loaded;
     char name[64];
-    if (shown == NONE) {
+    char own[24];
+    if (shown == NONE && synth->sound_name && synth->sound_name(own, sizeof(own))) {
+        snprintf(buf, sizeof(buf), modified ? "%s *" : "%s", own);  /* not from the library */
+    } else if (shown == NONE) {
         snprintf(buf, sizeof(buf), "no patch loaded");
     } else {
         snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : modified ? "%s *" : "%s",
@@ -624,6 +634,13 @@ void synth_patches_changed(void)
             patch_loaded = i;
         }
     }
+    draw_header();
+}
+
+void synth_sound_replaced(void)
+{
+    patch_loaded = NONE;
+    modified = false;
     draw_header();
 }
 
@@ -1403,6 +1420,7 @@ static void draw_categories(void)
     char buf[32];
     snprintf(buf, sizeof(buf), "CATEGORIES  %d / %d patches", shown, patch_count);
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "ERASE all  SHIFT solo", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "ALL closes", true);
     for (int i = 0; i < 8; i++) {
         int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
@@ -1528,6 +1546,7 @@ static void switch_synth(int i)
     category_filter = ALL_CATEGORIES;
     memset(encoder_acc, 0, sizeof(encoder_acc));
     patch_loaded = patch_browse = NONE;
+    inst_init = false;  /* instances start without patches */
     modified = false;
     remember_at = settings_save_at = 0;
     load_settings();
@@ -1753,7 +1772,12 @@ static void editor_button_impl(int bit, bool down)
     }
     if (mode == MODE_CATEGORY) {
         if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + 8) {
-            category_filter ^= 1 << (bit - BTN_DISPLAY_1);
+            /* Shift + a category: only that one (solo) */
+            int bitmask = 1 << (bit - BTN_DISPLAY_1);
+            category_filter = shift_held ? bitmask : category_filter ^ bitmask;
+            draw_categories();
+        } else if (down && bit == BTN_ERASE) {
+            category_filter = ALL_CATEGORIES;  /* back to the default: all */
             draw_categories();
         }
         return;
@@ -1872,7 +1896,22 @@ static void editor_button_impl(int bit, bool down)
     } else if (bit == BTN_AUTO && synth->read) {
         synth->read();
     } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) && synth->instance_step) {
+        /* Each instance keeps its own loaded patch */
+        if (!inst_init) {
+            for (int i = 0; i < MAX_INSTANCES; i++) {
+                inst_loaded[i] = NONE;
+            }
+            inst_init = true;
+        }
+        int old = synth->instance ? synth->instance() % MAX_INSTANCES : 0;
+        inst_loaded[old] = patch_loaded;
+        inst_modified[old] = modified;
+        end_browse();
         synth->instance_step(bit == BTN_STEP_LEFT ? -1 : 1);
+        int now = synth->instance ? synth->instance() % MAX_INSTANCES : 0;
+        patch_loaded = inst_loaded[now];
+        modified = inst_modified[now];
+        draw_header();
     } else if (bit == BTN_ENTER && patch_browse != NONE) {
         load_patch(patch_browse);
         patch_browse = NONE;

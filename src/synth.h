@@ -152,6 +152,11 @@ typedef struct {
     bool (*shift_group)(int g);
     int (*shift_group_led)(int g);
     void (*header_tag)(char *buf, size_t len);  /* shown after the page title */
+    /* The instance (e.g. part) being edited, so the editor keeps which
+     * library patch is loaded per instance; and the sound's own name when
+     * no library patch is (e.g. a tone read from the unit), false if unknown */
+    int (*instance)(void);
+    bool (*sound_name)(char *buf, size_t len);
 
     /* Optional, for synths that can send their data back (needs their MIDI
      * OUT on the Maschine's MIDI IN - never required): read = ask for the
@@ -177,6 +182,9 @@ void synth_notice(const char *text);
 /* Provided by the editor: re-read the patch list (files were added or
  * removed by the driver) */
 void synth_patches_changed(void);
+/* Provided by the editor: the current instance's sound was replaced from
+ * outside the library (e.g. read back from the unit) */
+void synth_sound_replaced(void);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
