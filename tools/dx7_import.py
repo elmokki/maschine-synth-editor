@@ -68,6 +68,37 @@ def bank_voices(path):
     return [unpack(data[n * 128:(n + 1) * 128]) for n in range(32)]
 
 
+# Categories (one per display button) guessed from the voice name: the
+# first rule with a matching word fragment wins. Must match
+# volca_categories in src/synth_volca.c.
+CATEGORIES = ["PIANO/KEYS", "ORGAN", "BRASS/WIND", "STRING/VOX",
+              "PLUCK", "BASS", "BELL/PERC", "SYNTH/FX"]  # max 10 characters
+RULES = [
+    (6, ["BASSOON"], 3),  # not a bass
+    (6, ["BASS", "FRETLESS"], None),
+    (8, ["SYN-PIANO", "SYN-CLAV"], 1),
+    (8, ["SYN", "LASER", "TRAIN", "TAKE OFF", "EXPLOSION", "WASP", "ST.HELENS", "REFS",
+         "WATER", "SHIMMER", "EVOLUTION", "DESCENT", "WILD", "GOTCHA", "FILTER", "TOY",
+         "WHISTLE", "HEAVYMETAL", "OCTAVE WAR", "FUNKY RISE", "MULTI NOTE"], None),
+    (2, ["ORGAN", "PIPES", "CALIOPE", "ACCORDION", "ORG-"], None),
+    (1, ["PIANO", "E.P", "GRAND", "HONKY", "CLAV", "CLV", "HARPSI", "CELESTE"], None),
+    (3, ["BRASS", "BRS", "BR ", "HORN", "SAX", "FLUTE", "OBOE", "CLARINET", "RECORDER",
+         "PICCOLO", "HARMONICA", "HRMNCA", "PAN ", "TBONE"], None),
+    (4, ["STRING", "STRG", "STG", "ORCH", "VIOLA", "VOICE", "VOX", "PIZZ", "BOW"], None),
+    (5, ["GUITAR", "GUIT", "GTR", "KOTO", "BANJO", "HARP", "SITAR", "LUTE", "PLUCK"], None),
+    (7, ["MARIMBA", "VIBE", "XYLO", "BELL", "CHIME", "GONG", "GLOK", "TIMPANI", "DRUM", "DRM",
+         "SNAR", "COW", "BLOCK", "WOOD", "PERC", "PRC", "STEEL", "TUB", "T.BL", "LOG", "FLEXATONE"], None),
+]
+
+
+def category(voice):
+    name = voice[145:155].decode("ascii", "replace").upper() + " "
+    for cat, words, override in RULES:
+        if any(w in name for w in words):
+            return override or cat
+    return 0
+
+
 def file_name(num, voice):
     name = voice[145:155].decode("ascii", "replace").strip()
     name = re.sub(r" +", " ", re.sub(r"[^A-Za-z0-9 .+\-]", "_", name)) or "VOICE"
@@ -82,6 +113,14 @@ if __name__ == "__main__":
     for bank in sys.argv[1:]:
         for v in bank_voices(bank):
             voices.append((file_name(len(voices), v), v))
+    cats = bytearray(1000)  # [patch number] = category 1-8, 0 = none
+    for i, (name, v) in enumerate(voices):
+        cats[i] = category(v) if i else 0
+    open(os.path.join(OUT, "categories"), "wb").write(bytes(cats))
+    for c in range(9):
+        names = [n for i, (n, _) in enumerate(voices) if cats[i] == c]
+        label = CATEGORIES[c - 1] if c else "(none)"
+        print(f"{label:14} {len(names):3}: " + ", ".join(n[4:] for n in names))
     seen = set()
     for name, v in voices:
         while name.lower() in seen:  # LittleFS names must differ
@@ -89,4 +128,3 @@ if __name__ == "__main__":
         seen.add(name.lower())
         open(os.path.join(OUT, name), "wb").write(v)
     print(f"{len(voices)} voices -> {OUT}")
-    print(", ".join(n for n, _ in voices[:40]))

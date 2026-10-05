@@ -153,6 +153,10 @@ static const synth_page_t pages[] = {
 };
 #undef _
 
+/* Guessed from the voice names by tools/dx7_import.py (same order) */
+static const char *const categories[8] = {"PIANO/KEYS", "ORGAN", "BRASS/WIND", "STRING/VOX",
+                                          "PLUCK", "BASS", "BELL/PERC", "SYNTH/FX"};
+
 static const synth_setting_t settings[] = {
     [SETTING_CHANNEL] = {"CHANNEL", SET_CHANNEL, 0, 15, 0},
     [SETTING_PAD_NOTE] = {"PAD LOW", SET_NOTE, 0, 112, 48},
@@ -808,6 +812,7 @@ const synth_t synth_volca = {
     .patch_save = patch_save,
     .unknown_count = unknown_count,
     .tick = tick,
+    .categories = categories,
     .page_draw = page_draw,
     .section_dim = section_dim,
     .column_draw = column_draw,

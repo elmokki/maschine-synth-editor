@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <dirent.h>
 #include <math.h>
 #include <sys/stat.h>
@@ -56,6 +57,7 @@ static const char *TAG = "editor";
 #define BTN_NAVIGATE 11  /* Sampling: next to Browse and Control */
 #define BTN_SCENE 40     /* top of its column: the synth selection */
 #define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
+#define BTN_ALL 14       /* the patch category screen */
 #define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -108,6 +110,16 @@ static bool overview;  /* section list shown while Navigate is held */
 static bool encoder_browses;  /* Browse toggled: main encoder picks patches, not pages */
 
 static char *patch_names[MAX_PATCHES];
+/* Categories, see synth_t.categories: by patch number; the browse filter
+ * is a mask of categories 1-8 (bit 0 = 1); all on (the default) = every
+ * patch, also those without a category */
+#define ALL_CATEGORIES 0xFF
+#define CATEGORY_UNITS 60  /* encoder counter units per category step */
+#define CATEGORY_FILE "categories"
+#define MAX_PATCH_NUMBER 1000
+static uint8_t category_by_number[MAX_PATCH_NUMBER];
+static uint8_t category_filter = ALL_CATEGORIES;
+static uint8_t store_category;  /* given to the patch being stored */
 static int patch_count;
 static int patch_loaded = NONE;
 static int patch_browse = NONE;  /* selection while browsing, not loaded yet */
@@ -129,12 +141,16 @@ static int64_t init_armed_until;
 /* Mute = panic (All Sound Off + All Notes Off); its LED flashes */
 #define PANIC_FLASH_US 300000
 static int64_t panic_flash_until;
+/* A short confirmation in the right display's header, e.g. after storing */
+#define NOTICE_US 2000000
+static char notice[48];
+static int64_t notice_until;
 
 static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
-typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH } ui_mode_t;
+typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY } ui_mode_t;
 static ui_mode_t mode;
 static int store_target;  /* NONE = new patch, else index of a user patch */
 static char store_name[TEXTENTRY_MAX_LEN + 1];
@@ -145,6 +161,7 @@ static void load_patch_list(void);
 static void draw_store(void);
 static void draw_setup(void);
 static void draw_synths(void);
+static void draw_categories(void);
 
 int synth_setting(int index)
 {
@@ -202,6 +219,12 @@ static void pad_idle(int pad)
 
 static void update_group_leds(void)
 {
+    if (mode != MODE_EDIT) {
+        for (int g = 0; g < 8; g++) {
+            maschine_set_group_led(g, 0, 0, 0);  /* sections can't be picked here */
+        }
+        return;
+    }
     for (int g = 0; g < 8; g++) {
         uint8_t own[3];
         bool own_dim = synth->section_dim && synth->section_dim(g, own);
@@ -252,66 +275,56 @@ static void update_group_leds(void)
     }
 }
 
+/* Every button that does something on the current screen is lit (dim, or
+ * bright when active); everything else is dark */
 static void update_button_leds(void)
 {
+    bool edit = mode == MODE_EDIT, store = mode == MODE_STORE || mode == MODE_NAME;
     /* Panic works on every screen */
     maschine_set_button_led(BTN_MUTE, panic_flash_until ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : mode == MODE_EDIT ? LED_DIM : 0);
-    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : mode == MODE_EDIT ? LED_DIM : 0);
-    if (mode == MODE_SETUP || mode == MODE_SYNTH) {
-        for (int col = 0; col < 8; col++) {
-            uint8_t v = 0;
-            if (mode == MODE_SYNTH && col < SYNTH_COUNT) {
+    maschine_set_button_led(BTN_CONTROL, mode == MODE_SETUP ? LED_ON : edit ? LED_DIM : 0);
+    maschine_set_button_led(BTN_SCENE, mode == MODE_SYNTH ? LED_ON : edit ? LED_DIM : 0);
+    maschine_set_button_led(BTN_ALL, !synth->categories ? 0
+                                     : mode == MODE_CATEGORY || (edit && category_filter != ALL_CATEGORIES)
+                                     ? LED_ON
+                                     : edit ? LED_DIM : 0);
+    maschine_set_button_led(BTN_REC, store ? LED_ON : edit ? LED_DIM : 0);
+    maschine_set_button_led(BTN_ENTER, store ? LED_DIM
+                                       : !edit ? 0
+                                       : patch_browse != NONE && patch_browse != patch_loaded ? LED_ON
+                                       : LED_DIM);
+    maschine_set_button_led(BTN_VOLUME, !edit || !synth->volume_cc ? 0 : volume_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_BROWSE, !edit ? 0 : encoder_browses ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_ERASE, !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
+    static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
+    for (size_t i = 0; i < sizeof(arrows) / sizeof(arrows[0]); i++) {
+        maschine_set_button_led(arrows[i], edit ? LED_DIM : 0);
+    }
+
+    /* Display buttons: what the screen offers */
+    bool store_keys[8] = {true, true, store_target != NONE, true, synth->categories != NULL};
+    static const bool name_keys[8] = {true, false, false, true};
+    for (int col = 0; col < 8; col++) {
+        uint8_t v = 0;
+        if (edit) {
+            int sw = synth->pages[page].switches[col];
+            if (sw != NONE) {
+                v = synth->param_on(sw) ? LED_ON : LED_DIM;
+            }
+        } else if (mode == MODE_SYNTH) {
+            if (col < SYNTH_COUNT) {
                 v = synths[col] == synth || col == synth_confirm ? LED_ON : LED_DIM;
             }
-            maschine_set_button_led(BTN_DISPLAY_1 + col, v);
-        }
-        static const int others[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2,
-                                     BTN_ARROW_RIGHT_2, BTN_NAVIGATE, BTN_ENTER, BTN_REC,
-                                     BTN_BROWSE, BTN_ERASE};
-        for (size_t i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
-            maschine_set_button_led(others[i], 0);
-        }
-        return;
-    }
-    if (mode != MODE_EDIT) {
-        /* Only the soft keys drawn by draw_soft_keys() and Enter */
-        bool store_keys[8] = {true, true, store_target != NONE, true};
-        static const bool name_keys[8] = {true, false, false, true};
-        for (int col = 0; col < 8; col++) {
-            bool k = mode == MODE_STORE ? store_keys[col] : name_keys[col];
-            maschine_set_button_led(BTN_DISPLAY_1 + col, k ? LED_DIM : 0);
-        }
-        maschine_set_button_led(BTN_ARROW_LEFT, 0);
-        maschine_set_button_led(BTN_ARROW_RIGHT, 0);
-        maschine_set_button_led(BTN_ARROW_LEFT_2, 0);
-        maschine_set_button_led(BTN_ARROW_RIGHT_2, 0);
-        maschine_set_button_led(BTN_NAVIGATE, 0);
-        maschine_set_button_led(BTN_ENTER, LED_DIM);
-        maschine_set_button_led(BTN_REC, LED_ON);
-        maschine_set_button_led(BTN_BROWSE, 0);
-        maschine_set_button_led(BTN_ERASE, 0);
-        maschine_set_button_led(BTN_SCENE, 0);
-        return;
-    }
-    maschine_set_button_led(BTN_REC, LED_DIM);
-    maschine_set_button_led(BTN_BROWSE, encoder_browses ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_ERASE, init_armed_until || erase_held ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_VOLUME, !synth->volume_cc ? 0 : volume_held ? LED_ON : LED_DIM);
-    for (int col = 0; col < 8; col++) {
-        int sw = synth->pages[page].switches[col];
-        uint8_t v = 0;
-        if (sw != NONE) {
-            v = synth->param_on(sw) ? LED_ON : LED_DIM;
+        } else if (mode == MODE_CATEGORY) {
+            v = category_filter & (1 << col) ? LED_ON : LED_DIM;
+        } else if (mode == MODE_STORE) {
+            v = store_keys[col] ? LED_DIM : 0;
+        } else if (mode == MODE_NAME) {
+            v = name_keys[col] ? LED_DIM : 0;
         }
         maschine_set_button_led(BTN_DISPLAY_1 + col, v);
     }
-    maschine_set_button_led(BTN_ARROW_LEFT, LED_DIM);
-    maschine_set_button_led(BTN_ARROW_RIGHT, LED_DIM);
-    maschine_set_button_led(BTN_ARROW_LEFT_2, LED_DIM);
-    maschine_set_button_led(BTN_ARROW_RIGHT_2, LED_DIM);
-    maschine_set_button_led(BTN_NAVIGATE, overview ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_ENTER, patch_browse != NONE && patch_browse != patch_loaded ? LED_ON : LED_DIM);
 }
 
 /* ---- drawing ---- */
@@ -393,8 +406,12 @@ static void draw_header(void)
         draw_right(0, right, HEADER_CAP_Y, &font_small, name, true);
     }
 
-    if (volume_held) {
-        snprintf(buf, sizeof(buf), "VOLUME %d", synth_setting(synth->volume_setting));
+    if (volume_held || notice_until) {
+        if (volume_held) {
+            snprintf(buf, sizeof(buf), "VOLUME %d", synth_setting(synth->volume_setting));
+        } else {
+            fit_text(&font_small, notice, DISPLAY_USABLE_WIDTH - 4, buf, sizeof(buf));
+        }
         display_fill_rect(1, 0, 0, DISPLAY_USABLE_WIDTH, HEADER_LINE_Y, true);
         draw_text_cap(1, 2, HEADER_CAP_Y, &font_small, buf, false);
     } else if (encoder_browses) {
@@ -553,6 +570,10 @@ static void draw_page(void)
         draw_synths();
         return;
     }
+    if (mode == MODE_CATEGORY) {
+        draw_categories();
+        return;
+    }
     if (mode != MODE_EDIT) {
         draw_store();
         return;
@@ -607,6 +628,46 @@ static const char *patch_title(int idx)
 {
     const char *sp = strchr(patch_names[idx], ' ');
     return sp ? sp + 1 : patch_names[idx];
+}
+
+static int patch_category(int idx)
+{
+    int n = patch_number(idx);
+    int c = n >= 0 && n < MAX_PATCH_NUMBER ? category_by_number[n] : 0;
+    return c <= 8 ? c : 0;
+}
+
+static bool patch_in_filter(int idx)
+{
+    int c = patch_category(idx);
+    return category_filter == ALL_CATEGORIES || (c && (category_filter & (1 << (c - 1))));
+}
+
+static void read_categories(void)
+{
+    memset(category_by_number, 0, sizeof(category_by_number));
+    char path[MAX_PATH];
+    patch_path(path, sizeof(path), CATEGORY_FILE);
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        if (fread(category_by_number, 1, sizeof(category_by_number), f) == 0) {
+            ESP_LOGW(TAG, "%s is empty", path);
+        }
+        fclose(f);
+    }
+}
+
+static void write_categories(void)
+{
+    char path[MAX_PATH];
+    patch_path(path, sizeof(path), CATEGORY_FILE);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(category_by_number, 1, sizeof(category_by_number), f) != sizeof(category_by_number)) {
+        ESP_LOGE(TAG, "writing %s failed", path);
+    }
+    if (f) {
+        fclose(f);
+    }
 }
 
 static int next_free_number(void)
@@ -680,15 +741,26 @@ static void draw_store(void)
     display_clear(1);
     draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "Main encoder: new / overwrite", true);
     display_fill_rect(1, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
-    draw_text_cap(1, 4, 18, &font_small, "SAVE or ENTER stores the current sound.", true);
-    draw_text_cap(1, 4, 31, &font_small, "Factory patches (000-099) are read-only.", true);
+    if (synth->categories) {
+        /* Display button 5 and the encoder below it step through the
+         * categories */
+        display_round_rect(1, 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, false, true);
+        draw_centered(1, 0, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+                      &font_small, "CATEGORY", true);
+        draw_text_cap(1, COLUMN_WIDTH + 4, SWITCH_BOX_Y + (SWITCH_BOX_H - font_medium.cap_height) / 2,
+                      &font_medium, store_category ? synth->categories[store_category - 1] : "(none)",
+                      true);
+    }
+    draw_text_cap(1, 4, 29, &font_small, "SAVE or ENTER stores the current sound.", true);
+    snprintf(buf, sizeof(buf), "Factory patches (below %03d) are read-only.", synth->first_user_patch);
+    draw_text_cap(1, 4, 38, &font_small, buf, true);
     if (store_target != NONE) {
-        draw_text_cap(1, 4, 40, &font_small, "DELETE twice removes this patch.", true);
+        draw_text_cap(1, 4, 47, &font_small, "DELETE twice removes this patch.", true);
     }
     int unknown = synth->unknown_count();
     if (unknown) {
         snprintf(buf, sizeof(buf), "%d params never set - saved as defaults.", unknown);
-        draw_text_cap(1, 4, 52, &font_small, buf, true);
+        draw_text_cap(1, 4, 56, &font_small, buf, true);
     }
 }
 
@@ -697,8 +769,11 @@ static void enter_store(void)
     end_browse();
     overview = false;
     mode = MODE_STORE;
+    memset(encoder_acc, 0, sizeof(encoder_acc));
     set_store_target(patch_loaded != NONE && patch_number(patch_loaded) >= synth->first_user_patch
                      ? patch_loaded : NONE);
+    /* The sound keeps the category of the patch it was made from */
+    store_category = patch_loaded != NONE ? patch_category(patch_loaded) : 0;
     draw_page();
 }
 
@@ -750,12 +825,18 @@ static void save_patch(void)
         ESP_LOGE(TAG, "writing %s failed", path);
         return;
     }
+    if (synth->categories && number < MAX_PATCH_NUMBER && category_by_number[number] != store_category) {
+        category_by_number[number] = store_category;
+        write_categories();
+    }
     if (store_target != NONE && strcmp(patch_names[store_target], file) != 0) {
         char old[MAX_PATH];
         patch_path(old, sizeof(old), patch_names[store_target]);
         remove(old);  /* renamed */
     }
     ESP_LOGI(TAG, "stored %s", file);
+    snprintf(notice, sizeof(notice), "SAVED  %s", file);
+    notice_until = esp_timer_get_time() + NOTICE_US;
 
     load_patch_list();
     patch_loaded = NONE;
@@ -778,6 +859,8 @@ static void delete_patch(void)
         return;
     }
     ESP_LOGI(TAG, "deleted %s", patch_names[store_target]);
+    snprintf(notice, sizeof(notice), "DELETED  %s", patch_names[store_target]);
+    notice_until = esp_timer_get_time() + NOTICE_US;
     if (strcmp(patch_names[store_target], last_saved) == 0) {
         /* Don't try to restore a deleted patch at the next boot */
         char state[MAX_PATH];
@@ -818,6 +901,11 @@ static void store_button(int bit)
             delete_armed_until = esp_timer_get_time() + DELETE_CONFIRM_US;
             draw_store();
         }
+        return;
+    }
+    if (mode == MODE_STORE && key == 4 && synth->categories) {
+        store_category = (store_category + 1) % 9;  /* 1-8, then (none) */
+        draw_store();
         return;
     }
     if (mode == MODE_STORE) {
@@ -1014,6 +1102,35 @@ static void load_settings(void);
 
 /* One column per synth, its display button picks it; the active one is
  * filled, one asking for confirmation says SURE? */
+/* Category screen: one box per display button, chosen ones filled (all,
+ * by default), the number of patches under each; browsing only steps
+ * through patches of the chosen categories */
+static void draw_categories(void)
+{
+    int counts[9] = {0}, shown = 0;
+    for (int i = 0; i < patch_count; i++) {
+        counts[patch_category(i)]++;
+        shown += patch_in_filter(i);
+    }
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "CATEGORIES  %d / %d patches", shown, patch_count);
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "ALL closes", true);
+    for (int i = 0; i < 8; i++) {
+        int disp = i / 4, x = (i % 4) * COLUMN_WIDTH;
+        bool on = category_filter & (1 << i);
+        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, on, true);
+        draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+                      &font_small, synth->categories[i], !on);
+        snprintf(buf, sizeof(buf), "%d", counts[i + 1]);
+        draw_centered(disp, x, COLUMN_INNER, VALUE_CAP_Y, &font_large, buf, true);
+    }
+}
+
 static void draw_synths(void)
 {
     for (int d = 0; d < DISPLAY_COUNT; d++) {
@@ -1122,6 +1239,7 @@ static void switch_synth(int i)
     /* Everything the editor holds about the previous synth goes */
     page = 0;
     memset(section_last, 0, sizeof(section_last));
+    category_filter = ALL_CATEGORIES;
     memset(encoder_acc, 0, sizeof(encoder_acc));
     patch_loaded = patch_browse = NONE;
     modified = false;
@@ -1172,6 +1290,19 @@ static void editor_encoder_impl(int i, int delta)
     }
     if (mode == MODE_SETUP) {
         setup_encoder(i, delta);
+        return;
+    }
+    if (mode == MODE_STORE && i == 4 && synth->categories) {
+        /* Category of the patch being stored: (none), 1-8 */
+        encoder_acc[i] += delta;
+        int steps = encoder_acc[i] / CATEGORY_UNITS;
+        encoder_acc[i] -= steps * CATEGORY_UNITS;
+        int c = store_category + steps;
+        c = c < 0 ? 0 : c > 8 ? 8 : c;
+        if (c != store_category) {
+            store_category = c;
+            draw_store();
+        }
         return;
     }
     if (mode != MODE_EDIT) {
@@ -1226,9 +1357,23 @@ static void browse_patches(int steps)
     if (patch_count == 0) {
         return;
     }
-    int from = patch_browse != NONE ? patch_browse : patch_loaded != NONE ? patch_loaded : -1;
-    int idx = from + steps;
-    patch_browse = (idx % patch_count + patch_count) % patch_count;
+    int idx = patch_browse != NONE ? patch_browse : patch_loaded != NONE ? patch_loaded : -1;
+    if (idx < 0 && steps < 0) {
+        idx = 0;  /* nothing loaded: going back starts from the end */
+    }
+    /* Step over patches outside the category filter */
+    int dir = steps > 0 ? 1 : -1, found = NONE;
+    for (int left = steps * dir, guard = 0; left > 0 && guard < patch_count * 2; guard++) {
+        idx = ((idx + dir) % patch_count + patch_count) % patch_count;
+        if (patch_in_filter(idx)) {
+            found = idx;
+            left--;
+        }
+    }
+    if (found == NONE) {
+        return;  /* no patch in the chosen categories */
+    }
+    patch_browse = found;
     browse_deadline = esp_timer_get_time() + BROWSE_TIMEOUT_US;
     draw_header();
 }
@@ -1281,6 +1426,24 @@ static void editor_button_impl(int bit, bool down)
     if (mode == MODE_SYNTH) {
         if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + SYNTH_COUNT) {
             pick_synth(bit - BTN_DISPLAY_1);
+        }
+        return;
+    }
+    if (bit == BTN_ALL && down && synth->categories && (mode == MODE_EDIT || mode == MODE_CATEGORY)) {
+        end_browse();
+        cancel_init();
+        overview = false;
+        mode = mode == MODE_CATEGORY ? MODE_EDIT : MODE_CATEGORY;
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        draw_page();
+        return;
+    }
+    if (mode == MODE_CATEGORY) {
+        if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + 8) {
+            category_filter ^= 1 << (bit - BTN_DISPLAY_1);
+            draw_categories();
         }
         return;
     }
@@ -1468,6 +1631,10 @@ static void editor_tick_impl(int64_t now_us)
     if (init_armed_until && now_us > init_armed_until) {
         cancel_init();
     }
+    if (notice_until && now_us > notice_until) {
+        notice_until = 0;
+        draw_header();
+    }
     if (panic_flash_until && now_us > panic_flash_until) {
         panic_flash_until = 0;
     }
@@ -1513,11 +1680,14 @@ static void load_patch_list(void)
     if (dir) {
         struct dirent *e;
         while ((e = readdir(dir)) && patch_count < MAX_PATCHES) {
-            patch_names[patch_count++] = strdup(e->d_name);
+            if (isdigit((unsigned char)e->d_name[0])) {  /* "NNN Name"; not e.g. categories */
+                patch_names[patch_count++] = strdup(e->d_name);
+            }
         }
         closedir(dir);
         qsort(patch_names, patch_count, sizeof(char *), cmp_names);
     }
+    read_categories();
     ESP_LOGI(TAG, "%d %s patches in %s", patch_count, synth->name, synth->patch_dir);
 }
 

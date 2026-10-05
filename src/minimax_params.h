@@ -5,6 +5,7 @@
 
 #define MINIMAX_PARAM_COUNT 76
 extern const plug_param_t minimax_params[MINIMAX_PARAM_COUNT];
+extern const char *const minimax_categories[8];
 
 #define MINIMAX_TUNE 0
 #define MINIMAX_GLIDE 1

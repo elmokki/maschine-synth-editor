@@ -11,6 +11,8 @@ static const char *const labels_note[19] = {"1/1", "1/2P", "1/2", "1/2T", "1/4P"
 static const char *const labels_range[6] = {"LO", "32'", "16'", "8'", "4'", "2'"};
 static const char *const labels_wave[6] = {"TRI", "SHARK", "SAW", "SQUARE", "WIDE", "NARROW"};
 
+const char *const minimax_categories[8] = {"LEADS", "BASS", "PADS", "BELLS", "PLUCK", "ORGAN", "BRASS", "SEQ/FX"};
+
 const plug_param_t minimax_params[MINIMAX_PARAM_COUNT] = {
     {.short_name = "TUNE", .name = "Tune", .msg = PLUG_CC, .number = 21, .type = PT_CONT, .default_value = 63, .in_preset = true, .page = 0, .disp_lo = -2, .disp_hi = 2, .decimals = 1},
     {.short_name = "GLIDE", .name = "Glide Time", .msg = PLUG_CC, .number = 5, .type = PT_CONT, .default_value = 57, .in_preset = true, .page = 0},

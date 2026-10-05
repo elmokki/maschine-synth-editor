@@ -258,6 +258,7 @@ const synth_t synth_minimax = {
     .volume_cc = 7,  /* "Plugiator Device Volume", not part of presets */
     .volume_setting = SETTING_VOLUME,
     .device_ccs = device_ccs,
+    .categories = minimax_categories,
     .theme_bright = {127, 35, 0},  /* red-orange, like the Minimoog's orange switches */
     .theme_dim = {20, 4, 0},
 };

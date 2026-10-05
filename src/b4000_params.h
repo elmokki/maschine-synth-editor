@@ -5,6 +5,7 @@
 
 #define B4000_PARAM_COUNT 95
 extern const plug_param_t b4000_params[B4000_PARAM_COUNT];
+extern const char *const b4000_categories[8];
 
 #define B4000_PEDAL_VOL 0
 #define B4000_LOWER_VOL 1

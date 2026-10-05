@@ -130,6 +130,12 @@ typedef struct {
      * instead of the editor's name/value/bar (e.g. small text under a
      * page-wide picture); false = the editor draws it */
     bool (*column_draw)(int p, int disp, int x);
+
+    /* Optional: 8 patch category names (max 10 characters), one per
+     * display button on the category screen (All button). A patch's
+     * category is kept in <patch_dir>/categories: byte [patch number] =
+     * 1-8, 0 = none. */
+    const char *const *categories;
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */

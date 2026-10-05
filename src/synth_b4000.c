@@ -142,6 +142,7 @@ const synth_t synth_b4000 = {
     .volume_cc = 7,  /* "Plugiator Device Volume", not part of presets */
     .volume_setting = SETTING_VOLUME,
     .device_ccs = device_ccs,
+    .categories = b4000_categories,
     .theme_bright = {90, 0, 127},  /* violet */
     .theme_dim = {9, 0, 14},
 };

@@ -11,6 +11,8 @@ static const char *const labels_note[19] = {"1/1", "1/2P", "1/2", "1/2T", "1/4P"
 static const char *const labels_octave[3] = {"-1", "0", "+1"};
 static const char *const labels_vibrato[6] = {"V-1", "C-1", "V-2", "C-2", "V-3", "C-3"};
 
+const char *const b4000_categories[8] = {"ORGAN", "JAZZ", "FUNK", "SOUL", "HOUSE", "REGGAE", "ROCK", "GOSPEL"};
+
 const plug_param_t b4000_params[B4000_PARAM_COUNT] = {
     {.short_name = "PEDAL VOL", .name = "Mixer PEDAL", .msg = PLUG_CC, .number = 58, .type = PT_CONT, .default_value = 70, .in_preset = true, .page = 0},
     {.short_name = "LOWER VOL", .name = "Mixer LOWER", .msg = PLUG_CC, .number = 57, .type = PT_CONT, .default_value = 70, .in_preset = true, .page = 0},
