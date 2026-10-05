@@ -59,6 +59,9 @@ static const char *TAG = "editor";
 #define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
 #define BTN_ALL 14       /* the patch category screen */
 #define BTN_PAD_MODE 42  /* the pads' screen: lowest note, scale, key */
+#define BTN_STEP_LEFT 33   /* transport arrows: synth_t.instance_step */
+#define BTN_STEP_RIGHT 34
+#define BTN_SHIFT 39       /* + Group: synth_t.shift_group */
 #define VOLUME_STEP 4    /* per main encoder detent */
 
 /* The last loaded patch is restored at boot, and settings persist. Both
@@ -140,7 +143,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Scene), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -154,6 +157,7 @@ static int64_t synth_confirm_until;
 static int encoder_acc[8];
 static int page;
 static uint8_t section_last[8];  /* page each section was last left on */
+static bool shift_held;
 static bool overview;  /* section list shown while Navigate is held */
 static bool encoder_browses;  /* Browse toggled: main encoder picks patches, not pages */
 
@@ -217,11 +221,18 @@ static void draw_store(void);
 static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
+static void draw_page(void);
 static void draw_pads(void);
 
 int synth_setting(int index)
 {
     return index < synth->setting_count ? setting_values[index] : 0;
+}
+
+/* The channel the pads, MIDI thru and panic use */
+static int play_channel(void)
+{
+    return synth->play_channel ? synth->play_channel() : synth_setting(SETTING_CHANNEL);
 }
 
 /* "<dir>/<key><suffix>", e.g. /lfs/state/minimax_last */
@@ -294,6 +305,18 @@ static void update_group_leds(void)
     if (mode != MODE_EDIT && !is_menu(mode)) {
         for (int g = 0; g < 8; g++) {
             maschine_set_group_led(g, 0, 0, 0);  /* sections can't be picked here */
+        }
+        return;
+    }
+    if (shift_held && synth->shift_group_led) {
+        for (int g = 0; g < 8; g++) {
+            int v = synth->shift_group_led(g);
+            const uint8_t *c = v > 0 ? theme_bright() : theme_dim();
+            if (v < 0) {
+                maschine_set_group_led(g, 0, 0, 0);
+            } else {
+                maschine_set_group_led(g, c[0], c[1], c[2]);
+            }
         }
         return;
     }
@@ -372,6 +395,9 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_BROWSE, !edit ? 0 : encoder_browses ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_ERASE, !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_SHIFT, !edit || !synth->shift_group ? 0 : shift_held ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_STEP_LEFT, edit && synth->instance_step ? LED_DIM : 0);
+    maschine_set_button_led(BTN_STEP_RIGHT, edit && synth->instance_step ? LED_DIM : 0);
     static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
     for (size_t i = 0; i < sizeof(arrows) / sizeof(arrows[0]); i++) {
         maschine_set_button_led(arrows[i], edit ? LED_DIM : 0);
@@ -457,6 +483,14 @@ static void draw_header(void)
                  synth->pages[page].title, page - first + 1, count);
     } else {
         snprintf(buf, sizeof(buf), "%c  %s", 'A' + synth->pages[page].section, synth->pages[page].title);
+    }
+    if (synth->header_tag) {
+        size_t n = strlen(buf);
+        if (n + 3 < sizeof(buf)) {
+            buf[n++] = ' ';
+            buf[n++] = ' ';
+            synth->header_tag(buf + n, sizeof(buf) - n);
+        }
     }
     int title_end = draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
 
@@ -558,6 +592,21 @@ static void draw_column_only(int col)
         display_rect(disp, x + 4, BAR_Y, COLUMN_INNER - 8, BAR_H, true);
         display_fill_rect(disp, x + 6, BAR_Y + 2, (COLUMN_INNER - 12) * bar / 1000, BAR_H - 4, true);
     }
+}
+
+void synth_redraw(void)
+{
+    if (mode == MODE_EDIT && !overview && !activating_until) {
+        draw_page();
+        update_group_leds();
+    }
+}
+
+void synth_notice(const char *text)
+{
+    snprintf(notice, sizeof(notice), "%s", text);
+    notice_until = esp_timer_get_time() + NOTICE_US;
+    draw_header();
 }
 
 void synth_redraw_page(void)
@@ -1251,7 +1300,7 @@ static void revert_patch(void)
 
 static void panic(void)
 {
-    int ch = synth_setting(SETTING_CHANNEL);
+    int ch = play_channel();
     midi_send(0xB0 | ch, 120, 0);  /* All Sound Off */
     midi_send(0xB0 | ch, 123, 0);  /* All Notes Off */
     panic_flash_until = esp_timer_get_time() + PANIC_FLASH_US;
@@ -1620,6 +1669,11 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
+    if (bit == BTN_SHIFT) {
+        shift_held = down;
+        update_group_leds();
+        return;
+    }
     if (activating_until) {
         return;  /* the synth isn't listening yet */
     }
@@ -1760,8 +1814,15 @@ static void editor_button_impl(int bit, bool down)
     } else if (bit == BTN_BROWSE) {
         encoder_browses = !encoder_browses;
         draw_header();
+    } else if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8 && shift_held && synth->shift_group) {
+        if (synth->shift_group(bit - BTN_GROUP_A)) {
+            draw_page();
+            update_group_leds();
+        }
     } else if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
         select_section(bit - BTN_GROUP_A);
+    } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) && synth->instance_step) {
+        synth->instance_step(bit == BTN_STEP_LEFT ? -1 : 1);
     } else if (bit == BTN_ENTER && patch_browse != NONE) {
         load_patch(patch_browse);
         patch_browse = NONE;
@@ -1821,7 +1882,7 @@ static void save_settings(void);
 static void editor_tick_impl(int64_t now_us)
 {
     /* Follows the setting and the selected synth's channel */
-    midi_set_thru((midi_thru_t)midi_thru, synth_setting(SETTING_CHANNEL));
+    midi_set_thru((midi_thru_t)midi_thru, play_channel());
     textentry_tick(now_us);
     if (synth->tick) {
         synth->tick(now_us);
@@ -1965,7 +2026,7 @@ static void editor_pad_impl(int pad, bool down, int raw)
         return;
     }
     int note = down ? pad_note(pad) : pad_playing[pad];
-    int channel = synth_setting(SETTING_CHANNEL);
+    int channel = play_channel();
     if (!down && note < 0) {
         return;
     }

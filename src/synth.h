@@ -140,6 +140,18 @@ typedef struct {
      * category is kept in <patch_dir>/categories: byte [patch number] =
      * 1-8, 0 = none. */
     const char *const *categories;
+
+    /* Optional, for synths with several parts/instances (e.g. the D-110's
+     * eight parts and four partials): */
+    int (*play_channel)(void);  /* channel the pads, thru and panic use;
+                                   default the CHANNEL setting */
+    void (*instance_step)(int d);  /* transport Step arrows: e.g. part -/+ */
+    /* Shift + Group button g: e.g. pick partials (there aren't enough Group
+     * buttons); true if handled. While Shift is held the Group LEDs show
+     * shift_group_led(g): -1 dark, 0 dim, 1 lit. */
+    bool (*shift_group)(int g);
+    int (*shift_group_led)(int g);
+    void (*header_tag)(char *buf, size_t len);  /* shown after the page title */
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
@@ -147,7 +159,12 @@ int synth_setting(int index);
 /* Provided by the editor: re-run the active page's page_draw (e.g. when a
  * driver's picture changes by itself); does nothing outside the editor page */
 void synth_redraw_page(void);
+/* Provided by the editor: redraw the whole editor page (values changed,
+ * e.g. another part selected), and a short note in the header */
+void synth_redraw(void);
+void synth_notice(const char *text);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
 extern const synth_t synth_volca;
+extern const synth_t synth_d110;
