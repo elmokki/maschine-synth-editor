@@ -133,6 +133,10 @@ static const synth_setting_t settings[] = {
 
 static uint8_t patch[PATCH_LEN];
 static bool known[PATCH_LEN];
+/* The patch as read from the unit, kept at the first edit after the read
+ * (for Rec + Erase) */
+static uint8_t as_read[PATCH_LEN];
+static bool as_read_known[PATCH_LEN], as_read_ok, read_stale;
 static int part;
 static bool read_asked;
 
@@ -304,6 +308,12 @@ static int param_units(int p)
 
 static void set_value(int p, int v)
 {
+    if (read_stale) {
+        memcpy(as_read, patch, PATCH_LEN);
+        memcpy(as_read_known, known, PATCH_LEN);
+        as_read_ok = true;
+        read_stale = false;
+    }
     int at = byte_of(p);
     patch[at] = v;
     known[at] = true;
@@ -619,6 +629,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         if (at >= 0) {
             patch[at] = data[i];
             known[at] = true;
+            read_stale = true;
             got = true;
         }
     }
@@ -654,7 +665,30 @@ static bool patch_load(const char *path)
         return false;
     }
     memset(known, 1, sizeof(known));
+    read_stale = as_read_ok = false;
     send_patch_bytes(0, PATCH_LEN);
+    return true;
+}
+
+/* Rec + Erase on the unit's own patch: back to how it was read (only the
+ * bytes that were) */
+static bool revert(void)
+{
+    if (!as_read_ok) {
+        return false;
+    }
+    memcpy(patch, as_read, PATCH_LEN);
+    memcpy(known, as_read_known, PATCH_LEN);
+    for (int i = 0; i < PATCH_LEN;) {
+        int j = i;
+        while (j < PATCH_LEN && known[j]) {
+            j++;
+        }
+        if (j > i) {
+            send_patch_bytes(i, j - i);
+        }
+        i = j + 1;
+    }
     return true;
 }
 
@@ -725,6 +759,7 @@ const synth_t synth_d110p = {
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,
+    .revert = revert,
     .unknown_count = unknown_count,
     .page_draw = page_draw,
     .play_channel = play_channel,

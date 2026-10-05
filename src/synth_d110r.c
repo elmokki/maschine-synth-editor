@@ -82,6 +82,10 @@ static const synth_setting_t settings[] = {
 
 static uint8_t setup[SETUP_LEN];
 static bool known[SETUP_LEN];
+/* The kit as read from the unit, kept at the first edit after the read
+ * (for Rec + Erase) */
+static uint8_t as_read[SETUP_LEN];
+static bool as_read_known[SETUP_LEN], as_read_ok, read_stale;
 static uint8_t reserve[9], channel_r, level_r;
 static bool reserve_known, channel_known, level_known;
 static int key = 36 - FIRST_KEY;  /* C2, the bass drum */
@@ -258,6 +262,12 @@ static void send_reserves(void)
 static void set_value(int p, int v)
 {
     int b = byte_of(p);
+    if (b >= 0 && read_stale) {
+        memcpy(as_read, setup, SETUP_LEN);
+        memcpy(as_read_known, known, SETUP_LEN);
+        as_read_ok = true;
+        read_stale = false;
+    }
     if (b >= 0) {
         setup[b] = v;
         known[b] = true;
@@ -403,6 +413,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         if ((off = at - addr7(RHYTHM_SETUP)) >= 0 && off < SETUP_LEN) {
             setup[off] = d[8 + i];
             known[off] = true;
+            read_stale = true;
             got = true;
         } else if ((off = at - addr7(SYSTEM_AREA)) >= SYS_RESERVE && off < SYS_RESERVE + 9) {
             reserve[off - SYS_RESERVE] = d[8 + i];
@@ -445,7 +456,30 @@ static bool patch_load(const char *path)
         return false;
     }
     memset(known, 1, sizeof(known));
+    read_stale = as_read_ok = false;
     send_setup(0, SETUP_LEN);
+    return true;
+}
+
+/* Rec + Erase on the unit's own kit: back to how it was read (only the
+ * bytes that were) */
+static bool revert(void)
+{
+    if (!as_read_ok) {
+        return false;
+    }
+    memcpy(setup, as_read, SETUP_LEN);
+    memcpy(known, as_read_known, SETUP_LEN);
+    for (int i = 0; i < SETUP_LEN;) {
+        int j = i;
+        while (j < SETUP_LEN && known[j]) {
+            j++;
+        }
+        if (j > i) {
+            send_setup(i, j - i);
+        }
+        i = j + 1;
+    }
     return true;
 }
 
@@ -504,6 +538,7 @@ const synth_t synth_d110r = {
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,
+    .revert = revert,
     .unknown_count = unknown_count,
     .play_channel = play_channel,
     .instance_step = instance_step,

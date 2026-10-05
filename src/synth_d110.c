@@ -248,6 +248,10 @@ static const synth_setting_t settings[] = {
 
 static uint8_t tone[PARTS][TONE_LEN], init_tone[TONE_LEN];
 static bool known[PARTS][TONE_LEN];
+/* A part's tone as read from the unit, kept at the first edit after the read
+ * (for Rec + Erase); stale = read, not edited since */
+static uint8_t as_read[PARTS][TONE_LEN];
+static bool as_read_known[PARTS][TONE_LEN], as_read_ok[PARTS], read_stale[PARTS];
 static bool init_read;
 static int part;                  /* 0-7 */
 static uint8_t partial_sel = 1;   /* bit n = partial n+1 edited */
@@ -626,6 +630,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         int p = (at + i) / TONE_LEN, off = (at + i) % TONE_LEN;
         tone[p][off] = d[8 + i];
         known[p][off] = true;
+        read_stale[p] = true;
         shown |= p == part;
     }
     if (imp_stage == IMP_REPLY) {
@@ -708,6 +713,12 @@ static void read_tone(void)
 /* Sets p to v in partial i (or the common part) and sends it */
 static void set_one(int p, int i, int v)
 {
+    if (read_stale[part]) {
+        memcpy(as_read[part], tone[part], TONE_LEN);
+        memcpy(as_read_known[part], known[part], TONE_LEN);
+        as_read_ok[part] = true;
+        read_stale[part] = false;
+    }
     {
         int at = byte_of(p, i);
         uint8_t b = tone[part][at];
@@ -1178,7 +1189,30 @@ static bool patch_load(const char *path)
         return false;
     }
     memset(known[part], 1, TONE_LEN);
+    read_stale[part] = as_read_ok[part] = false;
     send_bytes(0, TONE_LEN);
+    return true;
+}
+
+/* Rec + Erase on the unit's own tone: back to how it was read (only the
+ * bytes that were) */
+static bool revert(void)
+{
+    if (!as_read_ok[part]) {
+        return false;
+    }
+    memcpy(tone[part], as_read[part], TONE_LEN);
+    memcpy(known[part], as_read_known[part], TONE_LEN);
+    for (int i = 0; i < TONE_LEN;) {
+        int j = i;
+        while (j < TONE_LEN && known[part][j]) {
+            j++;
+        }
+        if (j > i) {
+            send_bytes(i, j - i);
+        }
+        i = j + 1;
+    }
     return true;
 }
 
@@ -1267,6 +1301,7 @@ const synth_t synth_d110 = {
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,
+    .revert = revert,
     .unknown_count = unknown_count,
     .page_draw = page_draw,
     .column_draw = column_draw,
