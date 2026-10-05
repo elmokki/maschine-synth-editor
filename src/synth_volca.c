@@ -143,7 +143,10 @@ static const char *const wave_names[] = {"TRI", "SAW DN", "SAW UP", "SQUARE", "S
 static const synth_page_t pages[] = {
     OP_PAGES(0, "1"), OP_PAGES(1, "2"), OP_PAGES(2, "3"),
     OP_PAGES(3, "4"), OP_PAGES(4, "5"), OP_PAGES(5, "6"),
-    {6, "ALGORITHM", {G_ALG, G_FB, G_TRNSP, _, _, _, _, _}, {_, _, _, G_OKS, _, _, _, _}},
+    /* Operators on/off right on the algorithm page, OP1-OP6 in order */
+    {6, "ALGORITHM", {G_ALG, G_FB, G_TRNSP, _, _, _, _, _},
+     {OP_PARAM(0, F_ON), OP_PARAM(1, F_ON), OP_PARAM(2, F_ON), OP_PARAM(3, F_ON),
+      OP_PARAM(4, F_ON), OP_PARAM(5, F_ON), _, G_OKS}},
     {6, "PITCH EG", {G_PR1, G_PL1, G_PR2, G_PL2, G_PR3, G_PL3, G_PR4, G_PL4},
      {_, _, _, _, _, _, _, _}},
     {6, "LFO", {G_LFW, G_LFS, G_LFD, G_LPMD, G_LAMD, G_LPMS, _, _},
@@ -267,6 +270,12 @@ static uint8_t trail_r[4], trail_l[4];
 static int trail_env = -1;  /* 0-5 = OP1-OP6 EG, 6 = pitch EG */
 static int64_t trail_taken, trail_until;
 
+/* The algorithm page's feedback loop moves (see draw_algorithm) */
+#define FEEDBACK_FRAME_US 40000
+static bool fb_animating;    /* the algorithm page's loop is moving */
+static int last_page = -1;   /* last page drawn (page_draw) */
+static int64_t fb_frame_at;
+
 static void send_voice(void)
 {
     uint8_t msg[6 + VCED_LEN + 2] = {0xF0, 0x43, 0x00 | synth_setting(SETTING_CHANNEL), 0x00, 0x01, 0x1B};
@@ -322,6 +331,10 @@ static void set_value(int p, int v)
 
 static void tick(int64_t now)
 {
+    if (fb_animating && last_page == PAGE_ALGORITHM && now > fb_frame_at) {
+        fb_frame_at = now + FEEDBACK_FRAME_US;
+        synth_redraw_page();
+    }
     if (trail_env >= 0 && now > trail_until) {
         trail_env = -1;
         synth_redraw_page();
@@ -376,7 +389,14 @@ static void format_signed(int v, char *buf, size_t len)
     snprintf(buf, len, v ? "%+d" : "0", v);
 }
 
-static const char *param_name(int p) { return info(p)->name; }
+static const char *param_name(int p)
+{
+    static const char *const on_names[6] = {"OP1 ON", "OP2 ON", "OP3 ON", "OP4 ON", "OP5 ON", "OP6 ON"};
+    if (p < G_PR1 && p % F_COUNT == F_ON) {
+        return on_names[p / F_COUNT];
+    }
+    return info(p)->name;
+}
 
 static void param_format(int p, char *buf, size_t len)
 {
@@ -617,9 +637,15 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
  * output, modulators stacked above what they modulate, the feedback loop;
  * switched-off operators drawn hollow */
 #define ALG_BOX_W 15
-#define ALG_BOX_H 9
-#define ALG_ROW_H 12
-#define ALG_BUS_Y 63  /* 4 rows + the feedback loop fit under the header */
+#define ALG_BOX_H 8
+#define ALG_ROW_H 10
+#define ALG_BUS_Y 61
+/* Below the switch row (OP ON buttons)... */
+#define ALG_TOP_Y 27
+/* ...except above display column 7, which has no switch: the only 4-high
+ * stacks (algorithms 1 and 18) land there */
+#define ALG_FREE_X0 128
+#define ALG_FREE_X1 192
 
 static int alg_depth(const algorithm_t *a, int op)
 {
@@ -654,7 +680,8 @@ static float alg_place(const algorithm_t *a, int op, float *x, bool *placed, int
 static void draw_algorithm(int disp)
 {
     const algorithm_t *a = &algorithms[voice[VCED_ALGORITHM] & 31];
-    display_fill_rect(disp, 0, 12, 256, 52, false);
+    display_fill_rect(disp, 0, ALG_TOP_Y, 256, DISPLAY_HEIGHT - ALG_TOP_Y, false);
+    display_fill_rect(disp, ALG_FREE_X0, 12, ALG_FREE_X1 - ALG_FREE_X0, ALG_TOP_Y - 12, false);
     float slot[6];
     bool placed[6] = {false};
     int cursor = 0;
@@ -668,7 +695,7 @@ static void draw_algorithm(int disp)
     int cx[6], top[6];
     for (int op = 0; op < 6; op++) {
         cx[op] = left + (int)(slot[op] * spacing + 0.5f);
-        top[op] = ALG_BUS_Y - 3 - ALG_BOX_H - alg_depth(a, op) * ALG_ROW_H;
+        top[op] = ALG_BUS_Y - 1 - ALG_BOX_H - alg_depth(a, op) * ALG_ROW_H;
     }
     /* output bus */
     int bus_l = 255, bus_r = 0;
@@ -688,13 +715,42 @@ static void draw_algorithm(int disp)
             }
         }
     }
-    /* feedback: out of fb_from's right side, up and into fb_to's top */
+    /* Feedback, beside the boxes (no room above them): from just under
+     * fb_from's box, up its right side and back in just over fb_to's box;
+     * the ends tuck under / over the box's corner */
     int f = a->fb_from - 1, t = a->fb_to - 1;
-    int fx = cx[f] + ALG_BOX_W / 2 + 4, ty = top[t] - 3;
-    display_line(disp, cx[f] + ALG_BOX_W / 2, top[f] + ALG_BOX_H - 2, fx, top[f] + ALG_BOX_H - 2, true);
-    display_line(disp, fx, top[f] + ALG_BOX_H - 2, fx, ty, true);
-    display_line(disp, fx, ty, cx[t], ty, true);
-    display_line(disp, cx[t], ty, cx[t], top[t] - 1, true);
+    int fb = voice[VCED_COMMON + (G_FB - G_PR1)];
+    int edge_f = cx[f] - ALG_BOX_W / 2 + ALG_BOX_W, edge_t = cx[t] - ALG_BOX_W / 2 + ALG_BOX_W;
+    const int tuck = 4;
+    int fx = edge_f + 6, fy = top[f] + ALG_BOX_H, ty = top[t] - 1;
+    /* One line of dashes running along the loop (out, up, back in); the
+     * more feedback, the denser and faster. 0 = sparse dots, still. */
+    /* sparse, so the panel's afterglow doesn't smear moving dashes */
+    static const uint8_t dash_on[8] = {1, 1, 1, 1, 2, 2, 2, 2};
+    static const uint8_t dash_period[8] = {6, 6, 6, 5, 7, 7, 6, 5};
+    /* up to what still reads as motion through the panel's afterglow */
+    static const uint8_t dash_speed[8] = {0, 5, 9, 13, 17, 21, 25, 30};  /* px/s */
+    int period = dash_period[fb], phase = 0;
+    if (dash_speed[fb]) {
+        phase = (int)(esp_timer_get_time() * dash_speed[fb] / 1000000) % period;
+    }
+    int n = 0;  /* position along the loop */
+    for (int x = edge_f - tuck; x < fx; x++, n++) {
+        if ((n - phase + period * 64) % period < dash_on[fb]) {
+            display_pixel(disp, x, fy, true);
+        }
+    }
+    for (int y = fy; y > ty; y--, n++) {
+        if ((n - phase + period * 64) % period < dash_on[fb]) {
+            display_pixel(disp, fx, y, true);
+        }
+    }
+    for (int x = fx; x >= edge_t - tuck; x--, n++) {
+        if ((n - phase + period * 64) % period < dash_on[fb]) {
+            display_pixel(disp, x, ty, true);
+        }
+    }
+    fb_animating = dash_speed[fb] != 0;
     /* operators */
     for (int op = 0; op < 6; op++) {
         int bx = cx[op] - ALG_BOX_W / 2;
@@ -702,12 +758,16 @@ static void draw_algorithm(int disp)
         display_fill_rect(disp, bx, top[op], ALG_BOX_W, ALG_BOX_H, false);
         display_round_rect(disp, bx, top[op], ALG_BOX_W, ALG_BOX_H, op_on[op], true);
         display_text(disp, bx + (ALG_BOX_W - display_text_width(&font_tiny, num)) / 2 + 1,
-                     top[op] + 2 - font_tiny.cap_top, &font_tiny, num, !op_on[op]);
+                     top[op] + 1 - font_tiny.cap_top, &font_tiny, num, !op_on[op]);
     }
 }
 
 static void page_draw(int pg, int disp)
 {
+    last_page = pg;
+    if (pg != PAGE_ALGORITHM) {
+        fb_animating = false;
+    }
     if (pg < PAGE_ALGORITHM && pg % 3 == 1) {
         uint8_t r[4], l[4];
         envelope_values(pg / 3, r, l);
