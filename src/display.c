@@ -6,7 +6,11 @@
 #define CHUNKS (DISPLAY_HEIGHT / CHUNK_ROWS)
 
 static uint8_t fb[DISPLAY_COUNT][STRIDE * DISPLAY_HEIGHT];
-static uint8_t dirty[DISPLAY_COUNT];  /* bit n = chunk n needs sending */
+static uint8_t dirty[DISPLAY_COUNT];  /* bit n = chunk n was drawn into */
+/* What the display shows: a drawn-into chunk is only sent if it differs,
+ * so redrawing a whole picture (clear + draw) sends just what changed */
+static uint8_t shown[DISPLAY_COUNT][STRIDE * DISPLAY_HEIGHT];
+static uint8_t force[DISPLAY_COUNT];  /* bit n = send chunk n regardless */
 
 static void mark_rows(int disp, int y0, int y1)
 {
@@ -164,7 +168,7 @@ int display_text(int disp, int x, int y, const font_t *font, const char *s, bool
 void display_invalidate_all(void)
 {
     for (int d = 0; d < DISPLAY_COUNT; d++) {
-        dirty[d] = 0xFF;
+        dirty[d] = force[d] = 0xFF;
     }
 }
 
@@ -176,6 +180,13 @@ bool display_next_packet(uint8_t *out)
                 continue;
             }
             dirty[d] &= ~(1 << c);
+            uint8_t *chunk = &fb[d][c * CHUNK_ROWS * STRIDE];
+            uint8_t *was = &shown[d][c * CHUNK_ROWS * STRIDE];
+            if (!(force[d] & (1 << c)) && !memcmp(chunk, was, CHUNK_ROWS * STRIDE)) {
+                continue;
+            }
+            force[d] &= ~(1 << c);
+            memcpy(was, chunk, CHUNK_ROWS * STRIDE);
             const uint8_t header[9] = {
                 0xE0 + d, 0x00, 0x00, c * CHUNK_ROWS, 0x00, 0x20, 0x00, 0x08, 0x00,
             };

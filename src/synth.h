@@ -116,10 +116,31 @@ typedef struct {
      * brightness (green >> blue > red), so a computed complement can drown
      * a reddish theme. */
     uint8_t theme_accent[3];
+
+    /* Optional: called often from the UI loop (e.g. to send throttled
+     * updates) */
+    void (*tick)(int64_t now_us);
+
+    /* Optional: a picture over the whole page (e.g. an envelope across
+     * every column, an algorithm diagram in empty columns), drawn after
+     * the columns of display disp and redrawn whenever any column is. It
+     * draws over (and must clear) only areas no column uses. */
+    void (*page_draw)(int page, int disp);
+    /* Optional: a section's own dim colour instead of the theme's (e.g.
+     * carrier vs. modulator operators); false = theme colour */
+    bool (*section_dim)(int section, uint8_t rgb[3]);
+    /* Optional: draw parameter p's whole column below the switch row
+     * instead of the editor's name/value/bar (e.g. small text under a
+     * page-wide picture); false = the editor draws it */
+    bool (*column_draw)(int p, int disp, int x);
 } synth_t;
 
 /* Provided by the editor: the active synth's current setting value */
 int synth_setting(int index);
+/* Provided by the editor: re-run the active page's page_draw (e.g. when a
+ * driver's picture changes by itself); does nothing outside the editor page */
+void synth_redraw_page(void);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
+extern const synth_t synth_volca;

@@ -82,6 +82,33 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2)
     out_kick();
 }
 
+/* System Exclusive, F0 ... F7 inclusive, as USB-MIDI event packets:
+ * CIN 4 = 3 bytes that start/continue it, CIN 5/6/7 = it ends with 1/2/3
+ * bytes. The whole message is queued or dropped, never cut. */
+bool midi_send_sysex(const uint8_t *data, size_t len)
+{
+    if (!attached || len < 2 || data[0] != 0xF0 || data[len - 1] != 0xF7) {
+        return false;
+    }
+    size_t packets = (len + 2) / 3;
+    if (QUEUE_LEN - (q_head - q_tail) < packets) {
+        ESP_LOGW(TAG, "OUT queue full, dropping %u byte SysEx", (unsigned)len);
+        return false;
+    }
+    for (size_t i = 0; i < len; i += 3) {
+        size_t n = len - i < 3 ? len - i : 3;
+        bool last = i + n == len;
+        uint8_t *ev = queue[q_head % QUEUE_LEN];
+        ev[0] = (MIDI_CABLE << 4) | (last ? 4 + n : 4);
+        ev[1] = data[i];
+        ev[2] = n > 1 ? data[i + 1] : 0;
+        ev[3] = n > 2 ? data[i + 2] : 0;
+        q_head++;
+    }
+    out_kick();
+    return true;
+}
+
 static void in_cb(usb_transfer_t *xfer)
 {
     if (xfer->status == USB_TRANSFER_STATUS_COMPLETED) {

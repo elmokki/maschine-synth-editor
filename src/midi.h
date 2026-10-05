@@ -9,6 +9,7 @@
  */
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "usb/usb_host.h"
 
@@ -20,3 +21,7 @@ void midi_detach(void);
 
 /* Queues one channel voice message (status 0x80-0xEF) for DIN OUT. */
 void midi_send(uint8_t status, uint8_t data1, uint8_t data2);
+
+/* Queues a whole System Exclusive message (F0 ... F7 included) for DIN OUT;
+ * false if it doesn't fit the queue right now (nothing is sent then). */
+bool midi_send_sysex(const uint8_t *data, size_t len);

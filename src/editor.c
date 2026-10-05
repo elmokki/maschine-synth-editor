@@ -17,7 +17,7 @@
 
 static const char *TAG = "editor";
 
-#define MAX_PATCHES 200
+#define MAX_PATCHES 1000  /* file names are numbered 000-999 */
 #define MAX_PATH 96
 
 #define COLUMN_WIDTH 64
@@ -83,6 +83,10 @@ static const uint8_t default_bright[3] = {30, 90, 127}, default_dim[3] = {0, 4, 
  * left/right LEDs, a bit brighter than a one-page section, so it stands out
  * in any theme without going pale */
 #define MULTI_PAGE_GAIN_PCT 150
+/* Sections with their own colours (synth_t.section_dim, e.g. carrier vs.
+ * modulator operators) would clash with a second colour: theirs slides
+ * between bright and dim of the same colour */
+#define MULTI_PAGE_LOW_PCT 40
 /* ...and the gradient slowly slides from side to side (0 = static) */
 #define MULTI_PAGE_SLIDE_PERIOD_US 4000000
 #define LED_ANIM_INTERVAL_US 50000
@@ -90,7 +94,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Scene), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -202,6 +206,8 @@ static void pad_idle(int pad)
 static void update_group_leds(void)
 {
     for (int g = 0; g < 8; g++) {
+        uint8_t own[3];
+        bool own_dim = synth->section_dim && synth->section_dim(g, own);
         if (g == synth->pages[page].section) {
             int count = section_page_count(g);
             int k = page - section_first_page(g);
@@ -222,22 +228,23 @@ static void update_group_leds(void)
                 int64_t t = esp_timer_get_time() % MULTI_PAGE_SLIDE_PERIOD_US;
                 f = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * t / MULTI_PAGE_SLIDE_PERIOD_US);
             }
-            const uint8_t *d = theme_dim();
+            const uint8_t *d = own_dim ? own : theme_dim();
             int hi = d[0] > d[1] ? (d[0] > d[2] ? d[0] : d[2]) : (d[1] > d[2] ? d[1] : d[2]);
             int lo = d[0] < d[1] ? (d[0] < d[2] ? d[0] : d[2]) : (d[1] < d[2] ? d[1] : d[2]);
             uint8_t l[3], r[3];
             const uint8_t *acc = synth->theme_accent;
-            bool own_accent = has_theme() && (acc[0] || acc[1] || acc[2]);
+            bool own_accent = !own_dim && has_theme() && (acc[0] || acc[1] || acc[2]);
             for (int i = 0; i < 3; i++) {
                 float c = d[i] * MULTI_PAGE_GAIN_PCT / 100.0f;
-                float w = own_accent ? acc[i]
-                                     : (hi + lo - d[i]) * MULTI_PAGE_GAIN_PCT / 100.0f;  /* complement */
+                float w = own_dim ? d[i] * MULTI_PAGE_LOW_PCT / 100.0f  /* same colour, dimmer */
+                          : own_accent ? acc[i]
+                                       : (hi + lo - d[i]) * MULTI_PAGE_GAIN_PCT / 100.0f;  /* complement */
                 l[i] = (uint8_t)(c + (w - c) * f + 0.5f);
                 r[i] = (uint8_t)(w + (c - w) * f + 0.5f);
             }
             maschine_set_group_led_lr(g, l, r);
         } else if (section_first_page(g) != NONE) {
-            const uint8_t *c = theme_dim();
+            const uint8_t *c = own_dim ? own : theme_dim();
             maschine_set_group_led(g, c[0], c[1], c[2]);
         } else {
             maschine_set_group_led(g, 0, 0, 0);
@@ -401,7 +408,7 @@ static void draw_header(void)
     }
 }
 
-static void draw_column(int col)
+static void draw_column_only(int col)
 {
     if (overview || mode != MODE_EDIT) {
         return;
@@ -425,6 +432,9 @@ static void draw_column(int col)
     /* The encoder's parameter: name, value, bar */
     int p = pg->knobs[col];
     if (p == NONE) {
+        return;
+    }
+    if (synth->column_draw && synth->column_draw(p, disp, x)) {
         return;
     }
     draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, synth->param_name(p), true);
@@ -455,6 +465,25 @@ static void draw_column(int col)
     if (bar >= 0) {
         display_rect(disp, x + 4, BAR_Y, COLUMN_INNER - 8, BAR_H, true);
         display_fill_rect(disp, x + 6, BAR_Y + 2, (COLUMN_INNER - 12) * bar / 1000, BAR_H - 4, true);
+    }
+}
+
+void synth_redraw_page(void)
+{
+    if (synth->page_draw && !overview && mode == MODE_EDIT && !activating_until) {
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            synth->page_draw(page, d);
+        }
+    }
+}
+
+static void draw_column(int col)
+{
+    draw_column_only(col);
+    if (synth->page_draw && !overview && mode == MODE_EDIT) {
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            synth->page_draw(page, d);
+        }
     }
 }
 
@@ -689,7 +718,8 @@ static void leave_store(void)
 static void store_main_encoder(int steps)
 {
     /* Targets: NONE (new), then the user patches in list order */
-    int targets[MAX_PATCHES + 1], n = 0, cur = 0;
+    static int targets[MAX_PATCHES + 1];
+    int n = 0, cur = 0;
     targets[n++] = NONE;
     for (int i = 0; i < patch_count; i++) {
         if (patch_number(i) >= synth->first_user_patch) {
@@ -1407,6 +1437,9 @@ static void save_settings(void);
 static void editor_tick_impl(int64_t now_us)
 {
     textentry_tick(now_us);
+    if (synth->tick) {
+        synth->tick(now_us);
+    }
     if (MULTI_PAGE_SLIDE_PERIOD_US && now_us > led_anim_at) {
         led_anim_at = now_us + LED_ANIM_INTERVAL_US;
         update_group_leds();
