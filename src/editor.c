@@ -148,7 +148,9 @@ static int synth_confirm = -1;      /* synth pressed once with unsaved edits */
  * stack, the button opens the card on top. Devices past the 8th don't show. */
 #define MAX_DEVICES 8
 static int device_count, device_first[MAX_DEVICES], device_size[MAX_DEVICES];
-static int stack_top[MAX_DEVICES];  /* synth index of each stack's top card */
+static int stack_top[MAX_DEVICES];  /* synth index of each stack's selected card */
+static int stack_y[MAX_DEVICES];    /* where that card's top edge is drawn now: slides to its slot */
+static int64_t stack_anim_at;
 static bool volume_held;
 static int64_t synth_confirm_until;
 
@@ -1732,6 +1734,25 @@ static void draw_categories(void)
 #define SYNTH_STATUS_CAP_Y 50
 #define SYNTH_INDEX_CAP_Y 58
 
+/* The slot of the selected card in its stack: cards are spread over the
+ * slots when a device has more than SYNTH_STACK_MAX */
+static int stack_slot(int col)
+{
+    int n = device_size[col], at = stack_top[col] - device_first[col];
+    int layers = n < SYNTH_STACK_MAX ? n : SYNTH_STACK_MAX;
+    return n > 1 ? at * (layers - 1) / (n - 1) : 0;
+}
+
+static int stack_target_y(int col) { return SWITCH_BOX_Y + stack_slot(col) * SYNTH_STACK_STEP; }
+
+/* Every card at its slot, no sliding */
+static void stack_snap(void)
+{
+    for (int col = 0; col < device_count; col++) {
+        stack_y[col] = stack_target_y(col);
+    }
+}
+
 /* Devices from synths[]: runs of consecutive synths with the same device;
  * a synth with none is a device of its own. The stacks start on the active
  * synth's card, or the one left on last. */
@@ -1748,6 +1769,7 @@ static void build_devices(void)
         device_first[device_count] = stack_top[device_count] = i;
         device_size[device_count++] = 1;
     }
+    stack_snap();
 }
 
 static int device_of(int synth_index)
@@ -1769,6 +1791,7 @@ static void show_active_card(void)
             stack_top[device_of(i)] = i;
         }
     }
+    stack_snap();
 }
 
 /* Text centred in the column, split at its first space onto two lines when
@@ -1800,15 +1823,22 @@ static void draw_synths(void)
         int i = stack_top[col], n = device_size[col], at = i - device_first[col];
         int disp = col / 4, x = (col % 4) * COLUMN_WIDTH;
         bool active = synths[i] == synth;
-        int layers = n < SYNTH_STACK_MAX ? n : SYNTH_STACK_MAX;
-        int front_y = SWITCH_BOX_Y + (layers - 1) * SYNTH_STACK_STEP;
-        /* Cards behind, back to front: each clears what it covers, so only
-         * its top edge shows above the next */
-        for (int k = layers - 1; k >= 0; k--) {
-            int y = front_y - k * SYNTH_STACK_STEP;
-            display_fill_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, false);
-            display_round_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, k == 0 && active, true);
+        int front_y = stack_y[col];
+        /* The cards stay where they are, one slot (top edge) each; the
+         * selected card is drawn whole at its own slot, in front, and the
+         * others show behind it, the farthest first */
+        int layers = n < SYNTH_STACK_MAX ? n : SYNTH_STACK_MAX, slot = stack_slot(col);
+        for (int dist = layers - 1; dist > 0; dist--) {
+            for (int k = 0; k < layers; k++) {
+                if (abs(k - slot) == dist) {
+                    int y = SWITCH_BOX_Y + k * SYNTH_STACK_STEP;
+                    display_fill_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, false);
+                    display_round_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, false, true);
+                }
+            }
         }
+        display_fill_rect(disp, x + 1, front_y, COLUMN_INNER - 2, SYNTH_BOX_H, false);
+        display_round_rect(disp, x + 1, front_y, COLUMN_INNER - 2, SYNTH_BOX_H, active, true);
         const synth_t *s = synths[i];
         if (i == synth_confirm) {
             draw_card_name(disp, x, front_y, "SURE?", !active);
@@ -2503,8 +2533,27 @@ static void remember_loaded_patch(void)
 
 static void save_settings(void);
 
+#define STACK_ANIM_US 50000  /* a frame; the displays take no faster */
+#define STACK_ANIM_PX 2      /* pixels a frame */
+
 static void editor_tick_impl(int64_t now_us)
 {
+    if (mode == MODE_SYNTH && now_us >= stack_anim_at) {
+        /* The selected cards slide to their slots */
+        bool moved = false;
+        for (int col = 0; col < device_count; col++) {
+            int to = stack_target_y(col), dy = to - stack_y[col];
+            if (dy) {
+                stack_y[col] += dy > 0 ? (dy < STACK_ANIM_PX ? dy : STACK_ANIM_PX)
+                                       : (-dy < STACK_ANIM_PX ? dy : -STACK_ANIM_PX);
+                moved = true;
+            }
+        }
+        if (moved) {
+            stack_anim_at = now_us + STACK_ANIM_US;
+            draw_synths();
+        }
+    }
     if (arrow_bit != NONE) {
         if (mode != MODE_EDIT) {
             arrow_bit = NONE;
