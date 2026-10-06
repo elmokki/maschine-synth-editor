@@ -20,8 +20,10 @@ firmware notes: `docs/ESP32_NOTES.md`. The user writes in Finnish; the UI and co
   `src/synth.h`: the driver interface - one driver per synth entry (`synths[]` in editor.c).
 - Drivers: `synth_minimax.c`, `synth_b4000.c` (+ `plugiator.c`), `synth_volca.c` (DX7 voices),
   `synth_d110.c` (TONE), `synth_d110p.c` (PATCH), `synth_d110r.c` (RHYTHM), `d110_common.c`,
-  `synth_jv880.c` (Patch mode; SysEx helpers in `jv880_common.c`).
-- Importers in `tools/`: `plugiator_import.py`, `dx7_import.py`, `d110_import.py`, `jv880_import.py` (Init patch),
+  `synth_jv880.c` (Patch mode), `synth_jv880r.c` (RHYTHM: Rhythm Setup, 61 keys x 52 bytes, Performance mode),
+  `synth_jv880p.c` (PERF: performance = common + 8 parts, 311 bytes);
+  `jv880_common.c`: SysEx helpers, board/wave names, envelope drawing.
+- Importers in `tools/`: `plugiator_import.py`, `dx7_import.py`, `d110_import.py`, `jv880_import.py` (Init patch), `jv880r_import.py` (Init kit), `jv880p_import.py` (Init performance),
   `jv880_names.py` (waveform names from `reference/JV880/` lists -> `data/jv880/waves/`; never reads the `.bin` images).
 
 ## Working with the user (agreed rules)
@@ -45,6 +47,7 @@ Done: Plugiator MiniMax/B4000, Volca FM2, D-110 (TONE, PATCH, RHYTHM: import, re
 categories, pad scales/chords, MIDI thru, LED brightness, tutorial (Shift + Control), JV-880 PATCH (all params,
 Group = function block, tones via Step arrows / Shift + Group A-D, read, write, store to I01-I64), Rec + Erase
 reverts a sound read from the unit (all D-110 and JV-880 drivers).
+JV-880 layout rule (user): the waveform/part choice is Group A (PATCH: A WAVE, B COMMON, C PITCH ...); pages are full (8 knobs + 8 buttons), few sections.
 JV-880 expansion boards: Setup CARD (0-22; 20-22 = boards 97-99) picks a library (`jv880/cardNN`; `jv880/` itself is
 shown with every board); IMPORT reads Internal as the board's 001-064, as own patches (200+) or the presets A+B
 (065-192). Wave names from `data/jv880/waves/` (int, cardNN). Unit settings needed: Unit # 17, Exclusive Rx ON, patch
@@ -52,6 +55,9 @@ Rx channel = PATCH CH, Program change / Bank select Rx ON for the preset import,
 Editor feel (all synths): held arrows repeat (faster after 2 s), Shift + main encoder browses 8 patches a detent,
 wide-range parameter knobs accelerate when turned fast (`accelerated()` in editor.c), the header gives the patch name
 the room while browsing. JV-880 PATCH is done; the user tests on the real unit.
-Next: JV-880 PERF and RHYTHM entries (plan with the user first; three entries agreed, like the D-110). Boards 19 (House) and 97
+JV-880 RHYTHM written (2026-10-06, flashed + `jv880r` merged into LFS, NOT tested on the unit, not committed): Group A WAVE, B PITCH ENV, C TVF, D TVA, E OUTPUT, F KIT; sets Performance mode, reads part 8's Rx channel.
+JV-880 PERF written (2026-10-06, flashed + `jv880p` merged, NOT tested on the unit, not committed): A PART (all of a part's settings on one page), B COMMON (reverb, chorus); part 1-8 = Shift + Group A-H or Step arrows; Internal patch and performance names read with Auto; Setup IMPORT saves I01-I16 as library 001-016 (own from 100); REC > TO JV-880 shows the slot's name. Part 8's Patch# = group*64 (INT 0, CRD 64, PRA 128, PRB 192), verified from the unit's bytes.
+Synth list = card stacks per device (`device`/`entry` in synth_t; encoder browses a stack, button opens). Idea: the selected card slides to its own slot in the stack (animation). Next: test RHYTHM/PERF on the unit, then commit.
+Boards 19 (House) and 97
 (Experience III) have no waveform list in `reference/JV880/` - left as they are on purpose (names show as numbers).
 Ideas waiting: synth list as per-device card stacks; Scene = saved multi-synth scenes; Volca Drum.

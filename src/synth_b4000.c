@@ -133,6 +133,8 @@ static const synth_tip_t tips[] = {
 
 const synth_t synth_b4000 = {
     .name = "Plugiator B4000",
+    .device = "Plugiator",
+    .entry = "B4000",
     .key = "b4000",
     .patch_dir = STORAGE_ROOT "/plugiator/b4000",
     .default_patch = "024 Very Basic",

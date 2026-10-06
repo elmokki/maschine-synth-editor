@@ -135,7 +135,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -143,7 +143,12 @@ static const synth_t *synth = &synth_minimax;
 static bool usb_ready;              /* Maschine (and DIN MIDI) connected */
 static int64_t activating_until;    /* synth being made ready, patch follows */
 static int synth_confirm = -1;      /* synth pressed once with unsaved edits */
-static int synth_list_first;        /* the synth list shows 8 from here (main encoder) */
+/* The synth list: one card stack per device (consecutive synths with the
+ * same `device`), one display column each; the encoder under it browses its
+ * stack, the button opens the card on top. Devices past the 8th don't show. */
+#define MAX_DEVICES 8
+static int device_count, device_first[MAX_DEVICES], device_size[MAX_DEVICES];
+static int stack_top[MAX_DEVICES];  /* synth index of each stack's top card */
 static bool volume_held;
 static int64_t synth_confirm_until;
 
@@ -559,8 +564,8 @@ static void update_button_leds(void)
                 v = synth->param_on(sw) ? LED_ON : LED_DIM;
             }
         } else if (mode == MODE_SYNTH) {
-            int i = synth_list_first + col;
-            if (i < SYNTH_COUNT) {
+            if (col < device_count) {
+                int i = stack_top[col];
                 v = synths[i] == synth || i == synth_confirm ? LED_ON : LED_DIM;
             }
         } else if (mode == MODE_CATEGORY) {
@@ -1114,6 +1119,11 @@ static void draw_store(void)
         char slot[12];
         synth->unit_slot_name(unit_slot, slot, sizeof(slot));
         draw_centered(1, x, COLUMN_INNER, VALUE_CAP_Y, &font_large, slot, true);
+        if (synth->unit_slot_info) {
+            char info[16] = "";
+            synth->unit_slot_info(unit_slot, info, sizeof(info));
+            draw_centered(1, x, COLUMN_INNER, BAR_Y, &font_tiny, info, true);
+        }
         draw_text_cap(1, 4, 29, &font_small, "Encoder 8: the slot,", true);
         snprintf(buf, sizeof(buf), "%s twice writes it.", synth->unit_store_label);
         draw_text_cap(1, 4, 38, &font_small, buf, true);
@@ -1717,46 +1727,108 @@ static void draw_categories(void)
 }
 
 #define SYNTH_BOX_H 26
-#define SYNTH_STATUS_CAP_Y 45
+#define SYNTH_STACK_STEP 4   /* how much of each card behind shows above the one in front */
+#define SYNTH_STACK_MAX 3    /* cards drawn in a stack */
+#define SYNTH_STATUS_CAP_Y 50
+#define SYNTH_INDEX_CAP_Y 58
+
+/* Devices from synths[]: runs of consecutive synths with the same device;
+ * a synth with none is a device of its own. The stacks start on the active
+ * synth's card, or the one left on last. */
+static void build_devices(void)
+{
+    if (device_count) {
+        return;
+    }
+    for (int i = 0; i < SYNTH_COUNT && device_count < MAX_DEVICES; i++) {
+        if (i && synths[i]->device && synths[i - 1]->device && !strcmp(synths[i]->device, synths[i - 1]->device)) {
+            device_size[device_count - 1]++;
+            continue;
+        }
+        device_first[device_count] = stack_top[device_count] = i;
+        device_size[device_count++] = 1;
+    }
+}
+
+static int device_of(int synth_index)
+{
+    for (int d = 0; d < device_count; d++) {
+        if (synth_index >= device_first[d] && synth_index < device_first[d] + device_size[d]) {
+            return d;
+        }
+    }
+    return NONE;
+}
+
+/* The active synth's stack shows its card */
+static void show_active_card(void)
+{
+    build_devices();
+    for (int i = 0; i < SYNTH_COUNT; i++) {
+        if (synths[i] == synth && device_of(i) != NONE) {
+            stack_top[device_of(i)] = i;
+        }
+    }
+}
+
+/* Text centred in the column, split at its first space onto two lines when
+ * too wide for one */
+static void draw_card_name(int disp, int x, int box_y, const char *label, bool ink)
+{
+    const char *sp = strchr(label, ' ');
+    if (display_text_width(&font_small, label) > COLUMN_INNER - 6 && sp) {
+        char first[24];
+        snprintf(first, sizeof(first), "%.*s", (int)(sp - label), label);
+        draw_centered(disp, x, COLUMN_INNER, box_y + 4, &font_small, first, ink);
+        draw_centered(disp, x, COLUMN_INNER, box_y + 14, &font_small, sp + 1, ink);
+    } else {
+        draw_centered(disp, x, COLUMN_INNER, box_y + (SYNTH_BOX_H - font_small.cap_height) / 2, &font_small, label,
+                      ink);
+    }
+}
+
 static void draw_synths(void)
 {
+    build_devices();
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    char head[40];
-    if (SYNTH_COUNT > 8) {
-        snprintf(head, sizeof(head), "SYNTH  %d/%d  (main encoder: more)", synth_list_first / 8 + 1,
-                 (SYNTH_COUNT + 7) / 8);
-    } else {
-        snprintf(head, sizeof(head), "SYNTH");
-    }
-    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, head, true);
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "SYNTH  (encoder: stack, button: open)", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "STEP closes", true);
-    for (int col = 0; col < 8 && synth_list_first + col < SYNTH_COUNT; col++) {
-        int i = synth_list_first + col;
+    for (int col = 0; col < device_count; col++) {
+        int i = stack_top[col], n = device_size[col], at = i - device_first[col];
         int disp = col / 4, x = (col % 4) * COLUMN_WIDTH;
         bool active = synths[i] == synth;
-        const char *label = i == synth_confirm ? "SURE?" : synths[i]->name;
-        /* Two-line boxes for all, so every name reads the same way: a name
-         * too wide for one line splits at its first space ("Plugiator" /
-         * "MiniMax"), a short one sits centred */
-        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SYNTH_BOX_H, active, true);
-        const char *sp = strchr(label, ' ');
-        if (display_text_width(&font_small, label) > COLUMN_INNER - 6 && sp) {
-            char first[24];
-            snprintf(first, sizeof(first), "%.*s", (int)(sp - label), label);
-            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + 4, &font_small, first, !active);
-            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + 14, &font_small, sp + 1, !active);
+        int layers = n < SYNTH_STACK_MAX ? n : SYNTH_STACK_MAX;
+        int front_y = SWITCH_BOX_Y + (layers - 1) * SYNTH_STACK_STEP;
+        /* Cards behind, back to front: each clears what it covers, so only
+         * its top edge shows above the next */
+        for (int k = layers - 1; k >= 0; k--) {
+            int y = front_y - k * SYNTH_STACK_STEP;
+            display_fill_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, false);
+            display_round_rect(disp, x + 1, y, COLUMN_INNER - 2, SYNTH_BOX_H, k == 0 && active, true);
+        }
+        const synth_t *s = synths[i];
+        if (i == synth_confirm) {
+            draw_card_name(disp, x, front_y, "SURE?", !active);
+        } else if (n > 1) {
+            /* the device on top, this entry below */
+            draw_centered(disp, x, COLUMN_INNER, front_y + 4, &font_small, s->device, !active);
+            draw_centered(disp, x, COLUMN_INNER, front_y + 14, &font_small, s->entry, !active);
         } else {
-            draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SYNTH_BOX_H - font_small.cap_height) / 2,
-                          &font_small, label, !active);
+            draw_card_name(disp, x, front_y, s->name, !active);
         }
         if (active) {
             draw_centered(disp, x, COLUMN_INNER, SYNTH_STATUS_CAP_Y, &font_small, "ACTIVE", true);
-        } else if (synths[i]->is_loaded && synths[i]->is_loaded()) {
+        } else if (s->is_loaded && s->is_loaded()) {
             /* e.g. the Plugiator's current plug-in: switching to it is instant */
             draw_centered(disp, x, COLUMN_INNER, SYNTH_STATUS_CAP_Y, &font_small, "LOADED", true);
+        }
+        if (n > 1) {
+            char pos[8];
+            snprintf(pos, sizeof(pos), "%d/%d", at + 1, n);
+            draw_centered(disp, x, COLUMN_INNER, SYNTH_INDEX_CAP_Y, &font_tiny, pos, true);
         }
     }
     if (synth_confirm >= 0) {
@@ -1951,6 +2023,23 @@ static void editor_encoder_impl(int i, int delta)
     }
     if (mode == MODE_SETUP) {
         setting_encoder(setup_setting_at(i), i, delta);
+        return;
+    }
+    if (mode == MODE_SYNTH) {
+        /* The stack under this encoder: one card a step */
+        if (i < device_count) {
+            encoder_acc[i] += delta;
+            int steps = encoder_acc[i] / UNITS_SETTING;
+            encoder_acc[i] -= steps * UNITS_SETTING;
+            int top = stack_top[i] + steps;
+            top = top < device_first[i] ? device_first[i] : top >= device_first[i] + device_size[i]
+                  ? device_first[i] + device_size[i] - 1 : top;
+            if (top != stack_top[i]) {
+                stack_top[i] = top;
+                synth_confirm = -1;
+                draw_synths();
+            }
+        }
         return;
     }
     if (mode == MODE_PADS) {
@@ -2167,11 +2256,7 @@ static void editor_button_impl(int bit, bool down)
         synth_confirm = -1;
         mode = mode == (ui_mode_t)menu ? MODE_EDIT : (ui_mode_t)menu;
         if (mode == MODE_SYNTH) {
-            for (int i = 0; i < SYNTH_COUNT; i++) {
-                if (synths[i] == synth) {
-                    synth_list_first = i / 8 * 8;  /* the page with the active one */
-                }
-            }
+            show_active_card();
         }
         memset(encoder_acc, 0, sizeof(encoder_acc));
         for (int d = 0; d < DISPLAY_COUNT; d++) {
@@ -2195,9 +2280,9 @@ static void editor_button_impl(int bit, bool down)
         return;
     }
     if (mode == MODE_SYNTH) {
-        int i = synth_list_first + bit - BTN_DISPLAY_1;
-        if (down && bit >= BTN_DISPLAY_1 && bit < BTN_DISPLAY_1 + 8 && i < SYNTH_COUNT) {
-            pick_synth(i);
+        int col = bit - BTN_DISPLAY_1;
+        if (down && col >= 0 && col < device_count) {
+            pick_synth(stack_top[col]);
         }
         return;
     }
@@ -2385,16 +2470,6 @@ static void editor_main_encoder_impl(int steps)
         tip_page = (tip_page + (steps > 0 ? 1 : -1) + synth->tip_count) % synth->tip_count;
         draw_tutorial();
         update_group_leds();
-        return;
-    }
-    if (mode == MODE_SYNTH) {
-        /* More than 8 synths: the list scrolls by 8 */
-        int first = synth_list_first + (steps > 0 ? 8 : -8);
-        if (first >= 0 && first < SYNTH_COUNT) {
-            synth_list_first = first;
-            synth_confirm = -1;
-            draw_synths();
-        }
         return;
     }
     if (mode != MODE_EDIT) {

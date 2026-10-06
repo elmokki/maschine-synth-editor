@@ -251,6 +251,8 @@ static const synth_tip_t tips[] = {
 
 const synth_t synth_minimax = {
     .name = "Plugiator MiniMax",
+    .device = "Plugiator",
+    .entry = "MiniMax",
     .key = "minimax",
     .patch_dir = STORAGE_ROOT "/plugiator/minimax",
     .default_patch = "099 Init",

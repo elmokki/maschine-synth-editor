@@ -740,6 +740,8 @@ static const synth_tip_t tips[] = {
 
 const synth_t synth_d110p = {
     .name = "D-110 PATCH",
+    .device = "D-110",
+    .entry = "PATCH",
     .key = "d110p",
     .patch_dir = STORAGE_ROOT "/d110p",
     .default_patch = "",

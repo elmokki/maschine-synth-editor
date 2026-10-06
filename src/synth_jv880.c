@@ -1,6 +1,6 @@
 /*
  * Roland JV-880, Patch mode: a patch = common part + four tones. Group A-H
- * are function blocks (A common, B wave, C pitch, D TVF, E TVA, F LFOs,
+ * are function blocks (A wave, B common, C pitch, D TVF, E TVA, F LFOs,
  * G controllers, H output), the transport Step arrows and Shift + Group
  * A-D pick the tones being edited (several at once, like the D-110's
  * partials); each block's seldom used parameters are on its last pages.
@@ -35,7 +35,6 @@ static const char *TAG = "jv880";
 #define TONE_LEN JV880_PATCH_TONE_LEN
 #define PATCH_LEN JV880_PATCH_LEN
 #define BLOCKS 5  /* block 0 = common, 1-4 = tones */
-#define WAVE_NAME_LEN 16
 #define WAVE_UNITS 13  /* encoder counter units per wave number step (others 10-80); fast turns accelerate */
 #define TONE_GAP 128  /* tones sit 01 00 apart: 128 addresses */
 
@@ -247,8 +246,8 @@ static const jv_param_t params[PARAM_COUNT] = {
 
 #define _ SYNTH_NONE
 enum {
-    PG_PATCH, PG_PORTA, PG_CHORUS,
     PG_WAVE,
+    PG_PATCH, PG_PORTA, PG_CHORUS,
     PG_PITCH, PG_PENV, PG_PENV_VELO,
     PG_TVF, PG_TVF_ENV, PG_TVF_VELO,
     PG_TVA, PG_TVA_ENV, PG_TVA_SCALE,
@@ -258,19 +257,19 @@ enum {
 };
 #define NO_SW {_, _, _, _, _, _, _, _}
 static const synth_page_t pages[] = {
-    /* A COMMON */
-    [PG_PATCH] = {0, "PATCH", {P_LEVEL, P_PAN, P_ANALOG, P_BEND_DN, P_BEND_UP, _, _, _},
+    /* A WAVE: the most used, so first */
+    [PG_WAVE] = {0, "WAVE", {P_GROUP, P_WAVE, P_FXM_DEPTH, P_VEL_LO, P_VEL_HI, _, _, _},
+                 {P_TONE_SW, _, P_FXM_SW, _, _, P_VOL_SW, P_HOLD_SW, _}},
+    /* B COMMON */
+    [PG_PATCH] = {1, "PATCH", {P_LEVEL, P_PAN, P_ANALOG, P_BEND_DN, P_BEND_UP, _, _, _},
                   {_, _, _, _, _, P_VELO_SW, _, _}},
     /* Key assign and portamento, then the reverb: eight knobs */
-    [PG_PORTA] = {0, "PORTA / REVERB",
+    [PG_PORTA] = {1, "PORTA / REVERB",
                   {P_KEY_ASSIGN, P_PORTA_MODE, P_PORTA_TYPE, P_PORTA_TIME, P_REV_TYPE, P_REV_LEVEL, P_REV_TIME,
                    P_DELAY_FB},
                   {P_SOLO_LEG, P_PORTA_SW, _, _, _, _, _, _}},
-    [PG_CHORUS] = {0, "CHORUS", {P_CHO_TYPE, P_CHO_LEVEL, P_CHO_DEPTH, P_CHO_RATE, P_CHO_FB, P_CHO_OUT, _, _},
+    [PG_CHORUS] = {1, "CHORUS", {P_CHO_TYPE, P_CHO_LEVEL, P_CHO_DEPTH, P_CHO_RATE, P_CHO_FB, P_CHO_OUT, _, _},
                    NO_SW},
-    /* B WAVE */
-    [PG_WAVE] = {1, "WAVE", {P_GROUP, P_WAVE, P_FXM_DEPTH, P_VEL_LO, P_VEL_HI, _, _, _},
-                 {P_TONE_SW, _, P_FXM_SW, _, _, P_VOL_SW, P_HOLD_SW, _}},
     /* C PITCH, D TVF, E TVA: the same three-page shape, so the page stays */
     [PG_PITCH] = {2, "PITCH", {P_COARSE, P_FINE, P_PKF, P_RANDOM, P_PE_DEPTH, _, _, _}, NO_SW, 1},
     [PG_PENV] = {2, "PITCH ENV", {P_PT1, P_PL1, P_PT2, P_PL2, P_PT3, P_PL3, P_PT4, P_PL4}, NO_SW, 1},
@@ -330,19 +329,10 @@ static const synth_setting_t settings[] = {
     [SETTING_VOLUME_JV] = {"VOLUME", SET_NUMBER, 0, 127, 100},  /* not on Setup: Volume button */
 };
 
-/* The SR-JV80 series, shortened to fit under the setting (12 characters);
- * the CARD setting is an index here, board numbers 97-99 follow 19 */
-static const char *const card_names[] = {
-    "NO BOARD", "Pop", "Orchestral", "Piano", "Vintage Syn", "World", "Dance", "Super Sound",
-    "60s/70s Keys", "Session", "Bass & Drum", "Techno", "HipHop", "Vocal", "Asia", "Special FX",
-    "Orchestral2", "Country", "Latin", "House", "97 Exp. III", "98 Exp. II", "99 Exp. I",
-};
-
 /* The board's own number: 1-19, or 97-99 */
 static int card_number(void)
 {
-    int i = synth_setting(SETTING_CARD);
-    return i <= 19 ? i : 97 + (i - 20);
+    return jv880_card_number(synth_setting(SETTING_CARD));
 }
 
 static void setting_note(int setting, char *buf, size_t len)
@@ -351,7 +341,7 @@ static void setting_note(int setting, char *buf, size_t len)
         static const char *const what[] = {"INT: BOARD", "INT: OWN", "PRESETS A+B"};
         snprintf(buf, len, "%s", what[synth_setting(SETTING_IMPORT) % 3]);
     } else if (setting == SETTING_CARD) {
-        snprintf(buf, len, "%s", card_names[synth_setting(SETTING_CARD) % 23]);
+        snprintf(buf, len, "%s", jv880_card_names[synth_setting(SETTING_CARD) % 23]);
     }
 }
 
@@ -1042,7 +1032,6 @@ static bool param_reset(int p)
 
 #define BAND_Y 14
 #define BAND_H 38
-#define EG_TEXT_CAP_Y 55
 
 /* Envelope columns: "T1 50" at the bottom, the envelope gets the rest */
 static bool column_draw(int p, int disp, int x)
@@ -1050,60 +1039,10 @@ static bool column_draw(int p, int disp, int x)
     if (params[p].kind != K_EG) {
         return false;
     }
-    char text[16], val[8];
+    char val[8];
     param_format(p, val, sizeof(val));
-    snprintf(text, sizeof(text), "%s %s", params[p].name, val);
-    int tw = display_text_width(&font_small, text);
-    display_text(disp, x + (63 - tw) / 2, EG_TEXT_CAP_Y - font_small.cap_top, &font_small, text, true);
+    jv880_draw_eg_text(disp, x, params[p].name, val);
     return true;
-}
-
-/* An envelope over both displays: points at levels lv[] (0-100), reached
- * after times tm[] (0-127, wider the slower); a held sustain segment after
- * point sus_at; centre line for the pitch envelope */
-static void draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred)
-{
-    display_fill_rect(disp, 0, BAND_Y, 256, BAND_H, false);
-    if (centred) {
-        for (int x = 0; x < 255; x += 4) {
-            display_pixel(disp, x, BAND_Y + BAND_H / 2, true);
-        }
-    }
-    const int sus_w = 40;
-    int total = sus_w;
-    for (int i = 1; i < n; i++) {
-        total += 6 + tm[i];
-    }
-    float scale = 505.0f / total;
-    float x = 2;
-    for (int i = 1; i < n; i++) {
-        float w = (6 + tm[i]) * scale;
-        int x0 = (int)x, x1 = (int)(x + w);
-        int y0 = BAND_Y + BAND_H - 1 - lv[i - 1] * (BAND_H - 1) / 100;
-        int y1 = BAND_Y + BAND_H - 1 - lv[i] * (BAND_H - 1) / 100;
-        /* only the part of the line on this display */
-        for (int px = x0; px <= x1; px++) {
-            if (px / 256 != disp || px % 256 > 254) {
-                continue;
-            }
-            int py = x1 > x0 ? y0 + (y1 - y0) * (px - x0) / (x1 - x0) : y1;
-            int pyn = x1 > x0 && px < x1 ? y0 + (y1 - y0) * (px + 1 - x0) / (x1 - x0) : py;
-            int a = py < pyn ? py : pyn, b = py < pyn ? pyn : py;
-            for (int yy = a; yy <= b; yy++) {
-                display_pixel(disp, px % 256, yy, true);
-            }
-        }
-        x += w;
-        if (i == sus_at) {
-            int xs = (int)x, xe = (int)(x + sus_w * scale);
-            for (int px = xs; px <= xe; px++) {
-                if (px / 256 == disp && px % 256 < 255) {
-                    display_pixel(disp, px % 256, y1, true);
-                }
-            }
-            x += sus_w * scale;
-        }
-    }
 }
 
 static int pv(int p) { return raw_value(p, first_tone()); }
@@ -1126,152 +1065,20 @@ static void page_draw(int pg, int disp)
             lv[i + 1] = (pv(first + 1 + 2 * i) - 64) * 50 / 63 + 50;
         }
         lv[0] = 50;
-        draw_env(disp, lv, tm, 5, 3, true);
+        jv880_draw_env(disp, lv, tm, 5, 3, true);
     } else {
         for (int i = 0; i < 3; i++) {
             lv[i + 1] = pv(first + 1 + 2 * i) * 100 / 127;
         }
         lv[0] = 0;
         lv[4] = pg == PG_TVF_ENV ? pv(P_FL4) * 100 / 127 : 0;
-        draw_env(disp, lv, tm, 5, 3, false);
+        jv880_draw_env(disp, lv, tm, 5, 3, false);
     }
 }
 
-/* The name list in memory (255 lines of 16 characters + newline): reading
- * a file while a knob is turned stalls the editor long enough to lose count
- * of the knob. list 0 = the unit's own, else the board's number. */
-#define WAVE_LINE (WAVE_NAME_LEN + 1)
-static char wave_lines[255 * WAVE_LINE];
-static int wave_list_loaded = -1, wave_list_count;
-static bool wave_list_ok;
-
-static bool wave_list(int list)
-{
-    if (list == wave_list_loaded) {
-        return wave_list_ok;
-    }
-    wave_list_loaded = list;
-    wave_list_ok = false;
-    wave_list_count = 255;
-    char path[40];
-    if (list == 0) {
-        snprintf(path, sizeof(path), COMMON_DIR "/waves/int");
-    } else {
-        snprintf(path, sizeof(path), COMMON_DIR "/waves/card%02d", list);
-    }
-    FILE *f = fopen(path, "rb");
-    if (f) {
-        wave_list_ok = fread(wave_lines, 1, sizeof(wave_lines), f) == sizeof(wave_lines);
-        fclose(f);
-    }
-    if (wave_list_ok) {
-        for (int n = 254; n >= 0; n--) {
-            const char *line = &wave_lines[n * WAVE_LINE];
-            int i = 0;
-            while (i < WAVE_NAME_LEN && line[i] == ' ') {
-                i++;
-            }
-            if (i < WAVE_NAME_LEN) {
-                wave_list_count = n + 1;
-                break;
-            }
-        }
-    }
-    return wave_list_ok;
-}
-
-/* How many waves the group has: the unit's own 129, a board's as many as
- * its list names (the unit ignores numbers past that), else 255 */
-static int wave_count(int group)
-{
-    if (group == 0) {
-        return 129;
-    }
-    int card = card_number();
-    if (group != 1 || card <= 0) {
-        return 255;
-    }
-    return wave_list(card) ? wave_list_count : 255;
-}
-
-/* The wave's name from its list, when there is one */
-static bool wave_name(int group, int number, char *buf, size_t len)
-{
-    int card = card_number();
-    int list = group == 0 ? 0 : group == 1 && card > 0 ? card : -1;
-    if (list < 0 || number < 0 || number > 254 || !wave_list(list)) {
-        return false;
-    }
-    char name[WAVE_NAME_LEN + 1];
-    memcpy(name, &wave_lines[number * WAVE_LINE], WAVE_NAME_LEN);
-    name[WAVE_NAME_LEN] = 0;
-    for (int i = WAVE_NAME_LEN - 1; i >= 0 && name[i] == ' '; i--) {
-        name[i] = 0;
-    }
-    snprintf(buf, len, "%s", name);
-    return name[0] != 0;
-}
-
-/* Does the wave exist: inside the group, and named in its list (when it
- * has one - the lists have no gaps to speak of, so this mostly just
- * checks the count) */
-static bool wave_exists(int group, int number)
-{
-    if (number < 0 || number >= wave_count(group)) {
-        return false;
-    }
-    char name[WAVE_NAME_LEN + 1];
-    int card = card_number();
-    bool listed = group == 0 || (group == 1 && card > 0);
-    return !listed || !wave_list(group == 0 ? 0 : card) || wave_name(group, number, name, sizeof(name));
-}
-
-/* The wave in the group nearest to number (the lower one on a tie) */
-static int wave_nearest(int group, int number)
-{
-    int last = wave_count(group) - 1;
-    number = number < 0 ? 0 : number > last ? last : number;
-    for (int d = 0; d <= last; d++) {
-        if (number - d >= 0 && wave_exists(group, number - d)) {
-            return number - d;
-        }
-        if (number + d <= last && wave_exists(group, number + d)) {
-            return number + d;
-        }
-    }
-    return number;
-}
-
-/* Text with its caps starting at cap_y, centred in the column */
-static void draw_cap_centred(int disp, int x, int w, int cap_y, const font_t *font, const char *s)
-{
-    display_text(disp, x + (w - display_text_width(font, s)) / 2, cap_y - font->cap_top, font, s, true);
-}
-
-/* A name that fits the column in the largest font that allows, or on two
- * lines of the small one, split at a space near the middle */
-static void draw_wave_name(int disp, int x, int w, int cap_y, const char *name)
-{
-    int limit = w - 2;
-    if (display_text_width(&font_small, name) <= limit) {
-        draw_cap_centred(disp, x, w, cap_y, &font_small, name);
-    } else if (display_text_width(&font_tiny, name) <= limit) {
-        draw_cap_centred(disp, x, w, cap_y + 1, &font_tiny, name);
-    } else {
-        int len = strlen(name), cut = len / 2, best = 99;
-        for (int i = 1; i < len; i++) {
-            if (name[i] == ' ' && abs(len - 2 * i) < best) {
-                best = abs(len - 2 * i);
-                cut = i;
-            }
-        }
-        char top[WAVE_NAME_LEN + 1], bottom[WAVE_NAME_LEN + 1];
-        snprintf(top, sizeof(top), "%.*s", cut, name);
-        snprintf(bottom, sizeof(bottom), "%s", name + cut + (name[cut] == ' '));
-        draw_cap_centred(disp, x, w, cap_y - 2, &font_tiny, top);  /* caps 51-56 */
-        draw_cap_centred(disp, x, w, cap_y + 5, &font_tiny, bottom);  /* caps 58-63 */
-    }
-}
+static int wave_count(int group) { return jv880_wave_count(group, card_number()); }
+static bool wave_exists(int group, int number) { return jv880_wave_exists(group, number, card_number()); }
+static int wave_nearest(int group, int number) { return jv880_wave_nearest(group, number, card_number()); }
 
 /* The wave number, and its name below when there is one; never a bar */
 static int param_draw(int p, int disp, int x, int y, int w, int h)
@@ -1281,12 +1088,9 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
         return SYNTH_DRAW_NONE;
     }
     int t = first_tone();
-    char num[8], name[WAVE_NAME_LEN + 1];
+    char num[8];
     param_format(p, num, sizeof(num));
-    draw_cap_centred(disp, x, w, y + 1, &font_medium, num);
-    if (wave_name(raw_value(P_GROUP, t), raw_value(P_WAVE, t), name, sizeof(name))) {
-        draw_wave_name(disp, x, w, y + 15, name);
-    }
+    jv880_draw_wave(disp, x, y, w, num, raw_value(P_GROUP, t), raw_value(P_WAVE, t), card_number());
     return SYNTH_DRAW_FULL;
 }
 
@@ -1437,14 +1241,14 @@ static int unknown_count(void)
 /* Tutorial (Shift + Control): what's special here */
 static const synth_tip_t tips[] = {
     {"JV-880 PATCH", {"Patch mode: one patch = common part +", "four tones. Group A-H are blocks:",
-                      "A COMMON  B WAVE  C PITCH  D TVF", "E TVA  F LFOS  G CONTROLLERS  H OUTPUT",
+                      "A WAVE  B COMMON  C PITCH  D TVF", "E TVA  F LFOS  G CONTROLLERS  H OUTPUT",
                       "Seldom used parameters: last pages.", "Set the unit's patch receive channel",
                       "as PATCH CH (Setup)."},
      {BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2, BTN_GROUP_A + 3, BTN_GROUP_A + 4, BTN_GROUP_A + 5,
       BTN_GROUP_A + 6, BTN_GROUP_A + 7}},
     {"TONES", {"STEP arrows: the next tone.", "SHIFT + A-D: pick several - a knob then",
                "moves them all alike (differences stay).", "While SHIFT is held, A-D show the pick;",
-               "the header shows it too (T13).", "TONE on B WAVE mutes a tone."},
+               "the header shows it too (T13).", "TONE on A WAVE mutes a tone."},
      {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_SHIFT, BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2,
       BTN_GROUP_A + 3, -1}},
     {"READ, WRITE", {"AUTO: read the patch from the JV-880", "(its MIDI OUT to the Maschine).",
@@ -1461,6 +1265,8 @@ static const synth_tip_t tips[] = {
 
 const synth_t synth_jv880 = {
     .name = "JV-880",
+    .device = "JV-880",
+    .entry = "PATCH",
     .key = "jv880",
     .patch_dir = STORAGE_ROOT "/jv880",
     .default_patch = "000 Init",

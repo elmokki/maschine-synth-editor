@@ -73,7 +73,13 @@ typedef struct {
 } synth_tip_t;
 
 typedef struct {
-    const char *name;           /* shown in the UI, e.g. "MiniMax" */
+    const char *name;           /* shown in the UI, e.g. "Plugiator MiniMax" */
+    /* Optional: the device this entry belongs to ("D-110") and the entry's
+     * own short name on its card ("RHYTHM"). The synth list stacks the
+     * entries of a device (consecutive in synths[]) as one card stack; no
+     * device = a stack of one, named `name`. */
+    const char *device;
+    const char *entry;
     const char *key;            /* file names: settings, remembered patch */
     const char *patch_dir;      /* patch library directory on LittleFS */
     /* Optional: the library directory right now, e.g. one per expansion
@@ -218,6 +224,8 @@ typedef struct {
     const char *unit_store_label;                 /* e.g. "TO D-110" */
     int unit_store_slots;
     void (*unit_slot_name)(int slot, char *buf, size_t len);
+    /* Optional: a few small words under the slot, e.g. what it holds now (up to 12 characters) */
+    void (*unit_slot_info)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
 
     /* Optional: the tutorial's pages (Shift + Control) */
@@ -254,3 +262,5 @@ extern const synth_t synth_d110;
 extern const synth_t synth_d110p;
 extern const synth_t synth_d110r;
 extern const synth_t synth_jv880;
+extern const synth_t synth_jv880r;
+extern const synth_t synth_jv880p;
