@@ -11,10 +11,10 @@
 #include "synth.h"
 
 /* Main panel of the plug-in GUI first, in signal-chain order (OSC -> MIX
- * -> FILTER -> LOUDNESS), then its global controllers, then the Add panel's
- * extras. Every switch sits above the knob it belongs with (the Decay
+ * -> FILTER -> LOUDNESS, with the global controllers tune and glide), then
+ * the Add panel's extras, then chorus and delay, each its own Group. Every switch sits above the knob it belongs with (the Decay
  * switch shapes the envelope release, so it's above A DECAY rather than in
- * the controllers section where the panel has it), and unrelated
+ * the controllers where the panel has it), and unrelated
  * parameters don't share a page just to fill columns. MOD MIX (the
  * OSC3/noise balance of the modulation source) sits with the mixer, next
  * to those two sources. The mixer's 4th channel is the output fed back
@@ -50,18 +50,17 @@ static const synth_page_t pages[] = {
      {MINIMAX_CUTOFF, MINIMAX_EMPHASIS, MINIMAX_CONTOUR, VP_KEYTRACK,
       MINIMAX_F_ATTACK, MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_F_VELO},
      {MINIMAX_FILT_MOD, _, _, _, _, _, _, _}},
+    /* The panel's controllers (tune, glide) share the page with the
+     * loudness: glide's switch sits above it */
     {3, "LOUDNESS",
      {MINIMAX_A_ATTACK, MINIMAX_A_DECAY, MINIMAX_A_SUSTAIN, MINIMAX_A_VELO,
-      MINIMAX_VOLUME, _, _, _},
-     {_, MINIMAX_DECAY_SW, _, _, MINIMAX_BOOST, _, _, _}},
-    {4, "CONTROLLERS",
-     {MINIMAX_TUNE, MINIMAX_GLIDE, _, _, _, _, _, _},
-     {_, MINIMAX_GLIDE_SW, _, _, _, _, _, _}},
-    {5, "ADDITIONAL",
+      MINIMAX_VOLUME, MINIMAX_TUNE, MINIMAX_GLIDE, _},
+     {_, MINIMAX_DECAY_SW, _, _, MINIMAX_BOOST, _, MINIMAX_GLIDE_SW, _}},
+    {4, "ADDITIONAL",
      {MINIMAX_BEND, MINIMAX_MW_INT, MINIMAX_MW_OFFS, MINIMAX_MOD_WHL,
       MINIMAX_CV_OSC, MINIMAX_CV_FILT, MINIMAX_CV_LOUD, _},
      {MINIMAX_LO_NOTE, MINIMAX_RETRIG, MINIMAX_SINGLE, _, _, _, _, _}},
-    {6, "CHORUS",
+    {5, "CHORUS",
      {MINIMAX_CH_RATE, MINIMAX_CH_DEPTH, MINIMAX_CH_PHASE, MINIMAX_CH_FDBK,
       MINIMAX_CH_MIX, _, _, _},
      {MINIMAX_FLANGER, _, _, _, _, _, _, MINIMAX_FX_ON}},

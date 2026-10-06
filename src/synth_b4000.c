@@ -14,7 +14,7 @@
  * page 2 = 1' and the manual's own settings, so Upper 2 <-> Lower 2 line
  * up), then the pedal, then the panel's sound sections, the rotary
  * speaker (horn | bass), the rest of the organ model, and the effects
- * (same as every plug-in). Every switch sits above the knob it belongs
+ * (chorus and delay, each its own Group, same as every plug-in). Every switch sits above the knob it belongs
  * with. */
 #define _ SYNTH_NONE
 static const synth_page_t pages[] = {
@@ -58,11 +58,11 @@ static const synth_page_t pages[] = {
      {B4000_CH_RATE, B4000_CH_DEPTH, B4000_CH_PHASE, B4000_CH_FDBK,
       B4000_CH_MIX, _, _, _},
      {B4000_FLANGER, _, _, _, _, _, _, B4000_FX_ON}},
-    {6, "DELAY",
+    {7, "DELAY",
      {B4000_DLY_T_L, B4000_DAMP_L, B4000_LEVEL_L, B4000_DLY_FDBK,
       B4000_DLY_T_R, B4000_DAMP_R, B4000_LEVEL_R, B4000_DLY_MIX},
      {_, _, _, B4000_CROSS, _, _, _, B4000_FX_ON}},
-    {6, "DELAY SYNC",
+    {7, "DELAY SYNC",
      {B4000_NOTE_L, B4000_NOTE_R, B4000_BPM, _, _, _, _, _},
      {B4000_BPM_L, B4000_BPM_R, _, _, _, _, _, _}},
 };

@@ -1,7 +1,7 @@
 /*
  * Roland JV-880, Patch mode: a patch = common part + four tones. Group A-H
- * are function blocks (A wave, B common, C pitch, D TVF, E TVA, F LFOs,
- * G controllers, H output), the transport Step arrows and Shift + Group
+ * are function blocks (A wave, B common, C pitch, D TVF, E TVA with the
+ * output sends, F LFO 1, G LFO 2, H controllers), the transport Step arrows and Shift + Group
  * A-D pick the tones being edited (several at once, like the D-110's
  * partials); each block's seldom used parameters are on its last pages.
  *
@@ -163,7 +163,7 @@ static const jv_param_t params[PARAM_COUNT] = {
     [P_L1_SYNC] = TP("LFO SYNC", 0x24, K_SWITCH, 0, 1, 0, 0),
     [P_L1_RATE] = TP("LFO RATE", 0x25, K_NUM, 0, 127, 0, 0),
     [P_L1_DELAY] = TW("LFO DELAY", 0x26, K_DELAY, 0, 128, 0, 0),
-    [P_L1_FADE_POL] = TP("FADE", 0x28, K_LIST, 0, 1, 0, fade_labels),
+    [P_L1_FADE_POL] = TP("FADE OUT", 0x28, K_LIST, 0, 1, 0, fade_labels),
     [P_L1_FADE_TIME] = TP("FADE TIME", 0x29, K_NUM, 0, 127, 0, 0),
     [P_L1_PITCH] = TP("PITCH DEPTH", 0x2A, K_SIGNED10, 4, 124, 64, 0),
     [P_L1_TVF] = TP("TVF DEPTH", 0x2B, K_SIGNED, 1, 127, 64, 0),
@@ -173,7 +173,7 @@ static const jv_param_t params[PARAM_COUNT] = {
     [P_L2_SYNC] = TP("LFO SYNC", 0x2F, K_SWITCH, 0, 1, 0, 0),
     [P_L2_RATE] = TP("LFO RATE", 0x30, K_NUM, 0, 127, 0, 0),
     [P_L2_DELAY] = TW("LFO DELAY", 0x31, K_DELAY, 0, 128, 0, 0),
-    [P_L2_FADE_POL] = TP("FADE", 0x33, K_LIST, 0, 1, 0, fade_labels),
+    [P_L2_FADE_POL] = TP("FADE OUT", 0x33, K_LIST, 0, 1, 0, fade_labels),
     [P_L2_FADE_TIME] = TP("FADE TIME", 0x34, K_NUM, 0, 127, 0, 0),
     [P_L2_PITCH] = TP("PITCH DEPTH", 0x35, K_SIGNED10, 4, 124, 64, 0),
     [P_L2_TVF] = TP("TVF DEPTH", 0x36, K_SIGNED, 1, 127, 64, 0),
@@ -251,9 +251,8 @@ enum {
     PG_PITCH, PG_PENV, PG_PENV_VELO,
     PG_TVF, PG_TVF_ENV, PG_TVF_VELO,
     PG_TVA, PG_TVA_ENV, PG_TVA_SCALE,
-    PG_LFO1, PG_LFO2, PG_LFO_MORE,
+    PG_LFO1, PG_LFO2,
     PG_MOD, PG_AFTER, PG_EXPR,
-    PG_OUTPUT,
 };
 #define NO_SW {_, _, _, _, _, _, _, _}
 static const synth_page_t pages[] = {
@@ -277,27 +276,27 @@ static const synth_page_t pages[] = {
     [PG_TVF] = {3, "TVF", {P_F_MODE, P_CUTOFF, P_RESO, P_RESO_MODE, P_F_DEPTH, P_FKF, _, _}, NO_SW, 1},
     [PG_TVF_ENV] = {3, "TVF ENV", {P_FT1, P_FL1, P_FT2, P_FL2, P_FT3, P_FL3, P_FT4, P_FL4}, NO_SW, 1},
     [PG_TVF_VELO] = {3, "TVF ENV VELO", {P_F_CURVE, P_F_VELO, P_F_ON, P_F_OFF, P_F_TKF, _, _, _}, NO_SW, 1},
-    [PG_TVA] = {4, "TVA", {P_A_LEVEL, P_A_PAN, P_A_DMODE, P_A_DTIME, _, _, _, _}, NO_SW, 1},
+    /* TVA and the output sends it feeds: the level chain on one page */
+    [PG_TVA] = {4, "TVA / OUTPUT", {P_A_LEVEL, P_A_PAN, P_A_DMODE, P_A_DTIME, P_DRY, P_REV_SEND, P_CHO_SEND, P_OUT_SEL},
+                NO_SW, 1},
     [PG_TVA_ENV] = {4, "TVA ENV", {P_AT1, P_AL1, P_AT2, P_AL2, P_AT3, P_AL3, P_AT4, _}, NO_SW, 1},
     [PG_TVA_SCALE] = {4, "TVA SCALING", {P_A_KF, P_A_PAN_KF, P_A_CURVE, P_A_VELO, P_A_ON, P_A_OFF, P_A_TKF, _},
                       NO_SW, 1},
-    /* F LFOS */
-    [PG_LFO1] = {5, "LFO 1", {P_L1_FORM, P_L1_RATE, P_L1_PITCH, P_L1_TVF, P_L1_TVA, P_L1_DELAY, _, _},
-                 {_, P_L1_SYNC, _, _, _, _, _, _}},
-    [PG_LFO2] = {5, "LFO 2", {P_L2_FORM, P_L2_RATE, P_L2_PITCH, P_L2_TVF, P_L2_TVA, P_L2_DELAY, _, _},
-                 {_, P_L2_SYNC, _, _, _, _, _, _}},
-    [PG_LFO_MORE] = {5, "LFO OFFSET / FADE",
-                     {P_L1_OFFSET, P_L1_FADE_POL, P_L1_FADE_TIME, P_L2_OFFSET, P_L2_FADE_POL, P_L2_FADE_TIME, _, _},
-                     NO_SW},
-    /* G CONTROLLERS */
-    [PG_MOD] = {6, "MODULATION", {P_MOD, P_MOD + 1, P_MOD + 2, P_MOD + 3, P_MOD + 4, P_MOD + 5, P_MOD + 6, P_MOD + 7},
+    /* F LFO 1, G LFO 2: everything of one on a page (fade direction is a
+     * switch, ON = OUT) */
+    [PG_LFO1] = {5, "LFO 1", {P_L1_FORM, P_L1_RATE, P_L1_PITCH, P_L1_TVF, P_L1_TVA, P_L1_DELAY, P_L1_OFFSET,
+                              P_L1_FADE_TIME},
+                 {_, P_L1_SYNC, _, _, _, _, _, P_L1_FADE_POL}},
+    [PG_LFO2] = {6, "LFO 2", {P_L2_FORM, P_L2_RATE, P_L2_PITCH, P_L2_TVF, P_L2_TVA, P_L2_DELAY, P_L2_OFFSET,
+                              P_L2_FADE_TIME},
+                 {_, P_L2_SYNC, _, _, _, _, _, P_L2_FADE_POL}},
+    /* H CONTROLLERS */
+    [PG_MOD] = {7, "MODULATION", {P_MOD, P_MOD + 1, P_MOD + 2, P_MOD + 3, P_MOD + 4, P_MOD + 5, P_MOD + 6, P_MOD + 7},
                 NO_SW},
-    [PG_AFTER] = {6, "AFTERTOUCH", {P_AFT, P_AFT + 1, P_AFT + 2, P_AFT + 3, P_AFT + 4, P_AFT + 5, P_AFT + 6, P_AFT + 7},
+    [PG_AFTER] = {7, "AFTERTOUCH", {P_AFT, P_AFT + 1, P_AFT + 2, P_AFT + 3, P_AFT + 4, P_AFT + 5, P_AFT + 6, P_AFT + 7},
                   NO_SW},
-    [PG_EXPR] = {6, "EXPRESSION", {P_EXPR, P_EXPR + 1, P_EXPR + 2, P_EXPR + 3, P_EXPR + 4, P_EXPR + 5, P_EXPR + 6, P_EXPR + 7},
+    [PG_EXPR] = {7, "EXPRESSION", {P_EXPR, P_EXPR + 1, P_EXPR + 2, P_EXPR + 3, P_EXPR + 4, P_EXPR + 5, P_EXPR + 6, P_EXPR + 7},
                  NO_SW},
-    /* H OUTPUT */
-    [PG_OUTPUT] = {7, "OUTPUT", {P_DRY, P_REV_SEND, P_CHO_SEND, P_OUT_SEL, _, _, _, _}, NO_SW},
 };
 #undef _
 
@@ -1241,7 +1240,7 @@ static int unknown_count(void)
 /* Tutorial (Shift + Control): what's special here */
 static const synth_tip_t tips[] = {
     {"JV-880 PATCH", {"Patch mode: one patch = common part +", "four tones. Group A-H are blocks:",
-                      "A WAVE  B COMMON  C PITCH  D TVF", "E TVA  F LFOS  G CONTROLLERS  H OUTPUT",
+                      "A WAVE  B COMMON  C PITCH  D TVF", "E TVA+OUTPUT  F LFO1  G LFO2  H CTRLS",
                       "Seldom used parameters: last pages.", "Set the unit's patch receive channel",
                       "as PATCH CH (Setup)."},
      {BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2, BTN_GROUP_A + 3, BTN_GROUP_A + 4, BTN_GROUP_A + 5,

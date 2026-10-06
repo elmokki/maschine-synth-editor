@@ -5,8 +5,8 @@
  * plays it as the performance's part 8, so this entry puts the unit into
  * Performance mode.
  *
- * Group A-F: A WAVE (wave, tuning, mute group), B PITCH ENV, C TVF, D TVA,
- * E OUTPUT, F KIT (the waves of 8 keys at once, one per knob). The key
+ * Group A-E: A WAVE (wave, tuning, mute group), B PITCH ENV, C TVF, D TVA
+ * with the output sends, E KIT (the waves of 8 keys at once, one per knob). The key
  * edited is the one last hit on the pads, or stepped to with the transport
  * arrows; each block's seldom used parameters are on its second page.
  *
@@ -147,7 +147,7 @@ static const jv_param_t params[PARAM_COUNT] = {
 /* ---- pages ---- */
 
 #define _ SYNTH_NONE
-enum { PG_WAVE, PG_PITCH, PG_PENV, PG_TVF, PG_TVF_ENV, PG_TVA, PG_TVA_ENV, PG_OUTPUT, PG_KIT };
+enum { PG_WAVE, PG_PITCH, PG_PENV, PG_TVF, PG_TVF_ENV, PG_TVA, PG_TVA_ENV, PG_KIT };
 #define NO_SW {_, _, _, _, _, _, _, _}
 static const synth_page_t pages[] = {
     /* A WAVE: the sound and its tuning; the switches over the knobs they belong to */
@@ -158,12 +158,12 @@ static const synth_page_t pages[] = {
     [PG_PENV] = {1, "PITCH ENV", {P_PT1, P_PL1, P_PT2, P_PL2, P_PT3, P_PL3, P_PT4, P_PL4}, NO_SW, 1},
     [PG_TVF] = {2, "TVF", {P_F_MODE, P_CUTOFF, P_RESO, P_RESO_MODE, P_F_DEPTH, P_F_VELO, P_F_TIME, _}, NO_SW, 1},
     [PG_TVF_ENV] = {2, "TVF ENV", {P_FT1, P_FL1, P_FT2, P_FL2, P_FT3, P_FL3, P_FT4, P_FL4}, NO_SW, 1},
-    [PG_TVA] = {3, "TVA", {P_LEVEL, P_PAN, P_A_VELO, P_A_TIME, _, _, _, _}, NO_SW, 1},
+    /* TVA and the output sends it feeds: the level chain on one page */
+    [PG_TVA] = {3, "TVA / OUTPUT", {P_LEVEL, P_PAN, P_A_VELO, P_A_TIME, P_DRY, P_REV_SEND, P_CHO_SEND, P_OUT_SEL},
+                NO_SW, 1},
     [PG_TVA_ENV] = {3, "TVA ENV", {P_AT1, P_AL1, P_AT2, P_AL2, P_AT3, P_AL3, P_AT4, _}, NO_SW, 1},
-    /* E OUTPUT */
-    [PG_OUTPUT] = {4, "OUTPUT", {P_DRY, P_REV_SEND, P_CHO_SEND, P_OUT_SEL, _, _, _, _}, NO_SW},
-    /* F KIT: 8 keys from the selected one, the way the pads go (Pad Mode scale) */
-    [PG_KIT] = {5, "KIT", {P_KIT0, P_KIT0 + 1, P_KIT0 + 2, P_KIT0 + 3, P_KIT0 + 4, P_KIT0 + 5, P_KIT0 + 6, P_KIT7},
+    /* E KIT: 8 keys from the selected one, the way the pads go (Pad Mode scale) */
+    [PG_KIT] = {4, "KIT", {P_KIT0, P_KIT0 + 1, P_KIT0 + 2, P_KIT0 + 3, P_KIT0 + 4, P_KIT0 + 5, P_KIT0 + 6, P_KIT7},
                 NO_SW},
 };
 #undef _
@@ -786,10 +786,10 @@ static void unit_store(int slot, const char *name)
 static const synth_tip_t tips[] = {
     {"JV-880 RHYTHM", {"The Rhythm Setup: 61 keys C2-C7, each", "with its own complete tone. Hit a pad:",
                        "that key is edited. STEP arrows: the", "next key along the pads' scale.",
-                       "A WAVE  B PITCH ENV  C TVF  D TVA", "E OUTPUT  F KIT: 8 keys' waves at once.",
+                       "A WAVE  B PITCH ENV  C TVF  D TVA", "(+ output)  E KIT: 8 keys' waves at once.",
                        "Second pages: envelopes."},
      {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_PAD_MODE, BTN_GROUP_A, BTN_GROUP_A + 1, BTN_GROUP_A + 2,
-      BTN_GROUP_A + 5, -1}},
+      BTN_GROUP_A + 4, -1}},
     {"READ, WRITE", {"The unit plays the kit as part 8 of the", "performance: selecting this synth sets",
                      "Performance mode; part 8 needs its Rx", "switch on. AUTO reads the kit and part 8's",
                      "channel (MIDI OUT to the Maschine).", "REC > TO JV-880 (twice): write the kit", "into the internal Rhythm Setup."},
