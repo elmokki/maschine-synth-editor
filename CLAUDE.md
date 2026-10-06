@@ -55,9 +55,9 @@ Rx channel = PATCH CH, Program change / Bank select Rx ON for the preset import,
 Editor feel (all synths): held arrows repeat (faster after 2 s), Shift + main encoder browses 8 patches a detent,
 wide-range parameter knobs accelerate when turned fast (`accelerated()` in editor.c), the header gives the patch name
 the room while browsing. JV-880 PATCH is done; the user tests on the real unit.
-JV-880 RHYTHM written (2026-10-06, flashed + `jv880r` merged into LFS, NOT tested on the unit, not committed): Group A WAVE, B PITCH ENV, C TVF, D TVA, E OUTPUT, F KIT; sets Performance mode, reads part 8's Rx channel.
-JV-880 PERF written (2026-10-06, flashed + `jv880p` merged, NOT tested on the unit, not committed): A PART (all of a part's settings on one page), B COMMON (reverb, chorus); part 1-8 = Shift + Group A-H or Step arrows; Internal patch and performance names read with Auto; Setup IMPORT saves I01-I16 as library 001-016 (own from 100); REC > TO JV-880 shows the slot's name. Part 8's Patch# = group*64 (INT 0, CRD 64, PRA 128, PRB 192), verified from the unit's bytes.
-Synth list = card stacks per device (`device`/`entry` in synth_t; encoder browses a stack, button opens). Idea: the selected card slides to its own slot in the stack (animation). Next: test RHYTHM/PERF on the unit, then commit.
+JV-880 RHYTHM (2026-10-06, committed; editing tested, write to the unit not): Group A WAVE, B PITCH ENV, C TVF, D TVA, E OUTPUT, F KIT; sets Performance mode, reads part 8's Rx channel.
+JV-880 PERF (2026-10-06, committed; read, Setup IMPORT and the patch names tested, write to I01-I16 not): A PART (all of a part's settings on one page), B COMMON (reverb, chorus); part 1-8 = Shift + Group A-H or Step arrows; Internal patch and performance names read with Auto; Setup IMPORT saves I01-I16 as library 001-016 (own from 100); REC > TO JV-880 shows the slot's name. Part 8's Patch# = group*64 (INT 0, CRD 64, PRA 128, PRB 192), verified from the unit's bytes.
+Synth list = card stacks per device (`device`/`entry` in synth_t; encoder browses a stack, button opens). The selected card slides to its slot (done). Paging was tightened in every synth except the D-110 (user: leave it). Next: Scene / Volca Drum ideas, or whatever the user brings.
 Boards 19 (House) and 97
 (Experience III) have no waveform list in `reference/JV880/` - left as they are on purpose (names show as numbers).
 Ideas waiting: synth list as per-device card stacks; Scene = saved multi-synth scenes; Volca Drum.

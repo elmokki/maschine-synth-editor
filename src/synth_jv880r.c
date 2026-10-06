@@ -138,10 +138,10 @@ static const jv_param_t params[PARAM_COUNT] = {
     [P_AL3] = RP("L3", 0x2E, K_EG, 0, 127, 0, 0),
     [P_AT4] = RP("T4", 0x2F, K_EG, 0, 127, 0, 0),
 
-    [P_DRY] = RP("DRY LEVEL", 0x30, K_NUM, 0, 127, 0, 0),
-    [P_REV_SEND] = RP("REVERB SEND", 0x31, K_NUM, 0, 127, 0, 0),
-    [P_CHO_SEND] = RP("CHORUS SEND", 0x32, K_NUM, 0, 127, 0, 0),
-    [P_OUT_SEL] = RP("OUTPUT", 0x33, K_LIST, 0, 1, 0, output_labels),
+    [P_DRY] = RP("OUT DRY", 0x30, K_NUM, 0, 127, 0, 0),
+    [P_REV_SEND] = RP("OUT REVERB", 0x31, K_NUM, 0, 127, 0, 0),
+    [P_CHO_SEND] = RP("OUT CHORUS", 0x32, K_NUM, 0, 127, 0, 0),
+    [P_OUT_SEL] = RP("OUT SELECT", 0x33, K_LIST, 0, 1, 0, output_labels),
 };
 
 /* ---- pages ---- */

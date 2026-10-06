@@ -85,6 +85,7 @@ static const scale_t scales[] = {
 #define MIDI_THRU_ID 103
 #define LED_BRIGHT_ID 104
 #define NOTES_IN_ID 106
+#define HANG_NOTES_ID 107
 /* Notes arriving on DIN IN on the synth's channel act like pad hits: the
  * pad lights, and e.g. the D-110 rhythm picks that key */
 static int notes_in;
@@ -105,6 +106,12 @@ static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
 /* The notes each pad started (a chord in chord mode), so a release stops
  * exactly those even if the settings changed meanwhile */
 static uint8_t pad_notes[16][4], pad_note_count[16];
+/* ...and the channel they started on: a release goes there, so changing the
+ * part (the pads' channel) with a pad held doesn't leave the note ringing -
+ * unless HANG NOTES is on (Setup), which sends it to the channel now and
+ * leaves the old one's note on: good for playing with */
+static uint8_t pad_channel[16];
+static int hang_notes;
 /* Chord mode: a pad plays the triad built on its note (thirds up the
  * scale), with Shift held the seventh chord */
 static int pad_chord;
@@ -1356,7 +1363,7 @@ static int setup_setting_at(int col)
 {
     if (col >= SETUP_SYNTH_COLS) {
         return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : col == SETUP_SYNTH_COLS + 1 ? LED_BRIGHT_ID
-               : col == SETUP_SYNTH_COLS + 2 ? NOTES_IN_ID : NONE;
+               : col == SETUP_SYNTH_COLS + 2 ? NOTES_IN_ID : col == SETUP_SYNTH_COLS + 3 ? HANG_NOTES_ID : NONE;
     }
     return col < synth->setting_count ? col : NONE;
 }
@@ -1388,6 +1395,9 @@ static void draw_setup(void)
     /* Global: notes from DIN IN light the pads (and pick e.g. a drum key) */
     draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "NOTES IN", true);
     draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, notes_in ? "ON" : "OFF", true);
+    /* Global: a pad released after the part changed - stop its note (OFF) or leave it ringing (ON) */
+    draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "HANG NOTES", true);
+    draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, hang_notes ? "ON" : "OFF", true);
     if (synth->action) {
         /* The synth's one-off job, display button 8: press twice */
         int x = 3 * COLUMN_WIDTH;
@@ -1425,9 +1435,10 @@ static void setting_encoder(int i, int col, int delta)
         encoder_acc[col] -= steps * UNITS_SETTING;
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
                  : i == PAD_KEY_ID ? &pad_key : i == PAD_CHORD_ID ? &pad_chord
-                 : i == MIDI_THRU_ID ? &midi_thru : i == NOTES_IN_ID ? &notes_in : &led_bright;
+                 : i == MIDI_THRU_ID ? &midi_thru : i == NOTES_IN_ID ? &notes_in : i == HANG_NOTES_ID ? &hang_notes
+                 : &led_bright;
         int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
-                  : i == PAD_CHORD_ID || i == NOTES_IN_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
+                  : i == PAD_CHORD_ID || i == NOTES_IN_ID || i == HANG_NOTES_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
         int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
         int nv = *v + steps;
         if (i == PAD_LOW_ID && pad_scale != 0) {
@@ -1490,6 +1501,8 @@ static void load_global_settings(void)
             midi_thru = v;
         } else if (sscanf(line, "NOTES IN=%d", &v) == 1 && v >= 0 && v <= 1) {
             notes_in = v;
+        } else if (sscanf(line, "HANG NOTES=%d", &v) == 1 && v >= 0 && v <= 1) {
+            hang_notes = v;
         } else if (sscanf(line, "CHORD=%d", &v) == 1 && v >= 0 && v <= 1) {
             pad_chord = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
@@ -1548,8 +1561,8 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\n", pad_low,
-                pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\nHANG NOTES=%d\n",
+                pad_low, pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in, hang_notes);
         fclose(f);
     }
 }
@@ -1610,10 +1623,9 @@ static void revert_patch(void)
  * D-110 only takes All Notes Off, which Hold overrides */
 static void panic(void)
 {
-    int ch = play_channel();
     for (int pad = 0; pad < 16; pad++) {
         for (int i = 0; i < pad_note_count[pad]; i++) {
-            midi_send(0x80 | ch, pad_notes[pad][i], 0);
+            midi_send(0x80 | pad_channel[pad], pad_notes[pad][i], 0);
         }
     }
     for (int c = 0; c < 16; c++) {
@@ -2791,6 +2803,7 @@ static void editor_pad_impl(int pad, bool down, int raw)
             pad_notes[pad][0] = pad_note(pad);
             pad_note_count[pad] = 1;
         }
+        pad_channel[pad] = channel;
         for (int i = 0; i < pad_note_count[pad]; i++) {
             midi_send(0x90 | channel, pad_notes[pad][i], vel);
         }
@@ -2804,7 +2817,7 @@ static void editor_pad_impl(int pad, bool down, int raw)
             return;
         }
         for (int i = 0; i < pad_note_count[pad]; i++) {
-            midi_send(0x80 | channel, pad_notes[pad][i], 0);
+            midi_send(0x80 | (hang_notes ? channel : pad_channel[pad]), pad_notes[pad][i], 0);
         }
         pad_note_count[pad] = 0;
         pad_idle(pad);
