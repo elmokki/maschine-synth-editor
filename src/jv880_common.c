@@ -104,12 +104,15 @@ void jv880_draw_eg_text(int disp, int x, const char *name, const char *value)
 /* See the header: an envelope over both displays: points at levels lv[] (0-100), reached
  * after times tm[] (0-127, wider the slower); a held sustain segment after
  * point sus_at; centre line for the pitch envelope */
-void jv880_draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred)
+void jv880_draw_env_ex(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred, bool dotted,
+                       bool clear)
 {
-    display_fill_rect(disp, 0, BAND_Y, 256, BAND_H, false);
-    if (centred) {
-        for (int x = 0; x < 255; x += 4) {
-            display_pixel(disp, x, BAND_Y + BAND_H / 2, true);
+    if (clear) {
+        display_fill_rect(disp, 0, BAND_Y, 256, BAND_H, false);
+        if (centred) {
+            for (int x = 0; x < 255; x += 4) {
+                display_pixel(disp, x, BAND_Y + BAND_H / 2, true);
+            }
         }
     }
     const int sus_w = 40;
@@ -133,20 +136,27 @@ void jv880_draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, b
             int pyn = x1 > x0 && px < x1 ? y0 + (y1 - y0) * (px + 1 - x0) / (x1 - x0) : py;
             int a = py < pyn ? py : pyn, b = py < pyn ? pyn : py;
             for (int yy = a; yy <= b; yy++) {
-                display_pixel(disp, px % 256, yy, true);
+                if (!dotted || ((px + yy) & 1) == 0) {
+                    display_pixel(disp, px % 256, yy, true);
+                }
             }
         }
         x += w;
         if (i == sus_at) {
             int xs = (int)x, xe = (int)(x + sus_w * scale);
             for (int px = xs; px <= xe; px++) {
-                if (px / 256 == disp && px % 256 < 255) {
+                if (px / 256 == disp && px % 256 < 255 && (!dotted || !(px & 1))) {
                     display_pixel(disp, px % 256, y1, true);
                 }
             }
             x += sus_w * scale;
         }
     }
+}
+
+void jv880_draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred)
+{
+    jv880_draw_env_ex(disp, lv, tm, n, sus_at, centred, false, true);
 }
 
 

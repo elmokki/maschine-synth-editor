@@ -57,5 +57,8 @@ void jv880_draw_code_name(int disp, int x, int y, int w, const char *code, const
  * JV880_EG_TEXT_CAP_Y. */
 #define JV880_EG_TEXT_CAP_Y 55
 void jv880_draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred);
+/* The same, dotted (an earlier shape left to fade: see the SR's trail) and/or without clearing the band first */
+void jv880_draw_env_ex(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred, bool dotted,
+                       bool clear);
 /* An envelope column's "T1 50" text at the bottom */
 void jv880_draw_eg_text(int disp, int x, const char *name, const char *value);

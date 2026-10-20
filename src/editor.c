@@ -142,7 +142,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110, &synth_wsp};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -1816,6 +1816,13 @@ static void show_active_card(void)
     stack_snap();
 }
 
+/* A card's line, centred in the column; in the smaller font when too wide (e.g. "Wavestation") */
+static void draw_card_line(int disp, int x, int y, const char *s, bool ink)
+{
+    const font_t *f = display_text_width(&font_small, s) > COLUMN_INNER - 4 ? &font_tiny : &font_small;
+    draw_centered(disp, x, COLUMN_INNER, y + (f == &font_tiny ? 1 : 0), f, s, ink);
+}
+
 /* Text centred in the column, split at its first space onto two lines when
  * too wide for one */
 static void draw_card_name(int disp, int x, int box_y, const char *label, bool ink)
@@ -1824,11 +1831,10 @@ static void draw_card_name(int disp, int x, int box_y, const char *label, bool i
     if (display_text_width(&font_small, label) > COLUMN_INNER - 6 && sp) {
         char first[24];
         snprintf(first, sizeof(first), "%.*s", (int)(sp - label), label);
-        draw_centered(disp, x, COLUMN_INNER, box_y + 4, &font_small, first, ink);
-        draw_centered(disp, x, COLUMN_INNER, box_y + 14, &font_small, sp + 1, ink);
+        draw_card_line(disp, x, box_y + 4, first, ink);
+        draw_card_line(disp, x, box_y + 14, sp + 1, ink);
     } else {
-        draw_centered(disp, x, COLUMN_INNER, box_y + (SYNTH_BOX_H - font_small.cap_height) / 2, &font_small, label,
-                      ink);
+        draw_card_line(disp, x, box_y + (SYNTH_BOX_H - font_small.cap_height) / 2, label, ink);
     }
 }
 
@@ -1866,8 +1872,8 @@ static void draw_synths(void)
             draw_card_name(disp, x, front_y, "SURE?", !active);
         } else if (n > 1) {
             /* the device on top, this entry below */
-            draw_centered(disp, x, COLUMN_INNER, front_y + 4, &font_small, s->device, !active);
-            draw_centered(disp, x, COLUMN_INNER, front_y + 14, &font_small, s->entry, !active);
+            draw_card_line(disp, x, front_y + 4, s->device, !active);
+            draw_card_line(disp, x, front_y + 14, s->entry, !active);
         } else {
             draw_card_name(disp, x, front_y, s->name, !active);
         }
