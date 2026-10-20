@@ -118,3 +118,7 @@ void plug_set(plug_set_t *s, int p, uint8_t v);  /* store + mark known + send */
 void plug_read_init_values(plug_set_t *s);
 /* Position 0..label_count-1 of a PT_STEPS value: the nearest step */
 int plug_step_pos(const plug_param_t *pp, uint8_t v);
+/* For the overviews: a time knob's value in milliseconds (needs time_curve), and the waveform icon of a
+ * PT_STEPS position in a box */
+float plug_time_ms(const plug_param_t *pp, int v);
+void plug_draw_wave(int disp, int x, int y, int w, int h, int pos);

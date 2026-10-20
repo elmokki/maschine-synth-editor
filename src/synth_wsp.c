@@ -1252,30 +1252,6 @@ static void ov_header(int disp, const char *left, const char *right)
     display_fill_rect(disp, 0, 11, 255, 1, true);
 }
 
-/* A small envelope picture: points 0-4 at levels lv[] (0-100) after times tm[] (0-127), the third held */
-static void mini_env(int disp, int x, int y, int w, int h, const int *lv, const int *tm)
-{
-    int total = 24;
-    for (int i = 1; i < 5; i++) {
-        total += 6 + tm[i];
-    }
-    int px = x, py = y + h - 1 - lv[0] * (h - 1) / 100;
-    int pos = 0;
-    for (int i = 1; i < 5; i++) {
-        pos += 6 + tm[i];
-        int nx = x + pos * (w - 1) / total, ny = y + h - 1 - lv[i] * (h - 1) / 100;
-        display_line(disp, px, py, nx, ny, true);
-        px = nx;
-        py = ny;
-        if (i == 3) {  /* the sustain */
-            pos += 24;
-            nx = x + pos * (w - 1) / total;
-            display_line(disp, px, py, nx, py, true);
-            px = nx;
-        }
-    }
-}
-
 static void ov_waves(int disp)
 {
     ensure();
@@ -1315,7 +1291,7 @@ static void ov_waves(int disp)
         display_text(disp, x0 + 2, 37, &font_tiny, buf, true);
         int lv[5], tm[5];
         env_shape(0, wv, lv, tm);
-        mini_env(disp, x0 + 3, 46, 120, 17, lv, tm);
+        jv880_draw_env_mini(disp, x0 + 3, 46, 120, 17, lv, tm, 5, 3);
     }
     display_fill_rect(disp, 127, 12, 1, 52, false);
     for (int y = 13; y < 63; y += 3) {

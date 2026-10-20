@@ -106,7 +106,7 @@ static void format_scaled(const plug_param_t *pp, int v, char *buf, size_t len)
 
 /* Time of a knob with a measured curve: logarithmic between the two nearest
  * points, extended past the ends with the end segments' slope */
-static void format_time(const plug_curve_t *c, int v, char *buf, size_t len)
+static float curve_ms(const plug_curve_t *c, int v)
 {
     int i = 1;
     while (i < c->count - 1 && v > c->points[i].value) {
@@ -114,7 +114,14 @@ static void format_time(const plug_curve_t *c, int v, char *buf, size_t len)
     }
     const plug_curve_point_t *a = &c->points[i - 1], *b = &c->points[i];
     float t = (float)(v - a->value) / (b->value - a->value);
-    float ms = a->ms * powf((float)b->ms / a->ms, t);
+    return a->ms * powf((float)b->ms / a->ms, t);
+}
+
+float plug_time_ms(const plug_param_t *pp, int v) { return curve_ms(pp->time_curve, v); }
+
+static void format_time(const plug_curve_t *c, int v, char *buf, size_t len)
+{
+    float ms = curve_ms(c, v);
     if (ms < 1000.0f) {
         snprintf(buf, len, "%dms", (int)(ms + 0.5f));
     } else if (ms < 10000.0f) {
@@ -280,6 +287,8 @@ static void draw_wave(int disp, int x, int y, int w, int h, int pos)
         }
     }
 }
+
+void plug_draw_wave(int disp, int x, int y, int w, int h, int pos) { draw_wave(disp, x, y, w, h, pos); }
 
 /* An organ drawbar pulled out to position 0-8, as on the instrument: a
  * slot at the top, the shaft out of it and the handle at its end, the

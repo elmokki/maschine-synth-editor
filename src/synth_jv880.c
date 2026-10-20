@@ -973,6 +973,61 @@ static int param_units(int p)
            : p == P_WAVE ? WAVE_UNITS : 10;  /* picking a wave among up to 255: slow */
 }
 
+/* ---- patch overview (Grid): the four tones, two on each display ---- */
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[64], name[JV880_WAVE_NAME_LEN + 1];
+    if (disp == 0) {
+        char pn[13];
+        memcpy(pn, patch, 12);
+        pn[12] = 0;
+        for (int i = 11; i >= 0 && pn[i] == ' '; i--) {
+            pn[i] = 0;
+        }
+        snprintf(buf, sizeof(buf), "PATCH %s", pn);
+        display_text(0, 1, 0, &font_small, buf, true);
+    } else {
+        snprintf(buf, sizeof(buf), "LEVEL %d REV %s %d CHO %s %d  Grid:close", raw_value(P_LEVEL, 0),
+                 reverb_labels[raw_value(P_REV_TYPE, 0) & 7], raw_value(P_REV_LEVEL, 0),
+                 chorus_labels[raw_value(P_CHO_TYPE, 0) % 3], raw_value(P_CHO_LEVEL, 0));
+        display_text(1, 1, 2, &font_tiny, buf, true);
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+    for (int k = 0; k < 2; k++) {
+        int t = disp * 2 + k, x0 = k * 128;
+        char mark = tone_sel & (1 << t) ? '>' : ' ';
+        int on = raw_value(P_TONE_SW, t), group = raw_value(P_GROUP, t) % 3, wave = raw_value(P_WAVE, t);
+        if (!jv880_wave_name(group, wave, card_number(), name, sizeof(name))) {
+            name[0] = 0;
+        }
+        snprintf(buf, sizeof(buf), "%c%d %s %s%d %s", mark, t + 1, on ? "ON" : "off", group_labels[group], wave + 1,
+                 name);
+        display_text(disp, x0 + 2, 13, &font_tiny, buf, true);
+        if (!on) {
+            continue;
+        }
+        snprintf(buf, sizeof(buf), "LV %d CRS%+d FN%+d", raw_value(P_A_LEVEL, t), raw_value(P_COARSE, t) - 64,
+                 raw_value(P_FINE, t) - 64);
+        display_text(disp, x0 + 2, 21, &font_tiny, buf, true);
+        snprintf(buf, sizeof(buf), "%s CUT %d RES %d", filter_labels[raw_value(P_F_MODE, t) % 3],
+                 raw_value(P_CUTOFF, t), raw_value(P_RESO, t));
+        display_text(disp, x0 + 2, 29, &font_tiny, buf, true);
+        /* the TVA envelope: T1 L1 T2 L2 T3 L3 T4, the third level held */
+        int lv[5] = {0}, tm[5] = {0};
+        for (int i = 0; i < 4; i++) {
+            tm[i + 1] = raw_value(P_AT1 + 2 * i, t);
+            lv[i + 1] = i < 3 ? raw_value(P_AL1 + 2 * i, t) * 100 / 127 : 0;
+        }
+        jv880_draw_env_mini(disp, x0 + 3, 38, 120, 24, lv, tm, 5, 3);
+    }
+    display_fill_rect(disp, 127, 12, 1, 52, false);
+    for (int y = 13; y < 63; y += 3) {
+        display_pixel(disp, 127, y, true);
+    }
+}
+
 static int wave_count(int group);
 static int wave_nearest(int group, int number);
 static bool wave_exists(int group, int number);
@@ -1298,6 +1353,8 @@ const synth_t synth_jv880 = {
     .volume_setting = SETTING_VOLUME_JV,
     .page_draw = page_draw,
     .column_draw = column_draw,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .instance_step = tone_step,
     .shift_group = shift_group,
     .shift_group_led = shift_group_led,

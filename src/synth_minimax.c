@@ -3,7 +3,10 @@
  * CC/poly-AT parameter handling is in plugiator.c; this file has the page
  * layout, settings and the MiniMax's virtual parameters.
  */
+#include <math.h>
 #include <stdio.h>
+#include "display.h"
+#include "jv880_common.h"
 #include "minimax_params.h"
 #include "plugiator.h"
 #include "storage.h"
@@ -235,6 +238,97 @@ static bool is_loaded(void)
     return plug_is_loaded(&set);
 }
 
+/* ---- patch overview (Grid): oscillators and mixer on the left display, the two envelopes on the right ---- */
+
+static int val(int p) { return known[p] ? values[p] : minimax_params[p].default_value; }
+static bool sw_on(int p) { return val(p) >= 64; }
+
+/* An envelope time knob as the picture's 0-127 width: logarithmic in milliseconds */
+static int time_width(int p)
+{
+    float t = log2f(1.0f + plug_time_ms(&minimax_params[p], val(p)) / 10.0f) * 12.0f;
+    return t > 127.0f ? 127 : (int)t;
+}
+
+static void ov_text(int disp, int x, int y, const char *text)
+{
+    display_text(disp, x, y, &font_tiny, text, true);
+}
+
+static void ov_fmt(int p, char *buf, size_t len) { plug_format(&set, p, buf, len); }
+
+/* One envelope: attack to the top, decay to the sustain level, held, then the release (the Decay switch makes
+ * the decay time the release too) */
+static void ov_envelope(int disp, int x, const char *title, int a, int d, int s_, int sw_decay)
+{
+    char buf[40], ta[12], td[12];
+    ov_text(disp, x + 2, 13, title);
+    int sus = val(s_) * 100 / 127;
+    int lv[4] = {0, 100, sus, 0}, tm[4] = {0, time_width(a), time_width(d), sw_on(sw_decay) ? time_width(d) : 20};
+    jv880_draw_env_mini(disp, x + 3, 22, 120, 26, lv, tm, 4, 2);
+    ov_fmt(a, ta, sizeof(ta));
+    ov_fmt(d, td, sizeof(td));
+    snprintf(buf, sizeof(buf), "A %s D %s S %d%%", ta, td, sus);
+    ov_text(disp, x + 2, 50, buf);
+}
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[40];
+    if (disp == 0) {
+        display_text(0, 1, 0, &font_small, "MINIMAX: oscillators, mixer", true);
+        static const int8_t wav[3] = {MINIMAX_OSC1_WAV, MINIMAX_OSC2_WAV, MINIMAX_OSC3_WAV};
+        static const int8_t rng[3] = {MINIMAX_OSC1_RNG, MINIMAX_OSC2_RNG, MINIMAX_OSC3_RNG};
+        static const int8_t vol[3] = {MINIMAX_OSC1_VOL, MINIMAX_OSC2_VOL, MINIMAX_OSC3_VOL};
+        static const int8_t sw[3] = {MINIMAX_OSC1, MINIMAX_OSC2, MINIMAX_OSC3};
+        static const int8_t frq[3] = {-1, MINIMAX_OSC2_FRQ, MINIMAX_OSC3_FRQ};
+        for (int i = 0; i < 4; i++) {
+            int x = i * 64;
+            int level_p = i < 3 ? vol[i] : MINIMAX_NOISE_VOL, on = sw_on(i < 3 ? sw[i] : MINIMAX_NOISE);
+            if (i < 3) {
+                snprintf(buf, sizeof(buf), on ? "OSC%d %s" : "OSC%d off", i + 1,
+                         minimax_params[rng[i]].labels[plug_step_pos(&minimax_params[rng[i]], val(rng[i]))]);
+            } else {
+                snprintf(buf, sizeof(buf), on ? "NOISE" : "NOISE off");
+            }
+            ov_text(0, x + 2, 13, buf);
+            if (on && i < 3) {
+                int pos = plug_step_pos(&minimax_params[wav[i]], val(wav[i]));
+                plug_draw_wave(0, x + 8, 23, 48, 14, pos);
+                ov_text(0, x + 2, 40, minimax_params[wav[i]].labels[pos]);
+                if (frq[i] >= 0) {
+                    char f[12];
+                    ov_fmt(frq[i], f, sizeof(f));
+                    snprintf(buf, sizeof(buf), "FRQ %s", f);
+                    ov_text(0, x + 2, 48, buf);
+                }
+            } else if (on) {
+                ov_text(0, x + 2, 40, sw_on(MINIMAX_PINK) ? "PINK" : "WHITE");
+            }
+            if (on) {  /* the level */
+                display_rect(0, x + 2, 57, 58, 6, true);
+                display_fill_rect(0, x + 4, 59, 54 * val(level_p) / 127, 2, true);
+            }
+        }
+    } else {
+        display_text(1, 1, 0, &font_small, "ENVELOPES, filter", true);
+        display_text(1, 200, 0, &font_small, "Grid: close", true);
+        ov_envelope(1, 0, "FILTER ENVELOPE", MINIMAX_F_ATTACK, MINIMAX_F_DECAY, MINIMAX_F_SUSTAIN, MINIMAX_DECAY_SW);
+        ov_envelope(1, 128, "LOUDNESS ENVELOPE", MINIMAX_A_ATTACK, MINIMAX_A_DECAY, MINIMAX_A_SUSTAIN,
+                    MINIMAX_DECAY_SW);
+        char c[12], e[12], k[12];
+        ov_fmt(MINIMAX_CUTOFF, c, sizeof(c));
+        ov_fmt(MINIMAX_EMPHASIS, e, sizeof(e));
+        ov_fmt(MINIMAX_CONTOUR, k, sizeof(k));
+        snprintf(buf, sizeof(buf), "CUT %s EMP %s CNT %s", c, e, k);
+        ov_text(1, 2, 57, buf);
+        snprintf(buf, sizeof(buf), "VOL %d  VEL F%d A%d", val(MINIMAX_VOLUME), val(MINIMAX_F_VELO), val(MINIMAX_A_VELO));
+        ov_text(1, 130, 57, buf);
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+}
+
 /* Tutorial (Shift + Control): what's special here */
 static const synth_tip_t tips[] = {
     {"PLUGIATOR", {"Picking MiniMax loads the plug-in on", "the Plugiator (about a second). It stays",
@@ -281,6 +375,8 @@ const synth_t synth_minimax = {
     .categories = minimax_categories,
     .theme_bright = {127, 35, 0},  /* red-orange, like the Minimoog's orange switches */
     .theme_dim = {20, 4, 0},
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .tips = tips,
     .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

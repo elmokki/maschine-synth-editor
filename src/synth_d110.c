@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "fonts.h"
+#include "jv880_common.h"
 #include "midi.h"
 #include "storage.h"
 #include "buttons.h"
@@ -1096,6 +1097,76 @@ static void page_draw(int pg, int disp)
     }
 }
 
+/* ---- patch overview (Grid): the tone's structures and its four partials ---- */
+
+/* A partial's value, formatted as the editor does */
+static void ov_fmt(int p, int i, char *buf, size_t len)
+{
+    uint8_t keep = partial_sel;
+    partial_sel = 1 << i;
+    param_format(p, buf, len);
+    partial_sel = keep;
+}
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[48];
+    if (disp == 0) {
+        snprintf(buf, sizeof(buf), "TONE %.10s  PART %d", (const char *)tone[part], part + 1);
+        display_text(0, 1, 0, &font_small, buf, true);
+        display_fill_rect(0, 0, 11, 255, 1, true);
+        if (!known[part][C_STRUCT12]) {
+            display_text(0, 4, 30, &font_small, "load a tone to see it", true);
+            return;
+        }
+        draw_structure(0, 2, 16, 0);
+        draw_structure(0, 130, 16, 1);
+        return;
+    }
+    display_text(1, 200, 0, &font_small, "Grid: close", true);
+    display_fill_rect(1, 0, 11, 255, 1, true);
+    if (!known[part][C_STRUCT12]) {
+        return;
+    }
+    uint8_t mute = known[part][C_MUTE] ? tone[part][C_MUTE] : 0x0F;
+    for (int i = 0; i < 4; i++) {
+        int x0 = i * 64;
+        bool pcm = partial_is_pcm(i), on = mute & (1 << i);
+        char a[16], b[16], name[16];
+        snprintf(buf, sizeof(buf), "%c%d %s%s", partial_sel & (1 << i) ? '>' : ' ', i + 1, pcm ? "PCM" : "SYN",
+                 on ? "" : " off");
+        display_text(1, x0 + 1, 13, &font_tiny, buf, true);
+        if (pcm) {
+            pcm_name(raw_value(P_BANK, i), raw_value(P_PCM, i), name, sizeof(name));
+            snprintf(buf, sizeof(buf), "%.12s", name);
+        } else {
+            snprintf(buf, sizeof(buf), "%s PW%d", wave_labels[raw_value(P_WAVE, i) & 1], raw_value(P_PW, i));
+        }
+        display_text(1, x0 + 1, 21, &font_tiny, buf, true);
+        ov_fmt(P_COARSE, i, a, sizeof(a));
+        ov_fmt(P_FINE, i, b, sizeof(b));
+        snprintf(buf, sizeof(buf), "%s%s L%d", a, b, raw_value(P_LEVEL, i));
+        display_text(1, x0 + 1, 29, &font_tiny, buf, true);
+        if (pcm) {
+            snprintf(buf, sizeof(buf), "(no filter)");
+        } else {
+            snprintf(buf, sizeof(buf), "CUT%d R%d", raw_value(P_CUTOFF, i), raw_value(P_RESO, i));
+        }
+        display_text(1, x0 + 1, 37, &font_tiny, buf, true);
+        /* the TVA envelope: 0 -> T1 L1 -> T2 L2 -> T3 L3 -> T4 sustain -> T5 0 */
+        int lv[6] = {0, raw_value(P_AL1, i), raw_value(P_AL2, i), raw_value(P_AL3, i), raw_value(P_ASUS, i), 0};
+        int tm[6] = {0, raw_value(P_AT1, i), raw_value(P_AT2, i), raw_value(P_AT3, i), raw_value(P_AT4, i),
+                     raw_value(P_AT5, i)};
+        jv880_draw_env_mini(1, x0 + 2, 46, 60, 17, lv, tm, 6, 4);
+        if (i) {
+            for (int y = 13; y < 63; y += 3) {
+                display_pixel(1, x0, y, true);
+            }
+        }
+    }
+}
+
 /* ---- parts and partials ---- */
 
 static int play_channel(void) { return (synth_setting(SETTING_CHANNEL) + part) & 0x0F; }
@@ -1306,6 +1377,8 @@ const synth_t synth_d110 = {
     .revert = revert,
     .unknown_count = unknown_count,
     .page_draw = page_draw,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .column_draw = column_draw,
     .play_channel = play_channel,
     .instance_step = shift_step,  /* arrows: the partial (most used) */

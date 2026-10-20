@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "buttons.h"
+#include "display.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "jv880_common.h"
@@ -862,6 +863,54 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* ---- patch overview (Grid): the six parts as a table, like the manual's patch setting chart ---- */
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    ensure();
+    char buf[64], keys[2][8];
+    int mode = patch[byte_of(P_OUTMODE, 0)];
+    if (disp == 0) {
+        snprintf(buf, sizeof(buf), "PATCH %.10s  out mode %d: %s", (const char *)patch, mode + 1,
+                 outmode_text[mode < 50 ? mode : 49]);
+        display_text(0, 1, 0, &font_small, buf, true);
+    } else {
+        snprintf(buf, sizeof(buf), "CHO %d/%d  TREM %d/%d", patch[byte_of(P_CHO_RATE, 0)], patch[byte_of(P_CHO_DEPTH, 0)],
+                 patch[byte_of(P_TREM_RATE, 0)], patch[byte_of(P_TREM_DEPTH, 0)]);
+        display_text(1, 1, 0, &font_small, buf, true);
+        display_text(1, 200, 0, &font_small, "Grid: close", true);
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+    for (int pt = 0; pt < PARTS; pt++) {
+        int y = 13 + pt * 8, out = patch[byte_of(P_OUT, pt)];
+        char mark = pt == part ? '>' : ' ';
+        if (out >= 6) {  /* output off: the part isn't used */
+            if (disp == 0) {
+                snprintf(buf, sizeof(buf), "%c%d  --  (off)", mark, pt + 1);
+                display_text(0, 1, y, &font_tiny, buf, true);
+            }
+            continue;
+        }
+        int media = patch[byte_of(P_MEDIA, pt)], tone = patch[byte_of(P_TONE, pt)];
+        if (disp == 0) {
+            char m[8];
+            media_code(media, m, sizeof(m));
+            load_names(media);
+            snprintf(buf, sizeof(buf), "%c%d %s %02d %-15.15s LV%3d CH%2d", mark, pt + 1, m, tone + 1,
+                     tone < names_n ? tone_names[tone] : "", patch[byte_of(P_LEVEL, pt)],
+                     patch[byte_of(P_RX_CH, pt)] + 1);
+        } else {
+            note_name(patch[byte_of(P_KEY_LO, pt)], keys[0], sizeof(keys[0]));
+            note_name(patch[byte_of(P_KEY_HI, pt)], keys[1], sizeof(keys[1]));
+            snprintf(buf, sizeof(buf), "%s-%s OUT%d BND%d ATK%+d REL%+d TUN%+d/%+d", keys[0], keys[1], out + 1,
+                     patch[byte_of(P_BEND, pt)], patch[byte_of(P_ATTACK, pt)] - 8, patch[byte_of(P_RELEASE, pt)] - 8,
+                     patch[byte_of(P_COARSE, pt)] - 64, patch[byte_of(P_FINE, pt)] - 64);
+        }
+        display_text(disp, 1, y, &font_tiny, buf, true);
+    }
+}
+
 /* ---- parts ---- */
 
 static void select_part(int pt)
@@ -1003,6 +1052,8 @@ const synth_t synth_u110 = {
     .read = read_patch,
     .sysex_in = sysex_in,
     .tick = tick,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .action_name = "IMPORT",
     .action = import_start,
     .unit_store_label = "TO U-110",

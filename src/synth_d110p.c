@@ -383,6 +383,47 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* ---- patch overview (Grid): the eight parts as a table (no header: eight rows fill the display) ---- */
+
+/* Part pt's value of p, formatted as the editor does */
+static void ov_fmt(int p, int pt, char *buf, size_t len)
+{
+    int keep = part;
+    part = pt;
+    param_format(p, buf, len);
+    part = keep;
+}
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[80], f[8][12];
+    for (int pt = 0; pt < PARTS; pt++) {
+        char mark = pt == part ? '>' : ' ';
+        if (disp == 0) {
+            ov_fmt(P_GROUP, pt, f[0], sizeof(f[0]));
+            ov_fmt(P_NUMBER, pt, f[1], sizeof(f[1]));
+            ov_fmt(P_KEY_SHIFT, pt, f[2], sizeof(f[2]));
+            ov_fmt(P_FINE, pt, f[3], sizeof(f[3]));
+            ov_fmt(P_BENDER, pt, f[4], sizeof(f[4]));
+            ov_fmt(P_CHANNEL, pt, f[5], sizeof(f[5]));
+            snprintf(buf, sizeof(buf), "%c%d %s %s KS%s FN%s BND%s CH%s", mark, pt + 1, f[0], f[1], f[2], f[3], f[4],
+                     f[5]);
+        } else {
+            ov_fmt(P_LEVEL, pt, f[0], sizeof(f[0]));
+            ov_fmt(P_PAN, pt, f[1], sizeof(f[1]));
+            ov_fmt(P_KEY_LOW, pt, f[2], sizeof(f[2]));
+            ov_fmt(P_KEY_HIGH, pt, f[3], sizeof(f[3]));
+            ov_fmt(P_RESERVE, pt, f[4], sizeof(f[4]));
+            ov_fmt(P_OUTPUT, pt, f[5], sizeof(f[5]));
+            ov_fmt(P_ASSIGN, pt, f[6], sizeof(f[6]));
+            snprintf(buf, sizeof(buf), "LV%s PAN%s %s-%s RSV%s OUT %s ASN %s", f[0], f[1], f[2], f[3], f[4], f[5],
+                     f[6]);
+        }
+        display_text(disp, 1, pt * 8, &font_tiny, buf, true);
+    }
+}
+
 /* Reserve page: the total against the D-110's 32 partials, in the
  * (unused) switch row of both displays; inverted if over */
 static void page_draw(int pg, int disp)
@@ -764,6 +805,8 @@ const synth_t synth_d110p = {
     .revert = revert,
     .unknown_count = unknown_count,
     .page_draw = page_draw,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .play_channel = play_channel,
     .instance_step = instance_step,
     .instance = instance,

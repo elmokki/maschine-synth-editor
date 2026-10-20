@@ -62,3 +62,7 @@ void jv880_draw_env_ex(int disp, const int *lv, const int *tm, int n, int sus_at
                        bool clear);
 /* An envelope column's "T1 50" text at the bottom */
 void jv880_draw_eg_text(int disp, int x, const char *name, const char *value);
+
+/* A small envelope picture for the overviews (x, y, w, h): points 0..n-1 at levels lv[] (0-100) after times
+ * tm[] (0-127), a held segment after point sus_at (-1 = none) */
+void jv880_draw_env_mini(int disp, int x, int y, int w, int h, const int *lv, const int *tm, int n, int sus_at);

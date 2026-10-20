@@ -3,7 +3,9 @@
  * generic CC/poly-AT parameter handling is in plugiator.c; this file has
  * the page layout and settings.
  */
+#include <stdio.h>
 #include "b4000_params.h"
+#include "display.h"
 #include "plugiator.h"
 #include "storage.h"
 #include "buttons.h"
@@ -116,6 +118,95 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return plug_draw(&set, p, disp, x, y, w, h);
 }
 
+/* ---- patch overview (Grid): the drawbars as pulled out on the instrument - the upper and lower manual on the
+ * left display, the pedal and the panel's settings on the right ---- */
+
+static int val(int p) { return known[p] ? values[p] : b4000_params[p].default_value; }
+
+/* The drawbar parameter's position 0-8 */
+static int bar_pos(int p)
+{
+    int pos = plug_step_pos(&b4000_params[p], val(p));
+    return pos < 0 ? 0 : pos > 8 ? 8 : pos;
+}
+
+/* A drawbar (x = its centre): a slot at the top, the shaft and a handle in the bar's colour
+ * (brown dotted, white outlined, black filled), the position under it */
+static void ov_drawbar(int disp, int cx, int p)
+{
+    int pos = bar_pos(p), hy = 15 + pos * 4;
+    display_fill_rect(disp, cx - 4, 13, 9, 1, true);
+    display_line(disp, cx, 14, cx, hy, true);
+    switch (b4000_params[p].icon) {
+    case PI_DRAWBAR_BLACK:
+        display_fill_rect(disp, cx - 4, hy, 9, 5, true);
+        break;
+    case PI_DRAWBAR_BROWN:
+        display_rect(disp, cx - 4, hy, 9, 5, true);
+        for (int yy = hy + 1; yy < hy + 4; yy++) {
+            for (int xx = cx - 3 + (yy & 1); xx < cx + 4; xx += 2) {
+                display_pixel(disp, xx, yy, true);
+            }
+        }
+        break;
+    default:
+        display_rect(disp, cx - 4, hy, 9, 5, true);
+        break;
+    }
+    char num[2] = {(char)('0' + pos), 0};
+    display_text(disp, cx - 2, 56, &font_tiny, num, true);
+}
+
+static void ov_bars(int disp, int x0, const int8_t *bars, int count)
+{
+    for (int i = 0; i < count; i++) {
+        ov_drawbar(disp, x0 + 8 + i * 13, bars[i]);
+    }
+}
+
+static void ov_line(int y, const char *label, int p)
+{
+    char v[16], buf[40];
+    plug_format(&set, p, v, sizeof(v));
+    snprintf(buf, sizeof(buf), "%s %s", label, v);
+    display_text(1, 134, y, &font_tiny, buf, true);
+}
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    static const int8_t upper[9] = {B4000_UPPER_16, B4000_UPPER_5_1_3, B4000_UPPER_8, B4000_UPPER_4,
+                                    B4000_UPPER_2_2_3, B4000_UPPER_2, B4000_UPPER_1_3_5, B4000_UPPER_1_1_3,
+                                    B4000_UPPER_1};
+    static const int8_t lower[9] = {B4000_LOWER_16, B4000_LOWER_5_1_3, B4000_LOWER_8, B4000_LOWER_4,
+                                    B4000_LOWER_2_2_3, B4000_LOWER_2, B4000_LOWER_1_3_5, B4000_LOWER_1_1_3,
+                                    B4000_LOWER_1};
+    static const int8_t pedal[6] = {B4000_PEDAL_16, B4000_PEDAL_5_1_3, B4000_PEDAL_8, B4000_PEDAL_4,
+                                    B4000_PEDAL_2_2_3, B4000_PEDAL_2};
+    if (disp == 0) {
+        display_text(0, 1, 0, &font_small, "UPPER", true);
+        display_text(0, 130, 0, &font_small, "LOWER", true);
+        ov_bars(0, 2, upper, 9);
+        ov_bars(0, 130, lower, 9);
+        display_fill_rect(0, 127, 12, 1, 52, false);
+        for (int y = 13; y < 63; y += 3) {
+            display_pixel(0, 127, y, true);
+        }
+    } else {
+        display_text(1, 1, 0, &font_small, "PEDAL", true);
+        display_text(1, 134, 0, &font_small, "PANEL", true);
+        display_text(1, 200, 0, &font_small, "Grid: close", true);
+        ov_bars(1, 2, pedal, 6);
+        ov_line(13, "VIBRATO", B4000_VIB_TYPE);
+        ov_line(21, "  upper", B4000_VIB_UPPER);
+        ov_line(29, "  lower", B4000_VIB_LOWER);
+        ov_line(37, "PERC", B4000_PERC);
+        ov_line(45, "ROTOR", B4000_ROTOR);
+        ov_line(53, "SPEED", B4000_FAST);
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+}
+
 /* Tutorial (Shift + Control): what's special here */
 static const synth_tip_t tips[] = {
     {"PLUGIATOR", {"Picking B4000 loads the plug-in on the", "Plugiator (about a second). It stays",
@@ -164,6 +255,8 @@ const synth_t synth_b4000 = {
     .categories = b4000_categories,
     .theme_bright = {90, 0, 127},  /* violet */
     .theme_dim = {9, 0, 14},
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .tips = tips,
     .tip_count = sizeof(tips) / sizeof(tips[0]),
 };

@@ -783,6 +783,35 @@ static void page_draw(int pg, int disp)
     }
 }
 
+/* ---- patch overview (Grid): the algorithm on the left display, the six operators as a table on the right ---- */
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[64];
+    if (disp == 0) {
+        char name[11];
+        memcpy(name, &voice[VCED_NAME], 10);
+        name[10] = 0;
+        snprintf(buf, sizeof(buf), "ALG %d  FB %d  %s", (voice[VCED_ALGORITHM] & 31) + 1,
+                 voice[VCED_COMMON + (G_FB - G_PR1)], name);
+        display_text(0, 1, 0, &font_small, buf, true);
+        draw_algorithm(0);
+    } else {
+        display_text(1, 1, 0, &font_small, "OPERATORS: level ratio detune", true);
+        display_text(1, 214, 0, &font_tiny, "Grid:close", true);
+        for (int op = 0; op < 6; op++) {
+            int c = op_value(op, F_FC), f = op_value(op, F_FF), r100 = (c ? c * 100 : 50) * (100 + f) / 100;
+            snprintf(buf, sizeof(buf), "OP%d %s L%02d %d.%02d D%+d R%02d.%02d.%02d.%02d L%02d.%02d.%02d.%02d", op + 1,
+                     op_on[op] ? "  " : "off", op_value(op, F_OL), r100 / 100, r100 % 100, op_value(op, F_DET) - 7,
+                     op_value(op, F_R1), op_value(op, F_R2), op_value(op, F_R3), op_value(op, F_R4),
+                     op_value(op, F_L1), op_value(op, F_L2), op_value(op, F_L3), op_value(op, F_L4));
+            display_text(1, 1, 13 + op * 8, &font_tiny, buf, true);
+        }
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+}
+
 /* Group buttons: carriers in the theme colour, modulators in its
  * complementary colour, switched-off operators nearly dark */
 static bool section_dim(int section, uint8_t rgb[3])
@@ -894,6 +923,8 @@ const synth_t synth_volca = {
     .tick = tick,
     .categories = categories,
     .page_draw = page_draw,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .section_dim = section_dim,
     .column_draw = column_draw,
     .theme_bright = {0, 127, 40},  /* green */

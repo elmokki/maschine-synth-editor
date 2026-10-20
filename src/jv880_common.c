@@ -160,6 +160,31 @@ void jv880_draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, b
 }
 
 
+/* A small envelope for the overviews: points 0..n-1 at levels lv[] (0-100), reached after times tm[] (0-127,
+ * wider the slower), a held segment after point sus_at (-1 = none) */
+void jv880_draw_env_mini(int disp, int x, int y, int w, int h, const int *lv, const int *tm, int n, int sus_at)
+{
+    const int sus_w = 24;
+    int total = sus_at >= 0 ? sus_w : 0;
+    for (int i = 1; i < n; i++) {
+        total += 6 + tm[i];
+    }
+    int px = x, py = y + h - 1 - lv[0] * (h - 1) / 100, pos = 0;
+    for (int i = 1; i < n; i++) {
+        pos += 6 + tm[i];
+        int nx = x + pos * (w - 1) / total, ny = y + h - 1 - lv[i] * (h - 1) / 100;
+        display_line(disp, px, py, nx, ny, true);
+        px = nx;
+        py = ny;
+        if (i == sus_at) {
+            pos += sus_w;
+            nx = x + pos * (w - 1) / total;
+            display_line(disp, px, py, nx, py, true);
+            px = nx;
+        }
+    }
+}
+
 /* ---- waveforms ---- */
 
 /* The name list in memory (255 lines of 16 characters + newline): reading

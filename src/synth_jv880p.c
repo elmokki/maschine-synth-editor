@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "buttons.h"
+#include "display.h"
 #include "esp_log.h"
 #include "jv880_common.h"
 #include "midi.h"
@@ -731,6 +732,44 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* ---- patch overview (Grid): the eight parts as a table (no header: eight rows fill the display) ---- */
+
+static void overview_draw(int page, int disp)
+{
+    (void)page;
+    char buf[64], code[8], pan[8];
+    for (int pt = 0; pt < PARTS; pt++) {
+        int y = pt * 8;
+        char mark = pt == part ? '>' : ' ';
+        bool k = known[byte_of(P_PATCH, pt)];
+        if (disp == 0) {
+            if (!k) {
+                snprintf(buf, sizeof(buf), "%c%d --", mark, pt + 1);
+            } else {
+                int v = get(perf, P_PATCH, pt);
+                patch_code(v, is_rhythm(pt), code, sizeof(code));
+                snprintf(buf, sizeof(buf), "%c%d %s %-12.12s CH%2d LV%3d%s", mark, pt + 1, code,
+                         is_rhythm(pt) ? "rhythm kit" : patch_name(v), get(perf, P_RX_CH, pt) + 1,
+                         get(perf, P_LEVEL, pt), get(perf, P_RX_SW, pt) ? "" : " off");
+            }
+        } else if (k) {
+            int pn = get(perf, P_PAN, pt);
+            if (pn < 64) {
+                snprintf(pan, sizeof(pan), "L%d", 64 - pn);
+            } else {
+                snprintf(pan, sizeof(pan), pn == 64 ? "C" : "%dR", pn - 64);
+            }
+            snprintf(buf, sizeof(buf), "PAN %s CRS%+d FN%+d %s%sOUT %s RSV %d", pan, get(perf, P_COARSE, pt) - 64,
+                     get(perf, P_FINE, pt) - 64, get(perf, P_REV_SW, pt) ? "REV " : "",
+                     get(perf, P_CHO_SW, pt) ? "CHO " : "", output_labels[get(perf, P_OUT, pt) % 3],
+                     get(perf, P_RESERVE, pt));
+        } else {
+            buf[0] = 0;
+        }
+        display_text(disp, 1, y, &font_tiny, buf, true);
+    }
+}
+
 /* ---- parts ---- */
 
 static void select_part(int pt)
@@ -942,6 +981,8 @@ const synth_t synth_jv880p = {
     .read = read_perf,
     .sysex_in = sysex_in,
     .tick = tick,
+    .overview_pages = 1,
+    .overview_draw = overview_draw,
     .action_name = "IMPORT",
     .action = import_start,
     .unit_store_label = "TO JV-880",
