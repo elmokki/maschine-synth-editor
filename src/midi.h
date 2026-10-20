@@ -26,6 +26,10 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2);
  * false if it doesn't fit the queue right now (nothing is sent then). */
 bool midi_send_sysex(const uint8_t *data, size_t len);
 
+/* The same for a message too long to queue: sent in parts, the last one ending with F7, the others a multiple of
+ * 3 bytes; false = no room right now (nothing sent). The caller paces it (the DIN cable: ~3 KB/s). */
+bool midi_send_sysex_part(const uint8_t *data, size_t len, bool last);
+
 /* What arrives on DIN IN goes back out of DIN OUT: not at all, as is, or
  * with channel messages moved to `channel` (the selected synth's). SysEx
  * goes out once complete, so it never mixes with the editor's own. */

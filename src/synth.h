@@ -228,6 +228,13 @@ typedef struct {
     void (*unit_slot_info)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
 
+    /* Optional: a long job in the driver (a bank import, a bank written to the unit). While busy() the editor shows
+     * busy_draw(display) on both displays (redrawn ~5 times a second), takes no input - buttons, encoders and
+     * pads - except Erase, which asks busy_cancel() (it may refuse), and its tick() keeps running. */
+    bool (*busy)(void);
+    void (*busy_draw)(int disp);
+    void (*busy_cancel)(void);
+
     /* Optional: the patch overview (Grid button): overview_pages screens, each drawn over both displays by
      * overview_draw(page, display) (the editor clears the display first; the Group buttons go back to the
      * editor, Shift + Group and the Step arrows still pick the instance (part, wave), the arrows and the

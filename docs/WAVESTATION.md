@@ -30,10 +30,9 @@ librarian-tested.
 - So: the two encoders (and the user's own MIDI joystick through a splitter into MIDI IN) send CC 16/17 on the
   SR's channel. No SysEx needed to play the vector. The editor can show the position by sniffing CC 16/17 on MIDI IN.
 
-## Firmware limits to lift
-- `midi.c` output queue is 256 events (~255 bytes of SysEx per message): a patch dump (861 bytes) needs ~290
-  packets. Either a bigger queue (512) or streaming a message out in chunks from `tick()` (needed for a bank dump).
-- `midi.c` input SysEx buffer `THRU_SYSEX_MAX` is 1024: a bank dump reply is 29.8 KB (static buffer or PSRAM).
+## Firmware limits (lifted)
+- Output queue 512 events (a patch dump needs ~290); a bank (29828 bytes) goes out in paced parts (`midi_send_sysex_part`).
+- Input SysEx buffer 32 KB in PSRAM; the main task stack 8192 (the import's file work overflowed 3584).
 
 ## How Edisyn does it (read 2026-10-20; its KorgWavestationPatch.html says the same)
 - Patches are auditioned in a performance: Edisyn's "Set up Test Performance in RAM 1 Slot 0" sends a single-part performance

@@ -147,6 +147,11 @@ static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_vol
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
 static const synth_t *synth = &synth_minimax;
+
+/* A long job in the driver (see synth_t.busy) */
+static bool synth_busy(void) { return synth->busy && synth->busy(); }
+static bool busy_shown;
+static int64_t busy_draw_at;
 static bool usb_ready;              /* Maschine (and DIN MIDI) connected */
 static int64_t activating_until;    /* synth being made ready, patch follows */
 static int synth_confirm = -1;      /* synth pressed once with unsaved edits */
@@ -417,6 +422,12 @@ static void pad_idle(int pad)
 
 static void update_group_leds(void)
 {
+    if (synth_busy()) {
+        for (int g = 0; g < 8; g++) {
+            maschine_set_group_led(g, 0, 0, 0);
+        }
+        return;
+    }
     if (mode != MODE_EDIT && !is_menu(mode)) {
         for (int g = 0; g < 8; g++) {
             maschine_set_group_led(g, 0, 0, 0);  /* sections can't be picked here */
@@ -502,6 +513,15 @@ static void update_group_leds(void)
  * bright when active); everything else is dark */
 static void update_button_leds(void)
 {
+    if (synth_busy()) {
+        /* each LED set once to its final value (see the tutorial's note) */
+        for (int bit = 0; bit < 48; bit++) {
+            if (bit < BTN_GROUP_A || bit >= BTN_GROUP_A + 8) {
+                maschine_set_button_led(bit, bit == BTN_ERASE && synth->busy_cancel ? LED_ON : 0);
+            }
+        }
+        return;
+    }
     if (mode == MODE_TUTORIAL) {
         /* Only the page's buttons lit; the arrows (pages) and Control (out)
          * dim; everything else dark */
@@ -628,7 +648,7 @@ static void fit_text(const font_t *font, const char *s, int max_px, char *buf, s
  * browsed, inverted), right display = where the arrow buttons lead */
 static void draw_header(void)
 {
-    if (overview || mode != MODE_EDIT) {
+    if (overview || mode != MODE_EDIT || synth_busy()) {
         return;
     }
     char buf[64];
@@ -717,7 +737,7 @@ static void draw_header(void)
 
 static void draw_column_only(int col)
 {
-    if (overview || mode != MODE_EDIT) {
+    if (overview || mode != MODE_EDIT || synth_busy()) {
         return;
     }
     int disp = col / 4;
@@ -897,6 +917,9 @@ static void draw_loading(void)
 
 static void draw_page(void)
 {
+    if (synth_busy()) {
+        return;  /* the driver's own screen */
+    }
     if (activating_until) {
         draw_loading();
         return;
@@ -2101,8 +2124,8 @@ static int accelerated(int d)
 
 static void editor_encoder_impl(int i, int delta)
 {
-    if (activating_until) {
-        return;  /* the synth isn't listening yet */
+    if (activating_until || synth_busy()) {
+        return;  /* the synth isn't listening yet / is busy */
     }
     if (mode == MODE_OVERVIEW) {
         return;  /* the overview only shows */
@@ -2290,6 +2313,15 @@ static void editor_button_impl(int bit, bool down)
 {
     if (!down && bit == arrow_bit) {
         arrow_bit = NONE;  /* let go: stop repeating */
+    }
+    if (synth_busy()) {
+        /* A long job: only Erase (cancel) does anything */
+        if (bit == BTN_SHIFT) {
+            shift_held = down;
+        } else if (down && bit == BTN_ERASE && synth->busy_cancel) {
+            synth->busy_cancel();
+        }
+        return;
     }
     if (bit == BTN_MUTE) {
         if (down) {
@@ -2554,7 +2586,7 @@ static void editor_button_impl(int bit, bool down)
 
 static void editor_main_encoder_impl(int steps)
 {
-    if (activating_until) {
+    if (activating_until || synth_busy()) {
         return;
     }
     if (volume_held && mode == MODE_EDIT) {
@@ -2655,6 +2687,23 @@ static void editor_tick_impl(int64_t now_us)
     textentry_tick(now_us);
     if (synth->tick) {
         synth->tick(now_us);
+    }
+    if (synth_busy()) {
+        busy_shown = true;
+        if (now_us >= busy_draw_at) {
+            busy_draw_at = now_us + 200000;
+            for (int d = 0; d < DISPLAY_COUNT; d++) {
+                display_clear(d);
+                synth->busy_draw(d);
+            }
+        }
+    } else if (busy_shown) {
+        busy_shown = false;
+        for (int d = 0; d < DISPLAY_COUNT; d++) {
+            display_clear(d);
+        }
+        draw_page();
+        update_group_leds();
     }
     if (patch_reload_at && now_us > patch_reload_at) {
         patch_reload_at = 0;
@@ -2856,6 +2905,9 @@ static void editor_connected_impl(void)
 /* Pads play notes on the synth's channel, or type in the name screen */
 static void editor_pad_impl(int pad, bool down, int raw)
 {
+    if (synth_busy()) {
+        return;  /* notes would end up inside the job's SysEx on the DIN cable */
+    }
     if (activating_until && down) {
         return;  /* a note now could be taken as the plug-in's confirm note */
     }

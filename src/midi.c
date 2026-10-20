@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "usb/usb_helpers.h"
 #include "midi.h"
@@ -115,12 +116,41 @@ bool midi_send_sysex(const uint8_t *data, size_t len)
     return true;
 }
 
+/* A long System Exclusive message sent in parts (a bank dump is 30 KB: it can't be queued whole, and the DIN
+ * cable takes ~3 KB/s, so the caller paces the parts). The first part starts with F0, the last ends with F7; the
+ * other parts are multiples of 3 bytes. False if the queue has no room now (nothing is sent: try again). */
+bool midi_send_sysex_part(const uint8_t *data, size_t len, bool last)
+{
+    if (!attached || len == 0 || (!last && len % 3)) {
+        return false;
+    }
+    size_t packets = (len + 2) / 3;
+    if (QUEUE_LEN - (q_head - q_tail) < packets) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i += 3) {
+        size_t n = len - i < 3 ? len - i : 3;
+        bool end = last && i + n == len;
+        uint8_t *ev = queue[q_head % QUEUE_LEN];
+        ev[0] = (MIDI_CABLE << 4) | (end ? 4 + n : 4);
+        ev[1] = data[i];
+        ev[2] = n > 1 ? data[i + 1] : 0;
+        ev[3] = n > 2 ? data[i + 2] : 0;
+        q_head++;
+    }
+    out_kick();
+    return true;
+}
+
 /* ---- MIDI thru ---- */
 
-#define THRU_SYSEX_MAX 1024
+#define THRU_SYSEX_MAX 1024      /* what goes back out (thru) */
+#define SYSEX_IN_MAX 32768       /* what is collected for the handler: a bank dump is 29828 bytes */
 static midi_thru_t thru_mode;
 static int thru_channel;
-static uint8_t thru_sysex[THRU_SYSEX_MAX];
+static uint8_t thru_sysex_small[THRU_SYSEX_MAX];
+static uint8_t *thru_sysex = thru_sysex_small;  /* in PSRAM when there is some */
+static size_t thru_cap = THRU_SYSEX_MAX;
 static size_t thru_sysex_len;
 static bool thru_sysex_overflow;
 
@@ -158,6 +188,15 @@ void midi_set_sysex_handler(midi_sysex_handler_t fn)
  * reply) and for thru */
 static void sysex_in(const uint8_t *ev)
 {
+    static bool grown;
+    if (!grown) {
+        grown = true;  /* once: PSRAM if there is any */
+        uint8_t *big = heap_caps_malloc(SYSEX_IN_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (big) {
+            thru_sysex = big;
+            thru_cap = SYSEX_IN_MAX;
+        }
+    }
     int cin = ev[0] & 0x0F;
     {
         int n = cin == 0x4 ? 3 : cin - 4;
@@ -166,7 +205,7 @@ static void sysex_in(const uint8_t *ev)
             thru_sysex_overflow = false;
         }
         for (int k = 0; k < n; k++) {
-            if (thru_sysex_len < THRU_SYSEX_MAX) {
+            if (thru_sysex_len < thru_cap) {
                 thru_sysex[thru_sysex_len++] = ev[1 + k];
             } else {
                 thru_sysex_overflow = true;
@@ -174,12 +213,12 @@ static void sysex_in(const uint8_t *ev)
         }
         if (cin != 0x4) {
             if (thru_sysex_overflow) {
-                ESP_LOGW(TAG, "SysEx over %d bytes dropped", THRU_SYSEX_MAX);
+                ESP_LOGW(TAG, "SysEx over %d bytes dropped", (int)thru_cap);
             } else {
                 if (sysex_handler) {
                     sysex_handler(thru_sysex, thru_sysex_len);
                 }
-                if (thru_mode != MIDI_THRU_OFF) {
+                if (thru_mode != MIDI_THRU_OFF && thru_sysex_len <= THRU_SYSEX_MAX) {
                     midi_send_sysex(thru_sysex, thru_sysex_len);
                 }
             }
