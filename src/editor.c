@@ -1160,6 +1160,16 @@ static void enter_store(void)
     memset(encoder_acc, 0, sizeof(encoder_acc));
     set_store_target(patch_loaded != NONE && patch_number(patch_loaded) >= synth->first_user_patch
                      ? patch_loaded : NONE);
+    if (store_target == NONE) {
+        /* A new patch made from a factory one, or from a sound read from the
+         * unit, starts with that sound's name, not "User N" */
+        char own[sizeof(store_name)];
+        if (patch_loaded != NONE) {
+            snprintf(store_name, sizeof(store_name), "%s", patch_title(patch_loaded));
+        } else if (synth->sound_name && synth->sound_name(own, sizeof(own)) && own[0]) {
+            snprintf(store_name, sizeof(store_name), "%s", own);
+        }
+    }
     /* The sound keeps the category of the patch it was made from */
     store_category = patch_loaded != NONE ? patch_category(patch_loaded) : 0;
     draw_page();
