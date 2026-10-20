@@ -7,6 +7,7 @@ and writes, under data/:
   ws/wavesq/NN    names of wave sequences 0-31 per bank NN (0 RAM1 .. 11 Card)
   ws/patches/NN   names of the patches per bank (35 lines)
   ws/perfs/NN     names of the performances per bank (50 lines)
+  wsperf/000 Init the init performance (181 bytes: name 16, effects 21, 8 parts x 18), part 1 playing RAM 1 #0
   wsp/000 Init    the init patch: a library patch is one patch as the SR keeps it, 426 bytes
                   (Edisyn's KorgWavestationPatch.init is a dump message, 852 nibbles), made
                   playable: every wave the PCM wave "saw" (waves 0-31 are bank-bound wave sequences,
@@ -84,6 +85,23 @@ def main():
         data[base + 82] = 3                                                        # buses A and B
         data[base + 37] = 10                                                       # amp envelope time 4: release
         data[base + 40] = 99                                                       # amp envelope level 2: held
+    # the performance: Edisyn's KorgWavestationPerformance.init is not a usable dump (its body is noise), so this is
+    # the same as the firmware's test performance: no effects, part 1 plays RAM 1 patch 0, the other parts are off
+    perf = bytearray(181)
+    perf[0:16] = b"Init            "
+    perf[16], perf[17], perf[18] = 2, 2 | 128, 6 | 6 << 4
+    for pt in range(8):
+        q = 37 + 18 * pt
+        perf[q + 1] = 0 if pt == 0 else 0xFF   # patch number, -1 = off
+        perf[q + 2] = 99                       # volume
+        perf[q + 3] = 50                       # FX bus A/B 50/50
+        perf[q + 4] = 3 << 4 | 1 << 2 | 2      # play both, polyphonic, last note
+        perf[q + 5], perf[q + 6], perf[q + 7], perf[q + 8] = 0, 127, 1, 127
+        perf[q + 15] = 1                       # sustain pedal
+    os.makedirs(os.path.join(OUT, "wsperf"), exist_ok=True)
+    with open(os.path.join(OUT, "wsperf", "000 Init"), "wb") as f:
+        f.write(bytes(perf))
+    print("init performance:", bytes(perf[:16]).decode("ascii", "replace"))
     os.makedirs(os.path.join(OUT, "wsp"), exist_ok=True)
     with open(os.path.join(OUT, "wsp", "000 Init"), "wb") as f:
         f.write(bytes(data))

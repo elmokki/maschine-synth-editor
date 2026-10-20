@@ -40,6 +40,7 @@
 #include "midi.h"
 #include "storage.h"
 #include "synth.h"
+#include "ws_banks.h"
 
 static const char *TAG = "wsp";
 
@@ -70,11 +71,10 @@ static const char *TAG = "wsp";
 
 /* Bank numbers: the SR's own (parameter messages, dump headers) and the wave bank (Edisyn's order: RAM1-3,
  * ROM4-11, Card) as the patch data keeps it (low 2 bits + Bank_Exp bits) */
-static const uint8_t to_ws_bank[12] = {0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 2, 3};
-static const uint8_t from_ws_exp_bank[12] = {0, 1, 10, 11, 3, 4, 2, 5, 6, 7, 8, 9};
-static const uint8_t to_ws_exp_bank[12] = {0, 1, 6, 4, 5, 7, 8, 9, 10, 11, 2, 3};
-static const char *const bank_names[12] = {"RAM 1", "RAM 2", "RAM 3", "ROM 4", "ROM 5", "ROM 6",
-                                           "ROM 7", "ROM 8", "ROM 9", "ROM 10", "ROM 11", "CARD"};
+#define to_ws_bank ws_to_ws_bank
+#define from_ws_exp_bank ws_from_ws_exp_bank
+#define to_ws_exp_bank ws_to_ws_exp_bank
+#define bank_names ws_bank_names
 
 static const char *const source_names[13] = {"KBD LIN", "KBD CTR", "VEL LIN", "VEL EXP", "LFO 1", "LFO 2",
                                              "ENV 1", "AFTERTCH", "AT+MODW", "MOD WHL", "MIDI 1", "MIDI 2",
@@ -649,312 +649,11 @@ static int field_message_value(int idx, int w)
     return fields[idx].kind == K_SLOPE ? v * 2 : v;
 }
 
-/* ---- bank dumps: IMPORT (the unit's banks into the library) and storing a patch into a RAM bank ----
- * The SR has no single-patch write. A bank's patches are one message, F0 42 3n 28 4C bank <35 x 852 nibbles> sum F7
- * (29828 bytes, asked for with 1C): storing reads the bank, replaces the patch in it and sends the whole bank
- * back. The unit's memory protect (GLOBAL page) must be off, and after a write the SR wants a YES on its front
- * panel (Edisyn: a known SR bug). The bank as it was is kept in /lfs/ws/backup/bankNN first. Library numbers:
- * bank * 35 + patch + 1 (1-420). */
+/* ---- bank dumps (ws_banks.c): IMPORT and REC > TO SR. Library numbers: bank * 35 + patch + 1 (1-420) ---- */
 #define BANK_PATCHES 35
-#define PATCH_NIB (2 * PATCH_LEN)
-#define BANK_HEADER 6
-#define BANK_MSG_LEN (BANK_HEADER + BANK_PATCHES * PATCH_NIB + 2)
-#define BANK_TIMEOUT_US 30000000
-#define STREAM_CHUNK 96      /* bytes a part, a multiple of 3 */
-#define STREAM_BYTE_US 340   /* the DIN cable's 320 us a byte, a little slower */
 #define LIB_PATCHES (12 * BANK_PATCHES)
-
-static const uint8_t from_ws_bank[12] = {0, 1, 10, 11, 2, 3, 4, 5, 6, 7, 8, 9};
+#define patch_kind ws_kind_patch
 static const uint8_t writable_banks[4] = {0, 1, 2, 11};
-static const char *const writable_tags[4] = {"R1", "R2", "R3", "CD"};
-
-static uint8_t *bank_buf;  /* in PSRAM */
-static bool bank_in;       /* a good bank reply is in bank_buf */
-static int bank_in_idx;
-typedef enum { JOB_NONE, JOB_ASK, JOB_WAIT, JOB_SAVE, JOB_SEND, JOB_ACK } job_stage_t;
-static job_stage_t job_stage;
-static bool job_is_store;
-static int job_bank, job_tries, job_saved, store_num, save_n, import_total;
-static uint8_t sr_code;  /* the SR's last status message: 21 write complete, 22 error, 23 data load completed, 24 error */
-static uint16_t import_mask;  /* banks still to read */
-static int64_t job_deadline, stream_next;
-static size_t stream_pos;
-static char lib_names[LIB_PATCHES][NAME_CHARS + 1];
-static bool lib_scanned;
-
-static bool bank_alloc(void)
-{
-    if (!bank_buf) {
-        bank_buf = heap_caps_malloc(BANK_MSG_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!bank_buf) {
-            bank_buf = malloc(BANK_MSG_LEN);
-        }
-    }
-    return bank_buf != NULL;
-}
-
-/* The library's names for slots (imported banks) */
-static void scan_library(void)
-{
-    if (lib_scanned) {
-        return;
-    }
-    lib_scanned = true;
-    memset(lib_names, 0, sizeof(lib_names));
-    DIR *dir = opendir(STORAGE_ROOT "/wsp");
-    struct dirent *e;
-    while (dir && (e = readdir(dir))) {
-        int n = atoi(e->d_name);
-        const char *sp = strchr(e->d_name, ' ');
-        if (n >= 1 && n <= LIB_PATCHES && sp) {
-            snprintf(lib_names[n - 1], sizeof(lib_names[0]), "%s", sp + 1);
-        }
-    }
-    if (dir) {
-        closedir(dir);
-    }
-}
-
-static void job_finish(const char *text)
-{
-    job_stage = JOB_NONE;
-    lib_scanned = false;
-    synth_patches_changed();
-    synth_notice(text);
-    ESP_LOGI(TAG, "bank job: %s", text);
-}
-
-static void request_bank(int bank)
-{
-    uint8_t msg[7] = {0xF0, 0x42, 0x30 + channel(), 0x28, 0x1C, to_ws_bank[bank], 0xF7};
-    midi_send_sysex(msg, sizeof(msg));
-}
-
-/* The earlier import of a bank out of the library (buffers are static: the main task's stack is small) */
-static void delete_bank_files(int bank)
-{
-    static char path[128];
-    mkdir(STORAGE_ROOT "/wsp", 0777);
-    DIR *dir = opendir(STORAGE_ROOT "/wsp");
-    struct dirent *e;
-    while (dir && (e = readdir(dir))) {
-        int n = atoi(e->d_name);
-        if (n > bank * BANK_PATCHES && n <= (bank + 1) * BANK_PATCHES) {
-            snprintf(path, sizeof(path), STORAGE_ROOT "/wsp/%.100s", e->d_name);
-            remove(path);
-        }
-    }
-    if (dir) {
-        closedir(dir);
-    }
-}
-
-/* Patch n of the bank in bank_buf into the library, one a tick so the editor stays alive; 1 if saved */
-static int save_patch_to_library(int bank, int n)
-{
-    static uint8_t raw[PATCH_LEN];
-    static char name[NAME_CHARS + 1], path[96];
-    const uint8_t *nib = bank_buf + BANK_HEADER + n * PATCH_NIB;
-    for (int i = 0; i < PATCH_LEN; i++) {
-        raw[i] = nib[2 * i] | nib[2 * i + 1] << 4;
-    }
-    memcpy(name, raw, NAME_CHARS);
-    name[NAME_CHARS] = 0;
-    for (int i = 0; i < NAME_CHARS; i++) {
-        if (name[i] < 32 || name[i] > 126 || name[i] == '/') {
-            name[i] = name[i] == '/' ? '_' : ' ';
-        }
-    }
-    for (int i = NAME_CHARS - 1; i >= 0 && name[i] == ' '; i--) {
-        name[i] = 0;
-    }
-    snprintf(path, sizeof(path), STORAGE_ROOT "/wsp/%03d %s", bank * BANK_PATCHES + n + 1, name[0] ? name : "Patch");
-    FILE *f = fopen(path, "wb");
-    int ok = 0;
-    if (f) {
-        ok = fwrite(raw, 1, PATCH_LEN, f) == PATCH_LEN;
-        fclose(f);
-    }
-    return ok;
-}
-
-/* Our patch into the bank in bank_buf, the bank's checksum redone; the bank as it was kept first */
-static void prepare_store(void)
-{
-    mkdir(STORAGE_ROOT "/ws", 0777);
-    mkdir(STORAGE_ROOT "/ws/backup", 0777);
-    char path[64];
-    snprintf(path, sizeof(path), STORAGE_ROOT "/ws/backup/bank%02d", job_bank);
-    FILE *f = fopen(path, "wb");
-    if (f) {
-        fwrite(bank_buf, 1, BANK_MSG_LEN, f);
-        fclose(f);
-    }
-    recompute_derived();
-    uint8_t *dst = bank_buf + BANK_HEADER + store_num * PATCH_NIB;
-    for (int i = 0; i < PATCH_LEN; i++) {
-        dst[2 * i] = patch[i] & 0x0F;
-        dst[2 * i + 1] = patch[i] >> 4;
-    }
-    int sum = 0;
-    for (int i = BANK_HEADER; i < BANK_MSG_LEN - 2; i++) {
-        sum += bank_buf[i];
-    }
-    bank_buf[2] = 0x30 + channel();
-    bank_buf[BANK_MSG_LEN - 2] = sum & 0x7F;
-    bank_buf[BANK_MSG_LEN - 1] = 0xF7;
-}
-
-static bool job_busy(void) { return job_stage != JOB_NONE; }
-
-static void job_tick(int64_t now)
-{
-    char buf[48];
-    switch (job_stage) {
-    case JOB_ASK:
-        bank_in = false;
-        ESP_LOGI(TAG, "asking for bank %d", job_bank);
-        request_bank(job_bank);
-        job_stage = JOB_WAIT;
-        job_deadline = now + BANK_TIMEOUT_US;
-        snprintf(buf, sizeof(buf), "%s %s...", job_is_store ? "READING" : "IMPORT", bank_names[job_bank]);
-        synth_notice(buf);
-        break;
-    case JOB_WAIT:
-        if (bank_in && bank_in_idx == job_bank) {
-            bank_in = false;
-            if (job_is_store) {
-                prepare_store();
-                job_stage = JOB_SEND;
-                stream_pos = 0;
-                stream_next = 0;
-                synth_notice("WRITING THE BANK TO THE SR...");
-            } else {
-                ESP_LOGI(TAG, "bank %d is in: saving", job_bank);
-                job_stage = JOB_SAVE;
-                save_n = -1;
-            }
-        } else if (now > job_deadline) {
-            if (++job_tries < 2) {
-                job_stage = JOB_ASK;  /* the first request after boot may get lost */
-            } else if (!job_is_store && (import_mask & ~(1 << job_bank))) {
-                import_mask &= ~(1 << job_bank);  /* no answer: next bank */
-                job_bank = __builtin_ctz(import_mask);
-                job_tries = 0;
-                job_stage = JOB_ASK;
-            } else {
-                job_finish(job_is_store ? "STORE STOPPED: no reply from the SR" : "IMPORT STOPPED: no reply from the SR");
-            }
-        }
-        break;
-    case JOB_SAVE:
-        if (save_n < 0) {
-            delete_bank_files(job_bank);  /* the earlier import of this bank */
-            save_n = 0;
-        } else if (save_n < BANK_PATCHES) {
-            job_saved += save_patch_to_library(job_bank, save_n++);
-        } else {
-            import_mask &= ~(1 << job_bank);
-            if (import_mask) {
-                job_bank = __builtin_ctz(import_mask);
-                job_tries = 0;
-                job_stage = JOB_ASK;
-            } else {
-                snprintf(buf, sizeof(buf), "IMPORTED %d PATCHES", job_saved);
-                job_finish(buf);
-            }
-        }
-        break;
-    case JOB_SEND: {
-        if (now < stream_next) {
-            break;
-        }
-        size_t rem = BANK_MSG_LEN - stream_pos, n = rem > STREAM_CHUNK ? STREAM_CHUNK : rem;
-        bool last = n == rem;
-        if (midi_send_sysex_part(bank_buf + stream_pos, n, last)) {
-            stream_pos += n;
-            stream_next = now + (int64_t)n * STREAM_BYTE_US;
-            if (last) {
-                sr_code = 0;
-                job_deadline = now + 8000000;
-                job_stage = JOB_ACK;  /* the SR answers when it has taken the bank */
-            }
-        }
-        break;
-    }
-    case JOB_ACK:
-        if (sr_code == 0x23 || sr_code == 0x21) {
-            job_finish("SR: DATA LOADED. PRESS YES ON THE SR");
-        } else if (sr_code == 0x24 || sr_code == 0x22) {
-            job_finish("SR: ERROR - memory protect OFF? (GLOBAL)");
-        } else if (now > job_deadline) {
-            job_finish("SENT, NO ANSWER. PRESS YES ON THE SR");
-        }
-        break;
-    default:
-        break;
-    }
-}
-
-/* ---- the job's screen (synth_t.busy): over everything, no input; it can't be cancelled (a bank half read or
- * sent leaves the SR and the editor out of step) ---- */
-
-static bool busy_now(void) { return job_busy(); }
-
-static void busy_draw(int disp)
-{
-    char buf[64];
-    int64_t now = esp_timer_get_time();
-    int banks_done = import_total - __builtin_popcount(import_mask & 0x0FFF);
-    float frac;  /* of the whole job */
-    const char *status;
-    int elapsed_s = job_stage == JOB_WAIT ? (int)((now - (job_deadline - BANK_TIMEOUT_US)) / 1000000) : 0;
-    switch (job_stage) {
-    case JOB_ASK:
-    case JOB_WAIT:
-        status = job_is_store ? "reading the bank" : "waiting for the dump";
-        frac = elapsed_s / 15.0f > 0.95f ? 0.95f : elapsed_s / 15.0f;
-        break;
-    case JOB_SAVE:
-        status = "saving the patches";
-        frac = save_n < 0 ? 0.0f : (float)save_n / BANK_PATCHES;
-        break;
-    case JOB_SEND:
-        status = "writing the bank";
-        frac = (float)stream_pos / BANK_MSG_LEN;
-        break;
-    default:
-        status = "waiting for the SR's answer";
-        frac = 1.0f;
-        break;
-    }
-    float total = job_is_store ? (job_stage <= JOB_WAIT ? 0.4f * frac
-                                  : job_stage == JOB_SEND ? 0.4f + 0.6f * frac : 1.0f)
-                                : (banks_done + (job_stage == JOB_SAVE ? 0.5f + 0.5f * frac : 0.5f * frac)) / import_total;
-    if (disp == 0) {
-        display_text(0, 1, 0, &font_small, job_is_store ? "STORING TO THE SR" : "IMPORTING FROM THE SR", true);
-        display_fill_rect(0, 0, 11, 255, 1, true);
-        if (job_is_store) {
-            snprintf(buf, sizeof(buf), "%s  patch %d", bank_names[job_bank], store_num);
-        } else {
-            snprintf(buf, sizeof(buf), "%s  (%d / %d)", bank_names[job_bank], banks_done + 1, import_total);
-        }
-        display_text(0, 4, 18, &font_medium, buf, true);
-        if (job_stage == JOB_WAIT) {
-            snprintf(buf, sizeof(buf), "%s  %d s", status, elapsed_s);
-        } else {
-            snprintf(buf, sizeof(buf), "%s", status);
-        }
-        display_text(0, 4, 42, &font_small, buf, true);
-    } else {
-        display_text(1, 1, 0, &font_small, "do not touch the SR or the knobs", true);
-        display_fill_rect(1, 0, 11, 255, 1, true);
-        display_rect(1, 6, 18, 242, 18, true);
-        display_fill_rect(1, 8, 20, (int)(238 * (total > 1.0f ? 1.0f : total)), 14, true);
-        snprintf(buf, sizeof(buf), "%d %%", (int)(total * 100));
-        display_text(1, 6, 42, &font_medium, buf, true);
-    }
-}
 
 static void tick(int64_t now)
 {
@@ -966,8 +665,8 @@ static void tick(int64_t now)
         armed = -1;
         synth_redraw();
     }
-    if (job_busy()) {
-        job_tick(now);
+    if (ws_banks_busy()) {
+        ws_banks_tick(now);
         return;
     }
     if (now < next_send_us) {
@@ -1831,26 +1530,8 @@ static void read_patch(void)
 
 static void sysex_in(const uint8_t *d, size_t len)
 {
-    if (len == BANK_MSG_LEN && d[1] == 0x42 && d[3] == 0x28 && d[4] == 0x4C) {
-        /* F0 42 3n 28 4C bank <35 x 852 nibbles> sum F7: kept for the job waiting for it */
-        int sum = 0;
-        for (size_t i = BANK_HEADER; i < len - 2; i++) {
-            sum += d[i];
-        }
-        if ((sum & 0x7F) != d[len - 2]) {
-            ESP_LOGW(TAG, "bank dump: bad checksum");
-        } else if (job_stage == JOB_WAIT && bank_alloc()) {
-            memcpy(bank_buf, d, len);
-            bank_in_idx = from_ws_bank[d[5] % 12];
-            bank_in = true;
-            ESP_LOGI(TAG, "bank %d received", bank_in_idx);
-        }
-        return;
-    }
-    if (len == 6 && d[1] == 0x42 && d[3] == 0x28) {
-        sr_code = d[4];  /* 21 write complete, 22 write error, 23 data load completed, 24 data load error */
-        ESP_LOGI(TAG, "SR status %02X", d[4]);
-        return;
+    if (ws_banks_sysex(d, len)) {
+        return;  /* a bank dump or a status message: the job's */
     }
     /* F0 42 3n 28 40 bank num <852 nibbles> sum F7 */
     if (len != 861 || d[1] != 0x42 || d[3] != 0x28 || d[4] != 0x40) {
@@ -1954,40 +1635,33 @@ static bool patch_save(const char *path)
 
 static void import_start(void)
 {
-    if (job_busy()) {
-        return;
-    }
+    uint16_t mask;
     switch (synth_setting(SETTING_IMPORT) & 3) {
-    case 0: import_mask = 0x0007; break;  /* RAM 1-3 */
-    case 1: import_mask = 0x07F8; break;  /* ROM 4-11 */
-    case 2: import_mask = 0x0800; break;  /* the card */
-    default: import_mask = 1 << edit_bank(); break;
+    case 0: mask = 0x0007; break;  /* RAM 1-3 */
+    case 1: mask = 0x07F8; break;  /* ROM 4-11 */
+    case 2: mask = 0x0800; break;  /* the card */
+    default: mask = 1 << edit_bank(); break;
     }
-    job_is_store = false;
-    job_bank = __builtin_ctz(import_mask);
-    import_total = __builtin_popcount(import_mask);
-    job_tries = job_saved = 0;
-    job_stage = JOB_ASK;
+    ws_banks_import(&patch_kind, mask, channel());
 }
 
 static void unit_slot_name(int slot, char *buf, size_t len)
 {
     slot = slot < 0 ? 0 : slot > 4 * BANK_PATCHES - 1 ? 4 * BANK_PATCHES - 1 : slot;
-    snprintf(buf, len, "%s:%02d", writable_tags[slot / BANK_PATCHES], slot % BANK_PATCHES);
+    snprintf(buf, len, "%s:%02d", ws_bank_tags[writable_banks[slot / BANK_PATCHES]], slot % BANK_PATCHES);
 }
 
 /* What the slot holds, as far as the library's import of its bank knows */
 static void unit_slot_info(int slot, char *buf, size_t len)
 {
-    scan_library();
-    int n = writable_banks[(slot / BANK_PATCHES) & 3] * BANK_PATCHES + slot % BANK_PATCHES;
-    snprintf(buf, len, "%.12s", lib_names[n]);
+    snprintf(buf, len, "%.12s",
+             ws_banks_lib_name(&patch_kind, writable_banks[(slot / BANK_PATCHES) & 3], slot % BANK_PATCHES));
 }
 
 /* The slot's bank is read, the patch put in it and the bank sent back */
 static void unit_store(int slot, const char *name)
 {
-    if (job_busy()) {
+    if (ws_banks_busy()) {
         return;
     }
     ensure();
@@ -1995,13 +1669,10 @@ static void unit_store(int slot, const char *name)
         char c = i < NAME_CHARS && *name ? *name++ : ' ';
         patch[i] = c >= 32 && c < 127 ? c : ' ';
     }
-    slot = slot < 0 ? 0 : slot > 4 * BANK_PATCHES - 1 ? 4 * BANK_PATCHES - 1 : slot;
-    job_bank = writable_banks[slot / BANK_PATCHES];
-    store_num = slot % BANK_PATCHES;
-    job_is_store = true;
-    job_tries = 0;
-    job_stage = JOB_ASK;
     name_dirty = true;
+    recompute_derived();
+    slot = slot < 0 ? 0 : slot > 4 * BANK_PATCHES - 1 ? 4 * BANK_PATCHES - 1 : slot;
+    ws_banks_store(&patch_kind, writable_banks[slot / BANK_PATCHES], slot % BANK_PATCHES, patch, channel());
 }
 
 /* The header's label for an imported patch: its place in the SR instead of the library number */
@@ -2013,9 +1684,7 @@ static void patch_label(const char *file, char *buf, size_t len)
         snprintf(buf, len, "%s", file);
         return;
     }
-    static const char *const tags[12] = {"R1", "R2", "R3", "ROM4", "ROM5", "ROM6", "ROM7", "ROM8", "ROM9", "ROM10",
-                                         "ROM11", "CD"};
-    snprintf(buf, len, "%s:%02d%s", tags[(n - 1) / BANK_PATCHES], (n - 1) % BANK_PATCHES, sp);
+    snprintf(buf, len, "%s:%02d%s", ws_bank_tags[(n - 1) / BANK_PATCHES], (n - 1) % BANK_PATCHES, sp);
 }
 
 static int unknown_count(void) { return 0; }
@@ -2031,7 +1700,7 @@ static const synth_tip_t tips[] = {
                      "never WRITE it on the SR."},
      {BTN_CONTROL, BTN_AUTO, -1, -1, -1, -1, -1, -1}},
     {"IMPORT, STORE", {"CONTROL > IMPORT (twice): the banks the", "IMPORT setting names, as library patches", "1-420 (bank x 35 + patch + 1).",
-                       "REC > TO SR (twice): reads the bank, puts", "the patch in, sends the bank back.", "SR: PROTECT INT OFF, then YES on the SR.",
+                       "REC > TO SR (twice): reads the bank, puts", "the patch in, sends the bank back.", "SR: PROTECT INT must be OFF.",
                        "Nothing works while it runs."},
      {BTN_CONTROL, BTN_REC, -1, -1, -1, -1, -1, -1}},
 };
@@ -2078,8 +1747,8 @@ const synth_t synth_wsp = {
     .read = read_patch,
     .sysex_in = sysex_in,
     .tick = tick,
-    .busy = busy_now,
-    .busy_draw = busy_draw,
+    .busy = ws_banks_busy,
+    .busy_draw = ws_banks_draw,
     .action_name = "IMPORT",
     .action = import_start,
     .unit_store_label = "TO SR",

@@ -40,6 +40,6 @@ librarian-tested.
   = patch number 0xFF) to the edit buffer, then the patch dump (`40`, 861 bytes) goes to the part's patch.
 - A bank holds 50 performances, 35 patches and 32 wave sequences (+ 500 steps of memory); the dump types are separate.
   PCM waves (486) exist only in ROM and on cards; a patch's wave number 0-31 is a wave sequence of the wave's bank.
-- EXECUTE_WRITE (466) "does nothing" (Edisyn's comment); writing a patch into RAM = bank dump, then press Yes on the SR.
+- EXECUTE_WRITE (466) "does nothing" (Edisyn's comment); writing a patch into RAM = bank dump (Edisyn says press Yes on the SR; not needed in practice).
 - MIDI page: Param (SysEx parameters) must be RECEIVE (default DISABLE) - dumps and dump requests work regardless.
 - Wave sequence steps: duration and crossfade in units of about 24 ms; loop (FWD or B/F), start step + modulation.

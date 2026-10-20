@@ -142,7 +142,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110, &synth_wsp};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110, &synth_wsp, &synth_wsperf};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
@@ -1923,9 +1923,19 @@ static void draw_synths(void)
         if (i == synth_confirm) {
             draw_card_name(disp, x, front_y, "SURE?", !active);
         } else if (n > 1) {
-            /* the device on top, this entry below */
-            draw_card_line(disp, x, front_y + 4, s->device, !active);
-            draw_card_line(disp, x, front_y + 14, s->entry, !active);
+            /* the device on top, this entry below; a device name of several words puts its first word on top and
+             * the rest before the entry ("Wavestation" / "SR PATCH") */
+            const char *sp = strchr(s->device, ' ');
+            char top[24], low[32];
+            if (sp) {
+                snprintf(top, sizeof(top), "%.*s", (int)(sp - s->device), s->device);
+                snprintf(low, sizeof(low), "%s %s", sp + 1, s->entry);
+            } else {
+                snprintf(top, sizeof(top), "%s", s->device);
+                snprintf(low, sizeof(low), "%s", s->entry);
+            }
+            draw_card_line(disp, x, front_y + 4, top, !active);
+            draw_card_line(disp, x, front_y + 14, low, !active);
         } else {
             draw_card_name(disp, x, front_y, s->name, !active);
         }
