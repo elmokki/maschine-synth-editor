@@ -50,7 +50,10 @@ static const char *TAG = "wsp";
 #define SEND_GAP_US 40000
 
 /* ---- parameter numbers (appendix 4) ---- */
+#define PRM_CURRENT_BANK 0
+#define PRM_CURRENT_PROG 2
 #define PRM_MIDI_MODE 4
+#define PRM_CURRENT_PART 56
 #define PRM_PART_PATCH_BANK 57
 #define PRM_PART_PATCH_NUM 58
 #define PRM_PART_PATCH_NAME 59
@@ -270,11 +273,14 @@ static const synth_page_t pages[] = {
 
 #define SETTING_BANK 1
 #define SETTING_PATCH 2
+#define SETTING_BULK 3
 static const synth_setting_t settings[] = {
     [SETTING_CHANNEL] = {"CHANNEL", SET_CHANNEL, 0, 15, 0},
     /* The patch the SR's part 1 plays while editing: bank 0-11 (RAM 1-3, ROM 4-11, Card), number 0-34 */
     [SETTING_BANK] = {"EDIT BANK", SET_NUMBER, 0, 11, 0},
     [SETTING_PATCH] = {"EDIT PATCH", SET_NUMBER, 0, 34, 0},
+    /* How a library patch goes to the SR: 1 = as one patch dump (fast), 0 = value by value (slow) */
+    [SETTING_BULK] = {"LOAD AS", SET_NUMBER, 0, 1, 1},
 };
 
 static void setting_note(int setting, char *buf, size_t len)
@@ -282,6 +288,8 @@ static void setting_note(int setting, char *buf, size_t len)
     if (setting == SETTING_BANK) {
         int b = synth_setting(SETTING_BANK);
         snprintf(buf, len, "%s", bank_names[b < 0 ? 0 : b > 11 ? 11 : b]);
+    } else if (setting == SETTING_BULK) {
+        snprintf(buf, len, "%s", synth_setting(SETTING_BULK) ? "PATCH DUMP" : "PARAMETERS");
     }
 }
 
@@ -299,6 +307,7 @@ static int64_t armed_until;
 #define ARM_US 3000000
 static int sent_wave = -1, sent_point = -1;  /* what the SR has selected, as far as we know */
 static int sent_bank = -1, sent_num = -1;
+static bool dump_pending;               /* the whole patch still to go to the SR as a dump */
 static int64_t next_send_us;
 /* the envelope trail's state (see below) */
 static int trail_key = -1;       /* 0-7: (envelope: amp 0, envelope 1 1) * 4 + wave */
@@ -474,34 +483,144 @@ static bool send_param(int param, int value)
     return send_text(param, text);
 }
 
-/* The patch the SR's part 1 plays: Edisyn's selection sequence (mode juggling; the patch takes ~300 ms) */
+/* ---- dumps: the patch (861 bytes) and a test performance (371) as the SR's own messages ---- */
+
+static uint8_t dump_buf[900];
+
+/* F0 42 3n 28 <type> <bank> <num> <data as nibbles, low then high> <sum of the nibbles> F7 */
+static size_t build_dump(uint8_t type, int bank, int num, const uint8_t *data, size_t len)
+{
+    size_t n = 0;
+    int sum = 0;
+    dump_buf[n++] = 0xF0;
+    dump_buf[n++] = 0x42;
+    dump_buf[n++] = 0x30 + channel();
+    dump_buf[n++] = 0x28;
+    dump_buf[n++] = type;
+    dump_buf[n++] = to_ws_bank[bank];
+    dump_buf[n++] = num;
+    for (size_t i = 0; i < len; i++) {
+        dump_buf[n++] = data[i] & 0x0F;
+        dump_buf[n++] = data[i] >> 4;
+        sum += (data[i] & 0x0F) + (data[i] >> 4);
+    }
+    dump_buf[n++] = sum & 0x7F;
+    dump_buf[n++] = 0xF7;
+    return n;
+}
+
+static int edit_bank(void)
+{
+    int b = synth_setting(SETTING_BANK);
+    return b < 0 ? 0 : b > 11 ? 11 : b;
+}
+
+static size_t build_patch_dump(void)
+{
+    ensure();
+    recompute_derived();
+    return build_dump(0x40, edit_bank(), synth_setting(SETTING_PATCH), patch, PATCH_LEN);
+}
+
+/* Edisyn's "test performance" (its Wavestation menu): a performance with a single part at full volume playing
+ * the patch, the other parts off, no effects, the rest at the defaults; sent as RAM 1 #0. A single performance
+ * dump goes to the SR's edit buffer, not into memory - as long as it isn't written. */
+static size_t build_test_performance(void)
+{
+    uint8_t perf[181] = {0};
+    memcpy(perf, "Edit            ", 16);
+    perf[16] = 2;           /* FX 1: no effect, parallel */
+    perf[17] = 2 | 128;     /* FX 2: no effect; extended effect mode (the one Edisyn writes) */
+    perf[18] = 6 | 6 << 4;  /* mix 3 and 4: 5/5 */
+    for (int pt = 0; pt < 8; pt++) {
+        uint8_t *q = perf + 37 + 18 * pt;
+        int exp = pt == 0 ? to_ws_exp_bank[edit_bank()] : 0;
+        q[0] = exp % 4;                                        /* the patch's bank (low part) */
+        q[1] = pt == 0 ? synth_setting(SETTING_PATCH) : 0xFF;  /* its number; -1 = off */
+        q[2] = 99;                                             /* volume */
+        q[3] = 50;                                             /* FX bus: A/B 50/50 */
+        q[4] = (exp / 4 & 3) << 6 | 3 << 4 | 1 << 2 | 2;       /* bank (high part), play: both, polyphonic, last note */
+        q[5] = 0;                                              /* key range */
+        q[6] = 127;
+        q[7] = 1;                                              /* velocity range */
+        q[8] = 127;
+        q[15] = 1;                                             /* sustain pedal */
+    }
+    return build_dump(0x49, 0, 0, perf, sizeof(perf));
+}
+
+/* The patch the SR's part 1 plays, Edisyn's way: select a performance (RAM 1 #0), send the test performance, the
+ * patch to part 1 as usual, and the patch itself as a dump (changing patches is slow: the SR needs the pauses) */
+typedef enum { S_PARAM, S_CC, S_PC, S_PERF, S_PATCH } step_kind_t;
 typedef struct {
+    uint8_t kind;
     uint16_t param;
-    int8_t value;
+    int16_t value;
     uint16_t gap_ms;
 } step_t;
-static step_t seq[8];
+static step_t seq[24];
 static int seq_n, seq_i;
+#define STEP(k, p, v, g) (seq[seq_n++] = (step_t){k, p, v, g})
 
 static void select_edit_patch(void)
 {
-    int bank = synth_setting(SETTING_BANK), num = synth_setting(SETTING_PATCH);
-    bank = bank < 0 ? 0 : bank > 11 ? 11 : bank;
+    int bank = edit_bank(), num = synth_setting(SETTING_PATCH);
     seq_n = seq_i = 0;
-    seq[seq_n++] = (step_t){PRM_MIDI_MODE, 1, 40};
-    seq[seq_n++] = (step_t){PRM_MIDI_MODE, 0, 40};
-    seq[seq_n++] = (step_t){PRM_PART_PATCH_BANK, to_ws_bank[bank], 40};
-    seq[seq_n++] = (step_t){PRM_PART_PATCH_NUM, num, 300};
-    seq[seq_n++] = (step_t){PRM_MIDI_MODE, 1, 40};  /* changing the patch turns on OMNI: off again */
-    seq[seq_n++] = (step_t){PRM_PERF_MIDI_MODE, 1, 40};
+    STEP(S_PARAM, PRM_MIDI_MODE, 1, 40);
+    STEP(S_PARAM, PRM_MIDI_MODE, 0, 40);
+    STEP(S_CC, 0, 0, 20);
+    STEP(S_CC, 32, 0, 20);
+    STEP(S_PC, 0, 0, 20);
+    STEP(S_PARAM, PRM_CURRENT_BANK, 0, 40);
+    STEP(S_PARAM, PRM_CURRENT_PROG, 0, 300);
+    STEP(S_PERF, 0, 0, 300);
+    STEP(S_PARAM, PRM_MIDI_MODE, 1, 40);
+    STEP(S_PARAM, PRM_MIDI_MODE, 0, 40);
+    STEP(S_PARAM, PRM_PART_PATCH_BANK, to_ws_bank[bank], 40);
+    STEP(S_PARAM, PRM_PART_PATCH_NUM, num, 300);
+    STEP(S_PARAM, PRM_MIDI_MODE, 1, 40);  /* changing the patch turns on OMNI: off again */
+    STEP(S_PARAM, PRM_PERF_MIDI_MODE, 1, 40);
+    if (synth_setting(SETTING_BULK)) {
+        STEP(S_PATCH, 0, 0, 300);
+    }
     sent_bank = bank;
     sent_num = num;
+}
+
+static bool send_step(const step_t *st)
+{
+    switch (st->kind) {
+    case S_PARAM:
+        return send_param(st->param, st->value);
+    case S_CC:
+        midi_send(0xB0 | channel(), st->param, st->value);
+        return true;
+    case S_PC:
+        midi_send(0xC0 | channel(), st->param, 0);
+        return true;
+    case S_PERF:
+        return midi_send_sysex(dump_buf, build_test_performance());
+    default:
+        return midi_send_sysex(dump_buf, build_patch_dump());
+    }
 }
 
 static void mark_all_dirty(void)
 {
     memset(dirty, 1, sizeof(dirty));
     name_dirty = true;
+}
+
+/* The whole patch to the SR: as a dump (then nothing is left to send) or value by value */
+static void push_patch(void)
+{
+    if (synth_setting(SETTING_BULK)) {
+        dump_pending = true;
+        memset(dirty, 0, sizeof(dirty));
+        name_dirty = false;
+    } else {
+        mark_all_dirty();
+    }
 }
 
 static int field_param(int idx, int w)
@@ -537,11 +656,15 @@ static void tick(int64_t now)
     }
     ensure();
     if (seq_i < seq_n) {
-        if (send_param(seq[seq_i].param, seq[seq_i].value)) {
+        if (send_step(&seq[seq_i])) {
             next_send_us = now + seq[seq_i].gap_ms * 1000LL;
             if (++seq_i == seq_n) {
                 sent_wave = sent_point = -1;
-                mark_all_dirty();  /* the SR plays its own patch now: ours goes over it */
+                push_patch();  /* the SR plays its own patch now (or ours already): ours goes over it */
+                dump_pending = false;
+                if (!synth_setting(SETTING_BULK)) {
+                    mark_all_dirty();
+                }
             }
         }
         return;
@@ -549,6 +672,14 @@ static void tick(int64_t now)
     int bank = synth_setting(SETTING_BANK), num = synth_setting(SETTING_PATCH);
     if (bank != sent_bank || num != sent_num) {
         select_edit_patch();
+        return;
+    }
+    if (dump_pending) {
+        if (midi_send_sysex(dump_buf, build_patch_dump())) {
+            dump_pending = false;
+            sent_wave = sent_point = -1;
+            next_send_us = now + 300000;
+        }
         return;
     }
     if (name_dirty) {
@@ -963,8 +1094,19 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     }
     int v = get_field(F_WAVE_NUM, cur_wave);
     char code[8], name[WAVE_NAME_LEN + 1];
-    snprintf(code, sizeof(code), v < 32 ? "WS%d" : "%d", v < 32 ? v : v - 32 + 1);
     wave_name(get_field(F_BANK, cur_wave), v, name, sizeof(name));
+    if (v < 32) {
+        /* a wave sequence (bound to the bank): "WaveSeq" small before its number */
+        snprintf(code, sizeof(code), "%d", v);
+        jv880_draw_code_name(disp, x, y, w, "", name);
+        int tw = display_text_width(&font_tiny, "WaveSeq"), nw = display_text_width(&font_medium, code);
+        int x0 = x + (w - (tw + 3 + nw)) / 2;
+        int base = y + 1 + font_medium.cap_top + font_medium.cap_height;
+        display_text(disp, x0, base - font_tiny.cap_top - font_tiny.cap_height, &font_tiny, "WaveSeq", true);
+        display_text(disp, x0 + tw + 3, y + 1, &font_medium, code, true);
+        return SYNTH_DRAW_FULL;
+    }
+    snprintf(code, sizeof(code), "%d", v - 32 + 1);
     jv880_draw_code_name(disp, x, y, w, code, name);
     return SYNTH_DRAW_FULL;
 }
@@ -1090,6 +1232,246 @@ static void page_draw(int pg, int disp)
     jv880_draw_env_ex(disp, lv, tm, 5, 3, false, false, !trail);
 }
 
+/* ---- patch overview (Grid) ----
+ * Page 0: the four waves side by side (wave and its name, bank, level, tuning, cutoff, buses, the amp envelope),
+ * page 1: the modulation, source by source - what each source does to the wave edited: its destinations and
+ * amounts (the direct velocity and keyboard routes first, then the modulators with an amount). */
+
+#define OV_HEADER_Y 12
+#define OV_ROW_H 8
+#define OV_ROWS 6  /* rows on one display (tiny font) below the header */
+#define OV_COLS 50
+
+static void ov_header(int disp, const char *left, const char *right)
+{
+    display_text(disp, 1, 0, &font_small, left, true);
+    if (right) {
+        int w = display_text_width(&font_small, right);
+        display_text(disp, 254 - w, 0, &font_small, right, true);
+    }
+    display_fill_rect(disp, 0, 11, 255, 1, true);
+}
+
+/* A small envelope picture: points 0-4 at levels lv[] (0-100) after times tm[] (0-127), the third held */
+static void mini_env(int disp, int x, int y, int w, int h, const int *lv, const int *tm)
+{
+    int total = 24;
+    for (int i = 1; i < 5; i++) {
+        total += 6 + tm[i];
+    }
+    int px = x, py = y + h - 1 - lv[0] * (h - 1) / 100;
+    int pos = 0;
+    for (int i = 1; i < 5; i++) {
+        pos += 6 + tm[i];
+        int nx = x + pos * (w - 1) / total, ny = y + h - 1 - lv[i] * (h - 1) / 100;
+        display_line(disp, px, py, nx, ny, true);
+        px = nx;
+        py = ny;
+        if (i == 3) {  /* the sustain */
+            pos += 24;
+            nx = x + pos * (w - 1) / total;
+            display_line(disp, px, py, nx, py, true);
+            px = nx;
+        }
+    }
+}
+
+static void ov_waves(int disp)
+{
+    ensure();
+    char buf[48], name[WAVE_NAME_LEN + 1];
+    int s = patch[86];
+    snprintf(buf, sizeof(buf), "OVERVIEW: waves  (structure %s)", structure_names[s > 2 ? 2 : s]);
+    ov_header(disp, buf, NULL);
+    if (disp == 1) {
+        snprintf(buf, sizeof(buf), "%.15s", (const char *)patch);
+        for (int i = (int)strlen(buf) - 1; i >= 0 && buf[i] == ' '; i--) {
+            buf[i] = 0;
+        }
+        int w = display_text_width(&font_small, buf);
+        display_fill_rect(1, 0, 0, 255, 11, false);
+        display_text(1, 254 - w, 0, &font_small, buf, true);
+        display_text(1, 1, 0, &font_small, "Grid: close", true);
+    }
+    for (int k = 0; k < 2; k++) {
+        int wv = disp * 2 + k, x0 = k * 128;
+        if (!wave_active(wv)) {
+            snprintf(buf, sizeof(buf), "%c  (not used)", 'A' + wv);
+            display_text(disp, x0 + 2, 13, &font_tiny, buf, true);
+            continue;
+        }
+        int v = get_field(F_WAVE_NUM, wv), bank = get_field(F_BANK, wv);
+        wave_name(bank, v, name, sizeof(name));
+        snprintf(buf, sizeof(buf), v < 32 ? "%c WaveSeq %d %s" : "%c #%d %s", 'A' + wv, v < 32 ? v : v - 32 + 1, name);
+        display_text(disp, x0 + 2, 13, &font_tiny, buf, true);
+        snprintf(buf, sizeof(buf), "%s  LVL %d", bank_names[bank < 0 ? 0 : bank > 11 ? 11 : bank], get_field(F_LEVEL, wv));
+        display_text(disp, x0 + 2, 21, &font_tiny, buf, true);
+        snprintf(buf, sizeof(buf), "TUNE %+d/%+d  CUT %d", get_field(F_COARSE, wv), get_field(F_FINE, wv),
+                 get_field(F_CUTOFF, wv));
+        display_text(disp, x0 + 2, 29, &font_tiny, buf, true);
+        snprintf(buf, sizeof(buf), "BUS %s%s%s%s%s", get_field(F_BUSA, wv) ? "A" : "", get_field(F_BUSB, wv) ? "B" : "",
+                 get_field(F_BUSC, wv) ? "C" : "", get_field(F_BUSD, wv) ? "D" : "",
+                 get_field(F_BUSA, wv) || get_field(F_BUSB, wv) || get_field(F_BUSC, wv) || get_field(F_BUSD, wv) ? "" : "-");
+        display_text(disp, x0 + 2, 37, &font_tiny, buf, true);
+        int lv[5], tm[5];
+        env_shape(0, wv, lv, tm);
+        mini_env(disp, x0 + 3, 46, 120, 17, lv, tm);
+    }
+    display_fill_rect(disp, 127, 12, 1, 52, false);
+    for (int y = 13; y < 63; y += 3) {
+        display_pixel(disp, 127, y, true);  /* a dotted line between the two waves */
+    }
+}
+
+/* ---- the modulation, source by source ---- */
+
+typedef struct {
+    uint8_t src;      /* 0-12 as the modulation sources; 13 = velocity (direct), 14 = keyboard (direct) */
+    const char *dest;
+    int16_t amount;
+} mod_t;
+#define MOD_MAX 40
+
+static int collect_mods(mod_t *out)
+{
+    int n = 0, w = cur_wave;
+    ensure();
+#define ADD(sr, de, am)                                   \
+    do {                                                  \
+        int a_ = (am);                                    \
+        if (a_ && n < MOD_MAX) {                          \
+            out[n++] = (mod_t){(sr), (de), (int16_t)a_};  \
+        }                                                 \
+    } while (0)
+    /* direct velocity and keyboard routes */
+    ADD(13, "AMP LEVEL", get_field(F_AE_VELA, w));
+    ADD(13, "AMP ATTACK", get_field(F_AE_VELR, w));
+    ADD(13, "ENV1 LEVEL", get_field(F_E1_VELA, w));
+    ADD(13, "ENV1 ATTACK", get_field(F_E1_VELR, w));
+    ADD(13, "PAN", get_field(F_PAN_VEL, w));
+    ADD(13, "PITCH RAMP", get_field(F_RAMP_VEL, w));
+    ADD(14, "AMP DECAY", get_field(F_AE_KBD, w));
+    ADD(14, "ENV1 RATE", get_field(F_E1_KBD, w));
+    ADD(14, "PAN", get_field(F_PAN_KBD, w));
+    ADD(14, "FILTER TRACK", get_field(F_FKBD, w));
+    /* the modulation matrix: (source, amount) pairs */
+    static const struct {
+        int8_t src, amt;
+        const char *dest;
+    } matrix[] = {
+        {F_PS1, F_PA1, "PITCH"}, {F_PS2, F_PA2, "PITCH"}, {F_AS1, F_AA1, "AMP"}, {F_AS2, F_AA2, "AMP"},
+        {F_FS1, F_FA1, "FILTER"}, {F_FS2, F_FA2, "FILTER"}, {F_L1_RSRC, F_L1_RAMT, "LFO1 RATE"},
+        {F_L1_DSRC, F_L1_DAMT, "LFO1 DEPTH"}, {F_L2_RSRC, F_L2_RAMT, "LFO2 RATE"},
+        {F_L2_DSRC, F_L2_DAMT, "LFO2 DEPTH"},
+    };
+    for (size_t i = 0; i < sizeof(matrix) / sizeof(matrix[0]); i++) {
+        ADD(get_field(matrix[i].src, w), matrix[i].dest, get_field(matrix[i].amt, w));
+    }
+    /* the vector mix (patch level): the AC axis from structure 2, BD from 4 */
+    int st = patch[86];
+    if (st >= 1) {
+        ADD(get_field(F_XS1, 0), "MIX AC", get_field(F_XA1, 0));
+        ADD(get_field(F_XS2, 0), "MIX AC", get_field(F_XA2, 0));
+    }
+    if (st >= 2) {
+        ADD(get_field(F_YS1, 0), "MIX BD", get_field(F_YA1, 0));
+        ADD(get_field(F_YS2, 0), "MIX BD", get_field(F_YA2, 0));
+    }
+#undef ADD
+    return n;
+}
+
+#define ROWS_MAX 40
+static char ov_rows[ROWS_MAX][OV_COLS + 2];
+static int ov_row_n, ov_scroll;
+
+/* A source's row: its name, then "DEST +amount" entries, continued on the next row when it's full */
+static void build_rows(void)
+{
+    mod_t mods[MOD_MAX];
+    int n = collect_mods(mods);
+    ov_row_n = 0;
+    /* order: velocity and keyboard (direct), then the matrix sources 0-12 */
+    static const int8_t order[15] = {13, 14, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    for (int oi = 0; oi < 15; oi++) {
+        int sr = order[oi];
+        char line[OV_COLS + 2];
+        int len = 0;
+        bool first = true, any = false;
+        const char *label = sr == 13 ? "VELOCITY" : sr == 14 ? "KEYBOARD" : source_names[sr];
+        for (int k = 0; k < n; k++) {
+            if (mods[k].src != sr) {
+                continue;
+            }
+            char entry[24];
+            snprintf(entry, sizeof(entry), "%s %+d", mods[k].dest, mods[k].amount);
+            if (!any) {
+                len = snprintf(line, sizeof(line), "%-8s ", label);
+                any = true;
+                first = true;
+            } else if (len + 2 + (int)strlen(entry) > OV_COLS) {
+                if (ov_row_n < ROWS_MAX) {
+                    snprintf(ov_rows[ov_row_n++], sizeof(ov_rows[0]), "%s", line);
+                }
+                len = snprintf(line, sizeof(line), "         ");
+                first = true;
+            }
+            len += snprintf(line + len, sizeof(line) - len, "%s%s", first ? "" : "  ", entry);
+            first = false;
+        }
+        if (any && ov_row_n < ROWS_MAX) {
+            snprintf(ov_rows[ov_row_n++], sizeof(ov_rows[0]), "%s", line);
+        }
+    }
+}
+
+static void ov_mods(int disp)
+{
+    build_rows();
+    char buf[48];
+    int max_scroll = ov_row_n > 2 * OV_ROWS ? ov_row_n - 2 * OV_ROWS : 0;
+    if (ov_scroll > max_scroll) {
+        ov_scroll = max_scroll;
+    }
+    snprintf(buf, sizeof(buf), "MODULATION  wave %c", 'A' + cur_wave);
+    ov_header(disp, disp ? "source  destination amount" : buf, disp ? (max_scroll ? "encoder: scroll" : "Grid: close") : NULL);
+    if (ov_row_n == 0 && disp == 0) {
+        display_text(0, 2, 20, &font_tiny, "Nothing is modulated: set a SOURCE and an", true);
+        display_text(0, 2, 28, &font_tiny, "AMOUNT on pages B-G (pitch, amp, filter,", true);
+        display_text(0, 2, 36, &font_tiny, "LFO mods, mix mod).", true);
+    }
+    for (int r = 0; r < OV_ROWS; r++) {
+        int idx = ov_scroll + disp * OV_ROWS + r;
+        if (idx < ov_row_n) {
+            display_text(disp, 1, 13 + r * OV_ROW_H, &font_tiny, ov_rows[idx], true);
+        }
+    }
+}
+
+static bool overview_scroll(int page, int steps)
+{
+    if (page != 1) {
+        return false;
+    }
+    build_rows();
+    int max_scroll = ov_row_n > 2 * OV_ROWS ? ov_row_n - 2 * OV_ROWS : 0;
+    if (!max_scroll) {
+        return false;  /* all of it is in view: the encoder turns the page */
+    }
+    ov_scroll += steps > 0 ? 1 : -1;
+    ov_scroll = ov_scroll < 0 ? 0 : ov_scroll > max_scroll ? max_scroll : ov_scroll;
+    return true;
+}
+
+static void overview_draw(int page, int disp)
+{
+    if (page == 0) {
+        ov_waves(disp);
+    } else {
+        ov_mods(disp);
+    }
+}
+
 /* ---- waves ---- */
 
 static void select_wave(int wv)
@@ -1139,7 +1521,6 @@ static bool activate(void)
 {
     ensure();
     select_edit_patch();
-    mark_all_dirty();
     return false;
 }
 
@@ -1188,7 +1569,7 @@ static bool revert(void)
         return false;
     }
     memcpy(patch, as_read, PATCH_LEN);
-    mark_all_dirty();
+    push_patch();
     return true;
 }
 
@@ -1221,7 +1602,7 @@ static bool patch_load(const char *path)
         return false;
     }
     memcpy(patch, buf, PATCH_LEN);
-    mark_all_dirty();
+    push_patch();
     from_unit = as_read_ok = false;
     if (!wave_active(cur_wave)) {
         cur_wave = 0;
@@ -1264,7 +1645,7 @@ static const synth_tip_t tips[] = {
     {"TO THE UNIT", {"Values go out one at a time (40 ms),", "so a library patch takes a while.",
                      "They edit the patch the SR's part 1", "plays: EDIT BANK / EDIT PATCH in Setup.",
                      "Not stored in the SR yet (no single-", "patch write: it goes via bank dumps).",
-                     "AUTO reads that patch."},
+                     "LOAD AS: patch dump or parameters."},
      {BTN_CONTROL, BTN_AUTO, -1, -1, -1, -1, -1, -1}},
 };
 
@@ -1292,6 +1673,9 @@ const synth_t synth_wsp = {
     .param_draw = param_draw,
     .page_draw = page_draw,
     .column_draw = column_draw,
+    .overview_pages = 2,
+    .overview_draw = overview_draw,
+    .overview_scroll = overview_scroll,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .revert = revert,

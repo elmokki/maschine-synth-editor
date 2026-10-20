@@ -34,3 +34,13 @@ librarian-tested.
 - `midi.c` output queue is 256 events (~255 bytes of SysEx per message): a patch dump (861 bytes) needs ~290
   packets. Either a bigger queue (512) or streaming a message out in chunks from `tick()` (needed for a bank dump).
 - `midi.c` input SysEx buffer `THRU_SYSEX_MAX` is 1024: a bank dump reply is 29.8 KB (static buffer or PSRAM).
+
+## How Edisyn does it (read 2026-10-20; its KorgWavestationPatch.html says the same)
+- Patches are auditioned in a performance: Edisyn's "Set up Test Performance in RAM 1 Slot 0" sends a single-part performance
+  dump (`F0 42 3n 28 49 bank num <362 nibbles> sum F7`, 8 parts x 18 bytes after a 16-byte name and 21 FX bytes; parts off
+  = patch number 0xFF) to the edit buffer, then the patch dump (`40`, 861 bytes) goes to the part's patch.
+- A bank holds 50 performances, 35 patches and 32 wave sequences (+ 500 steps of memory); the dump types are separate.
+  PCM waves (486) exist only in ROM and on cards; a patch's wave number 0-31 is a wave sequence of the wave's bank.
+- EXECUTE_WRITE (466) "does nothing" (Edisyn's comment); writing a patch into RAM = bank dump, then press Yes on the SR.
+- MIDI page: Param (SysEx parameters) must be RECEIVE (default DISABLE) - dumps and dump requests work regardless.
+- Wave sequence steps: duration and crossfade in units of about 24 ms; loop (FWD or B/F), start step + modulation.

@@ -220,14 +220,15 @@ static int16_t setting_values[MAX_SETTINGS];
 static int64_t settings_save_at;   /* when to write the settings file, 0 = nothing pending */
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
-typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL } ui_mode_t;
+typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL,
+               MODE_OVERVIEW } ui_mode_t;
 static ui_mode_t mode;
 
 /* Screens opened by their own button (Step, All, Pad Mode, Control) */
 static bool is_menu(ui_mode_t m)
 {
     return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP ||
-           m == MODE_TUTORIAL;
+           m == MODE_TUTORIAL || m == MODE_OVERVIEW;
 }
 
 static int store_target;  /* NONE = new patch, else index of a user patch */
@@ -241,6 +242,8 @@ static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
 static void draw_page(void);
+static void draw_patch_overview(void);
+static int po_page;  /* the patch overview's page (Grid) */
 static void end_browse(void);
 static void draw_pads(void);
 static void draw_tutorial(void);
@@ -533,6 +536,7 @@ static void update_button_leds(void)
                                          : mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_GRID, !synth->overview_draw ? 0 : mode == MODE_OVERVIEW ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
                                      : mode == MODE_CATEGORY || (menus && category_filter != ALL_CATEGORIES)
                                      ? LED_ON
@@ -549,16 +553,17 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
     /* Shift does something everywhere the menus are (Shift + Control: the
      * tutorial), and more on some synths and screens */
-    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || (edit && synth->shift_group);
+    bool overview_on = mode == MODE_OVERVIEW;
+    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || ((edit || overview_on) && synth->shift_group);
     maschine_set_button_led(BTN_SHIFT, !shift_useful ? 0 : shift_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
-    uint8_t step_led = !edit || !synth->instance_step ? 0
+    uint8_t step_led = !(edit || overview_on) || !synth->instance_step ? 0
                        : shift_held && synth->shift_step ? pulse(LED_ON) : LED_DIM;
     maschine_set_button_led(BTN_STEP_LEFT, step_led);
     maschine_set_button_led(BTN_STEP_RIGHT, step_led);
     static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
     for (size_t i = 0; i < sizeof(arrows) / sizeof(arrows[0]); i++) {
-        maschine_set_button_led(arrows[i], edit ? LED_DIM : 0);
+        maschine_set_button_led(arrows[i], edit || (overview_on && synth->overview_pages > 1) ? LED_DIM : 0);
     }
 
     /* Display buttons: what the screen offers */
@@ -772,6 +777,10 @@ static void draw_column_only(int col)
 
 void synth_redraw(void)
 {
+    if (mode == MODE_OVERVIEW && !activating_until) {
+        draw_patch_overview();  /* e.g. another wave, or a sound read from the unit */
+        return;
+    }
     if (mode == MODE_EDIT && !overview && !activating_until) {
         draw_page();
         update_group_leds();
@@ -910,6 +919,10 @@ static void draw_page(void)
     }
     if (mode == MODE_TUTORIAL) {
         draw_tutorial();
+        return;
+    }
+    if (mode == MODE_OVERVIEW) {
+        draw_patch_overview();
         return;
     }
     if (mode != MODE_EDIT) {
@@ -1838,6 +1851,18 @@ static void draw_card_name(int disp, int x, int box_y, const char *label, bool i
     }
 }
 
+/* The patch overview (Grid): the driver draws both displays */
+static void draw_patch_overview(void)
+{
+    if (po_page >= synth->overview_pages) {
+        po_page = 0;
+    }
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        synth->overview_draw(po_page, d);
+    }
+}
+
 static void draw_synths(void)
 {
     build_devices();
@@ -2079,6 +2104,9 @@ static void editor_encoder_impl(int i, int delta)
     if (activating_until) {
         return;  /* the synth isn't listening yet */
     }
+    if (mode == MODE_OVERVIEW) {
+        return;  /* the overview only shows */
+    }
     if (mode == MODE_SETUP) {
         setting_encoder(setup_setting_at(i), i, delta);
         return;
@@ -2305,6 +2333,7 @@ static void editor_button_impl(int bit, bool down)
     int menu = bit == BTN_STEP ? MODE_SYNTH
                : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
                : bit == BTN_PAD_MODE ? MODE_PADS
+               : bit == BTN_GRID && synth->overview_draw ? MODE_OVERVIEW
                : bit == BTN_CONTROL ? MODE_SETUP
                : NONE;
     if (menu != NONE && down && (mode == MODE_EDIT || is_menu(mode))) {
@@ -2322,6 +2351,28 @@ static void editor_button_impl(int bit, bool down)
         }
         draw_page();
         return;
+    }
+    if (mode == MODE_OVERVIEW && down) {
+        /* the instance (part, wave) can still be picked; the arrows turn the page */
+        bool again = false;
+        if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8 && shift_held && synth->shift_group &&
+            synth->shift_group(bit - BTN_GROUP_A)) {
+            again = true;
+        } else if ((bit == BTN_STEP_LEFT || bit == BTN_STEP_RIGHT) && !shift_held && synth->instance_step) {
+            synth->instance_step(bit == BTN_STEP_LEFT ? -1 : 1);
+            again = true;
+        } else if (synth->overview_pages > 1 &&
+                   (bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 ||
+                    bit == BTN_ARROW_RIGHT_2)) {
+            int d = bit == BTN_ARROW_LEFT || bit == BTN_ARROW_LEFT_2 ? -1 : 1;
+            po_page = (po_page + d + synth->overview_pages) % synth->overview_pages;
+            again = true;
+        }
+        if (again) {
+            draw_patch_overview();
+            update_group_leds();
+            return;
+        }
     }
     if (is_menu(mode) && down && bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
         int section = bit - BTN_GROUP_A;
@@ -2371,7 +2422,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL) {
+    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL || mode == MODE_OVERVIEW) {
         return;
     }
     if (mode != MODE_EDIT) {
@@ -2528,6 +2579,13 @@ static void editor_main_encoder_impl(int steps)
         tip_page = (tip_page + (steps > 0 ? 1 : -1) + synth->tip_count) % synth->tip_count;
         draw_tutorial();
         update_group_leds();
+        return;
+    }
+    if (mode == MODE_OVERVIEW) {
+        if (!(synth->overview_scroll && synth->overview_scroll(po_page, steps)) && synth->overview_pages > 1) {
+            po_page = (po_page + (steps > 0 ? 1 : -1) + synth->overview_pages) % synth->overview_pages;
+        }
+        draw_patch_overview();
         return;
     }
     if (mode != MODE_EDIT) {

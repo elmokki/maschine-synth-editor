@@ -22,6 +22,7 @@
 #define BTN_VOLUME 16    /* held: the main encoder sets the device volume */
 #define BTN_ALL 14       /* the patch category screen */
 #define BTN_PAD_MODE 42  /* the pads' screen: lowest note, scale, key */
+#define BTN_GRID 35        /* synth_t.overview_draw: the patch overview */
 #define BTN_STEP_LEFT 33   /* transport arrows: synth_t.instance_step */
 #define BTN_STEP_RIGHT 34
 #define BTN_SHIFT 39       /* + Group: synth_t.shift_group */

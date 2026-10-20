@@ -8,7 +8,10 @@ and writes, under data/:
   ws/patches/NN   names of the patches per bank (35 lines)
   ws/perfs/NN     names of the performances per bank (50 lines)
   wsp/000 Init    the init patch: a library patch is one patch as the SR keeps it, 426 bytes
-                  (Edisyn's KorgWavestationPatch.init is a dump message, 852 nibbles)
+                  (Edisyn's KorgWavestationPatch.init is a dump message, 852 nibbles), made
+                  playable: every wave the PCM wave "saw" (waves 0-31 are bank-bound wave sequences,
+                  which sound different in each bank), buses A+B, amp envelope held at 99 with a
+                  short release
 
     python3 tools/ws_import.py
 """
@@ -73,11 +76,18 @@ def main():
     if len(init) != 861 or init[4] != 0x40:
         sys.exit("unexpected init patch")
     nib = init[7:7 + 852]
-    data = bytes(nib[2 * i] | nib[2 * i + 1] << 4 for i in range(426))
+    data = bytearray(nib[2 * i] | nib[2 * i + 1] << 4 for i in range(426))
+    saw = 32 + waves.index("saw")
+    for w in range(4):
+        base = 90 + 84 * w
+        data[base + 3], data[base + 4], data[base + 83] = saw >> 8, saw & 0xFF, 0  # wave number (+ expansion)
+        data[base + 82] = 3                                                        # buses A and B
+        data[base + 37] = 10                                                       # amp envelope time 4: release
+        data[base + 40] = 99                                                       # amp envelope level 2: held
     os.makedirs(os.path.join(OUT, "wsp"), exist_ok=True)
     with open(os.path.join(OUT, "wsp", "000 Init"), "wb") as f:
-        f.write(data)
-    print("init patch:", data[:16].decode("ascii", "replace"), len(data), "bytes")
+        f.write(bytes(data))
+    print("init patch:", bytes(data[:16]).decode("ascii", "replace"), len(data), "bytes, wave", saw)
 
 
 main()

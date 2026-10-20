@@ -228,6 +228,15 @@ typedef struct {
     void (*unit_slot_info)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
 
+    /* Optional: the patch overview (Grid button): overview_pages screens, each drawn over both displays by
+     * overview_draw(page, display) (the editor clears the display first; the Group buttons go back to the
+     * editor, Shift + Group and the Step arrows still pick the instance (part, wave), the arrows and the
+     * main encoder change the page). overview_scroll(page, steps) may take the main encoder for a long page
+     * (true = taken). */
+    int overview_pages;
+    void (*overview_draw)(int page, int disp);
+    bool (*overview_scroll)(int page, int steps);
+
     /* Optional: the tutorial's pages (Shift + Control) */
     const synth_tip_t *tips;
     int tip_count;

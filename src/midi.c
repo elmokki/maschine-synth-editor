@@ -10,7 +10,7 @@ static const char *TAG = "midi";
 #define MIDI_IF 1
 #define MIDI_CABLE 0         /* the Maschine's only external MIDI port */
 #define MIDI_BUF_SIZE 64     /* one full-speed bulk packet = 16 events */
-#define QUEUE_LEN 256        /* events, must be a power of two; a full patch is ~75 */
+#define QUEUE_LEN 512        /* events, must be a power of two; the SR's patch dump is ~290 */
 #define FS_BULK_MPS 64
 
 static usb_host_client_handle_t client_hdl;
