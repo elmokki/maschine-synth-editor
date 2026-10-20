@@ -60,3 +60,13 @@ open-source projects were read (not copied) for cross-reference, and are credite
 unit and had to be re-verified:
 - [`shaduzlabs/cabl`](https://github.com/shaduzlabs/cabl) (MIT)
 - [`SnovaxZ/MaschineMK2_linux`](https://github.com/SnovaxZ/MaschineMK2_linux) (GPL-3.0)
+
+## Third-party material (not in this repository)
+
+`reference/` (manuals, factory banks, notes) and `data/` (the LittleFS image: patch libraries, name lists) are
+local only. The `tools/*_import.py` and `*_names.py` scripts build `data/` from them; they expect
+`reference/edisyn/` (a clone of [eclab/edisyn](https://github.com/eclab/edisyn), Apache 2.0, whose parameter
+tables and SysEx layouts several drivers follow) and the synths' own manuals and patch lists, which you have to
+supply yourself. Fonts in `tools/fonts/` are Spleen (BSD-2, see `tools/fonts/LICENSE.spleen`).
+
+Licence: MIT (see `LICENSE`).
