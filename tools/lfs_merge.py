@@ -56,7 +56,7 @@ if __name__ == "__main__":
     for d in a.dirs:
         src = os.path.join(ROOT, "data", d)
         fs.makedirs("/" + d, exist_ok=True)
-        names = sorted(os.listdir(src))
+        names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n)))  # subdirectories: name them too
         for name in names:
             with fs.open(f"/{d}/{name}", "wb") as f:
                 f.write(open(os.path.join(src, name), "rb").read())

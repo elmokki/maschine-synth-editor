@@ -23,8 +23,10 @@ firmware notes: `docs/ESP32_NOTES.md`. The user writes in Finnish; the UI and co
   `synth_jv880.c` (Patch mode), `synth_jv880r.c` (RHYTHM: Rhythm Setup, 61 keys x 52 bytes, Performance mode),
   `synth_jv880p.c` (PERF: performance = common + 8 parts, 311 bytes);
   `jv880_common.c`: SysEx helpers, board/wave names, envelope drawing.
+  `synth_u110.c` (Roland U-110: patch = 6 parts, individual-parameter DT1s only so far).
 - Importers in `tools/`: `plugiator_import.py`, `dx7_import.py`, `d110_import.py`, `jv880_import.py` (Init patch), `jv880r_import.py` (Init kit), `jv880p_import.py` (Init performance),
-  `jv880_names.py` (waveform names from `reference/JV880/` lists -> `data/jv880/waves/`; never reads the `.bin` images).
+  `jv880_names.py` (waveform names from `reference/JV880/` lists -> `data/jv880/waves/`; never reads the `.bin` images),
+  `u110_names.py` (tone names from the cloned `reference/edisyn/` -> `data/u110/tones/`), `u110_import.py` (Init patch).
 
 ## Working with the user (agreed rules)
 - Plan UI/layout changes with the user before implementing; small liberties are fine if listed afterwards.
@@ -58,6 +60,7 @@ the room while browsing. JV-880 PATCH is done; the user tests on the real unit.
 JV-880 RHYTHM (2026-10-06, committed; editing tested, write to the unit not): Group A WAVE, B PITCH ENV, C TVF, D TVA, E OUTPUT, F KIT; sets Performance mode, reads part 8's Rx channel.
 JV-880 PERF (2026-10-06, committed; read, Setup IMPORT and the patch names tested, write to I01-I16 not): A PART (all of a part's settings on one page), B COMMON (reverb, chorus); part 1-8 = Shift + Group A-H or Step arrows; Internal patch and performance names read with Auto; Setup IMPORT saves I01-I16 as library 001-016 (own from 100); REC > TO JV-880 shows the slot's name. Part 8's Patch# = group*64 (INT 0, CRD 64, PRA 128, PRB 192), verified from the unit's bytes.
 Synth list = card stacks per device (`device`/`entry` in synth_t; encoder browses a stack, button opens). The selected card slides to its slot (done). Paging was tightened in every synth except the D-110 (user: leave it). Next: Scene / Volca Drum ideas, or whatever the user brings.
+U-110 (2026-10-20, editing tested on the unit; read/store not done): one entry, patch = 6 parts (Shift + Group A-F / Step arrows); A PART (+ PROGRAM CHANGE page), B ENV / PITCH, C LFO, D COMMON; pads play the part's Rx channel; CONTROL CH setting = device ID, model ID 0x23 (from Edisyn only), unit needs SETUP: MIDI EXCLUSIVE ON. After an output mode DT1 the unit needs ~400 ms and resets the parts' output assigns (shown as `*` = OFF on its MIDI monitor page), so those are re-sent. Reference: `reference/edisyn/` (clone of eclab/edisyn, Apache 2.0: Wavestation, U-110, JV-880, D-110 layouts; no NS5R). The U-110 manual is a scanned PDF (read pages as images). Next for it: read the unit (RQ1 01 01 00 after a Program Change; bulk dumps are nibble-packed, layout only in Edisyn's RolandU110.java) and store to 02 xx 00. Waiting: NS5R (`reference/N5SR/`), Wavestation SR (vector = two encoders; the user plans a MIDI joystick through a splitter into MIDI IN), Volca Drum.
 Boards 19 (House) and 97
 (Experience III) have no waveform list in `reference/JV880/` - left as they are on purpose (names show as numbers).
 Ideas waiting: synth list as per-device card stacks; Scene = saved multi-synth scenes; Volca Drum.

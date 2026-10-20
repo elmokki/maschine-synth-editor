@@ -264,3 +264,4 @@ extern const synth_t synth_d110r;
 extern const synth_t synth_jv880;
 extern const synth_t synth_jv880r;
 extern const synth_t synth_jv880p;
+extern const synth_t synth_u110;
