@@ -533,7 +533,7 @@ static void draw_stages(const uint8_t *rates, const uint8_t *levels, int disp, b
             continue;
         }
         int x0 = i * SLOT_W, x_end = x0 + SLOT_W - (i == 3 ? 2 : 1);
-        int ramp = 2 + (SLOT_W - 6) * (99 - rates[i]) / 99;
+        int ramp = rates[i] >= 99 ? 0 : 2 + (SLOT_W - 6) * (99 - rates[i]) / 99;  /* rate 99: straight up */
         int y0 = BAND_Y + BAND_H - 1 - prev * (BAND_H - 1) / 99;
         int y1 = BAND_Y + BAND_H - 1 - levels[i] * (BAND_H - 1) / 99;
         band_line(x0, y0, x0 + ramp, y1, dotted);

@@ -101,6 +101,9 @@ void jv880_draw_eg_text(int disp, int x, const char *name, const char *value)
     display_text(disp, x + (63 - tw) / 2, JV880_EG_TEXT_CAP_Y - font_small.cap_top, &font_small, text, true);
 }
 
+/* A segment's width in the pictures: time 0 is instant, a straight vertical line */
+static int seg_width(int t) { return t ? 6 + t : 0; }
+
 /* See the header: an envelope over both displays: points at levels lv[] (0-100), reached
  * after times tm[] (0-127, wider the slower); a held sustain segment after
  * point sus_at; centre line for the pitch envelope */
@@ -118,12 +121,12 @@ void jv880_draw_env_ex(int disp, const int *lv, const int *tm, int n, int sus_at
     const int sus_w = 40;
     int total = sus_w;
     for (int i = 1; i < n; i++) {
-        total += 6 + tm[i];
+        total += seg_width(tm[i]);
     }
     float scale = 505.0f / total;
     float x = 2;
     for (int i = 1; i < n; i++) {
-        float w = (6 + tm[i]) * scale;
+        float w = seg_width(tm[i]) * scale;
         int x0 = (int)x, x1 = (int)(x + w);
         int y0 = BAND_Y + BAND_H - 1 - lv[i - 1] * (BAND_H - 1) / 100;
         int y1 = BAND_Y + BAND_H - 1 - lv[i] * (BAND_H - 1) / 100;
@@ -134,6 +137,10 @@ void jv880_draw_env_ex(int disp, const int *lv, const int *tm, int n, int sus_at
             }
             int py = x1 > x0 ? y0 + (y1 - y0) * (px - x0) / (x1 - x0) : y1;
             int pyn = x1 > x0 && px < x1 ? y0 + (y1 - y0) * (px + 1 - x0) / (x1 - x0) : py;
+            if (x1 == x0) {
+                py = y0;  /* an instant segment: straight from one level to the other */
+                pyn = y1;
+            }
             int a = py < pyn ? py : pyn, b = py < pyn ? pyn : py;
             for (int yy = a; yy <= b; yy++) {
                 if (!dotted || ((px + yy) & 1) == 0) {
@@ -167,11 +174,12 @@ void jv880_draw_env_mini(int disp, int x, int y, int w, int h, const int *lv, co
     const int sus_w = 24;
     int total = sus_at >= 0 ? sus_w : 0;
     for (int i = 1; i < n; i++) {
-        total += 6 + tm[i];
+        total += seg_width(tm[i]);
     }
+    total = total ? total : 1;
     int px = x, py = y + h - 1 - lv[0] * (h - 1) / 100, pos = 0;
     for (int i = 1; i < n; i++) {
-        pos += 6 + tm[i];
+        pos += seg_width(tm[i]);
         int nx = x + pos * (w - 1) / total, ny = y + h - 1 - lv[i] * (h - 1) / 100;
         display_line(disp, px, py, nx, ny, true);
         px = nx;

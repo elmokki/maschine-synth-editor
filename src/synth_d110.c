@@ -960,47 +960,7 @@ static bool column_draw(int p, int disp, int x)
  * point sus_at; centre line for the pitch envelope */
 static void draw_env(int disp, const int *lv, const int *tm, int n, int sus_at, bool centred)
 {
-    display_fill_rect(disp, 0, BAND_Y, 256, BAND_H, false);
-    if (centred) {
-        for (int x = disp * 256; x < disp * 256 + 255; x += 4) {
-            display_pixel(disp, x % 256, BAND_Y + BAND_H / 2, true);
-        }
-    }
-    const int sus_w = 40;
-    int total = sus_w;
-    for (int i = 1; i < n; i++) {
-        total += 6 + tm[i];
-    }
-    float scale = 505.0f / total;
-    float x = 2;
-    for (int i = 1; i < n; i++) {
-        float w = (6 + tm[i]) * scale;
-        int x0 = (int)x, x1 = (int)(x + w);
-        int y0 = BAND_Y + BAND_H - 1 - lv[i - 1] * (BAND_H - 1) / 100;
-        int y1 = BAND_Y + BAND_H - 1 - lv[i] * (BAND_H - 1) / 100;
-        /* only the part of the line on this display */
-        for (int px = x0; px <= x1; px++) {
-            if (px / 256 != disp || px % 256 > 254) {
-                continue;
-            }
-            int py = x1 > x0 ? y0 + (y1 - y0) * (px - x0) / (x1 - x0) : y1;
-            int pyn = x1 > x0 && px < x1 ? y0 + (y1 - y0) * (px + 1 - x0) / (x1 - x0) : py;
-            int a = py < pyn ? py : pyn, b = py < pyn ? pyn : py;
-            for (int yy = a; yy <= b; yy++) {
-                display_pixel(disp, px % 256, yy, true);
-            }
-        }
-        x += w;
-        if (i == sus_at) {
-            int xs = (int)x, xe = (int)(x + sus_w * scale);
-            for (int px = xs; px <= xe; px++) {
-                if (px / 256 == disp && px % 256 < 255) {
-                    display_pixel(disp, px % 256, y1, true);
-                }
-            }
-            x += sus_w * scale;
-        }
-    }
+    jv880_draw_env(disp, lv, tm, n, sus_at, centred);
 }
 
 static int pv(int off) { return tone[part][COMMON_LEN + first_partial() * PARTIAL_LEN + off]; }
