@@ -2004,6 +2004,20 @@ static void unit_store(int slot, const char *name)
     name_dirty = true;
 }
 
+/* The header's label for an imported patch: its place in the SR instead of the library number */
+static void patch_label(const char *file, char *buf, size_t len)
+{
+    int n = atoi(file);
+    const char *sp = strchr(file, ' ');
+    if (n < 1 || n > LIB_PATCHES || !sp) {
+        snprintf(buf, len, "%s", file);
+        return;
+    }
+    static const char *const tags[12] = {"R1", "R2", "R3", "ROM4", "ROM5", "ROM6", "ROM7", "ROM8", "ROM9", "ROM10",
+                                         "ROM11", "CD"};
+    snprintf(buf, len, "%s:%02d%s", tags[(n - 1) / BANK_PATCHES], (n - 1) % BANK_PATCHES, sp);
+}
+
 static int unknown_count(void) { return 0; }
 
 static const synth_tip_t tips[] = {
@@ -2029,6 +2043,7 @@ const synth_t synth_wsp = {
     .key = "wsp",
     .patch_dir = STORAGE_ROOT "/wsp",
     .default_patch = "000 Init",
+    .patch_label = patch_label,
     .first_user_patch = 500,
     .pages = pages,
     .page_count = sizeof(pages) / sizeof(pages[0]),

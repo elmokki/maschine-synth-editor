@@ -91,6 +91,9 @@ typedef struct {
      * main one are listed once */
     const char *(*common_dir_fn)(void);
     const char *default_patch;  /* loaded at boot if nothing is remembered */
+    /* Optional: how a library patch's file name ("105 TimeWorm") is shown in the header, e.g. with its place in
+     * the instrument instead of its number ("R3:34 TimeWorm") */
+    void (*patch_label)(const char *file, char *buf, size_t len);
     int first_user_patch;       /* lower numbers are factory, read-only */
 
     const synth_page_t *pages;

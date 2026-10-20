@@ -688,14 +688,18 @@ static void draw_header(void)
      * with an Enter hint; landing back on the loaded one shows it plain */
     bool pending = patch_browse != NONE && patch_browse != patch_loaded;
     char name[64];
-    char own[24];
+    char own[48];
     if (shown == NONE && synth->sound_name && synth->sound_name(own, sizeof(own))) {
         snprintf(buf, sizeof(buf), modified ? "%s *" : "%s", own);  /* not from the library */
     } else if (shown == NONE) {
         snprintf(buf, sizeof(buf), "no patch loaded");
     } else {
-        snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : modified ? "%s *" : "%s",
-                 patch_names[shown]);
+        const char *file = patch_names[shown];
+        if (synth->patch_label) {
+            synth->patch_label(file, own, sizeof(own));
+            file = own;
+        }
+        snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : modified ? "%s *" : "%s", file);
     }
     int right = DISPLAY_USABLE_WIDTH - 2;
     /* Browsing patches, the name comes first: the page title keeps what room
