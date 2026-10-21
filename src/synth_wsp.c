@@ -750,51 +750,7 @@ static void tick(int64_t now)
 
 /* ---- names (kept in memory: reading a file while a knob is turned stalls the editor) ---- */
 
-#define WAVE_NAME_LEN 16
-#define ROM_WAVES 486
-static char rom_wave_names[ROM_WAVES][WAVE_NAME_LEN];
-static char seq_names[12][32][WAVE_NAME_LEN];
-static bool names_loaded;
-
-static void read_lines(const char *path, char *out, int count, int stride)
-{
-    FILE *f = fopen(path, "r");
-    char line[64];
-    for (int i = 0; f && i < count && fgets(line, sizeof(line), f); i++) {
-        line[strcspn(line, "\r\n")] = 0;
-        snprintf(out + i * stride, stride, "%s", line);
-    }
-    if (f) {
-        fclose(f);
-    }
-}
-
-static void load_names(void)
-{
-    if (names_loaded) {
-        return;
-    }
-    names_loaded = true;
-    read_lines(STORAGE_ROOT "/ws/waves", &rom_wave_names[0][0], ROM_WAVES, WAVE_NAME_LEN);
-    for (int b = 0; b < 12; b++) {
-        char path[40];
-        snprintf(path, sizeof(path), STORAGE_ROOT "/ws/wavesq/%02d", b);
-        read_lines(path, &seq_names[b][0][0], 32, WAVE_NAME_LEN);
-    }
-}
-
-/* Wave 0-31 are wave sequences (named per bank), the rest ROM waves; a card has its own */
-static void wave_name(int bank, int num, char *buf, size_t len)
-{
-    load_names();
-    if (num < 32) {
-        snprintf(buf, len, "%s", seq_names[bank][num]);
-    } else if (bank != 11 && num - 32 < ROM_WAVES) {
-        snprintf(buf, len, "%s", rom_wave_names[num - 32]);
-    } else {
-        buf[0] = 0;
-    }
-}
+#define wave_name ws_wave_name
 
 /* ---- envelope trail ----
  * While an envelope is being turned its earlier shape stays drawn dotted for a moment: the panel's own
@@ -1111,7 +1067,7 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
         return SYNTH_DRAW_NONE;
     }
     int v = get_field(F_WAVE_NUM, cur_wave);
-    char code[8], name[WAVE_NAME_LEN + 1];
+    char code[8], name[WS_WAVE_NAME_LEN + 1];
     wave_name(get_field(F_BANK, cur_wave), v, name, sizeof(name));
     if (v < 32) {
         /* a wave sequence (bound to the bank): "WaveSeq" small before its number */
@@ -1273,7 +1229,7 @@ static void ov_header(int disp, const char *left, const char *right)
 static void ov_waves(int disp)
 {
     ensure();
-    char buf[48], name[WAVE_NAME_LEN + 1];
+    char buf[48], name[WS_WAVE_NAME_LEN + 1];
     int s = patch[86];
     snprintf(buf, sizeof(buf), "OVERVIEW: waves  (structure %s)", structure_names[s > 2 ? 2 : s]);
     ov_header(disp, buf, NULL);

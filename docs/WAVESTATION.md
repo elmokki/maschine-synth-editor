@@ -43,3 +43,24 @@ librarian-tested.
 - EXECUTE_WRITE (466) "does nothing" (Edisyn's comment); writing a patch into RAM = bank dump (Edisyn says press Yes on the SR; not needed in practice).
 - MIDI page: Param (SysEx parameters) must be RECEIVE (default DISABLE) - dumps and dump requests work regardless.
 - Wave sequence steps: duration and crossfade in units of about 24 ms; loop (FWD or B/F), start step + modulation.
+
+## Wave sequences (SEQ entry, 2026-10-21)
+- Bank dump: request `F0 42 3n 28 0C bank F7`, reply `F0 42 3n 28 54 bank <8784 bytes as nibbles> sum F7` (17576 bytes).
+  The block is 32 sequences x 16 bytes, 501 steps x 16, 32 names x 8 (big-endian words; Edisyn's `Block`). A sequence's
+  steps are a linked list (sequence link = first step, step fLink = next, 0 = end); loop start / end are 0-based in the
+  dump (Edisyn shows +1); a step's wave = low byte + 256 if the high byte is 0x81, coarse >= 48 = expanded PCM (coarse - 72,
+  wave + 365), the wave index = that - 32; loop count bit 7 = back and forth. What the sequence's "start step" byte means
+  is unverified (Edisyn never reads it). The dump has no wave bank per step (the editor's BANK knob, ROM / CARD, is only
+  a mark for now).
+- Library: `/lfs/wsseq/NNN name`, NNN = bank * 32 + n + 1 (file layout in `src/ws_seq.h`); the engine is `ws_banks.c`
+  (`ws_kind_seq`: import only, `extract` lifts one sequence out of the dump).
+- Listening: a sequence is only heard through a patch (wave number 0-31 of its bank). The editor sends Edisyn's test
+  performance and an Init patch with wave A = the sequence into the edit buffer (RAM 1 #0 is only the name), about 1.6 s
+  of messages; the SR's own version plays, our edits do not. The loading screen stays 3 s and blocks input (a second load
+  in the middle of the messages froze the editor once).
+- Writing (not done): Edisyn writes a sequence by commands: bank + number (`WAVE_SEQ_BANK` 176 / `WAVE_SEQ_NUM` 175),
+  `EXECUTE_WAVESEQ_INIT` (1 s pause), `WAVE_SEQ_STEP` 0 + `EXECUTE_INSERT_WS_STEP` for each extra step (pauses
+  7 ms * n + 250 ms), then for every step `WAVE_SEQ_STEP` and the parameters (80 ms each). It overwrites that sequence in
+  the unit's RAM bank. Decision: **RAM 3, sequence 31 (the last)** is the only place the editor will write, with the bank
+  kept in `/lfs/ws/backup/` first. A bank dump written back would be faster, but Edisyn has no writer for the links
+  (`Block.write` is commented out): to be tried later, after the commands work.

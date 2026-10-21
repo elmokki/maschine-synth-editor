@@ -12,6 +12,7 @@
 #include "storage.h"
 #include "synth.h"
 #include "ws_banks.h"
+#include "ws_seq.h"
 
 static const char *TAG = "wsbanks";
 
@@ -34,6 +35,18 @@ const ws_kind_t ws_kind_patch = {
     .count = 35,
     .item_len = 426,
 };
+const ws_kind_t ws_kind_seq = {
+    .item = "wave sequence",
+    .dir = STORAGE_ROOT "/wsseq",
+    .fallback = "Sequence",
+    .backup = "seq",
+    .request = 0x0C,
+    .reply = 0x54,
+    .count = 32,
+    .item_len = 0,
+    .dump_len = 6 + 2 * 8784 + 2,
+    .extract = ws_seq_extract,
+};
 const ws_kind_t ws_kind_perf = {
     .item = "performance",
     .dir = STORAGE_ROOT "/wsperf",
@@ -47,7 +60,7 @@ const ws_kind_t ws_kind_perf = {
 
 #define BANK_HEADER 6
 #define BANK_MAX_LEN (BANK_HEADER + 35 * 2 * 426 + 2)  /* the biggest: the patches */
-#define ITEM_MAX 426
+#define ITEM_MAX 2600  /* a wave sequence of 255 steps, see ws_seq.c */
 #define NAME_CHARS 16
 #define BANK_TIMEOUT_US 30000000
 #define STREAM_CHUNK 96      /* bytes a part, a multiple of 3 */
@@ -69,7 +82,7 @@ static int bank_in_idx;
 static uint8_t store_raw[ITEM_MAX];
 static uint8_t sr_code;    /* the SR's last status message: 21 write complete, 22 error, 23 data load completed, 24 error */
 
-static size_t bank_len(const ws_kind_t *k) { return BANK_HEADER + k->count * k->item_len * 2 + 2; }
+static size_t bank_len(const ws_kind_t *k) { return k->dump_len ? (size_t)k->dump_len : BANK_HEADER + k->count * k->item_len * 2 + 2; }
 
 static bool bank_alloc(void)
 {
@@ -152,10 +165,17 @@ static int save_item_to_library(int bank, int n)
 {
     static uint8_t raw[ITEM_MAX];
     static char name[NAME_CHARS + 1], path[128];
-    const int nib_len = 2 * kind->item_len;
-    const uint8_t *nib = bank_buf + BANK_HEADER + n * nib_len;
-    for (int i = 0; i < kind->item_len; i++) {
-        raw[i] = nib[2 * i] | nib[2 * i + 1] << 4;
+    int raw_len = kind->item_len;
+    if (kind->extract) {
+        raw_len = kind->extract(bank_buf + BANK_HEADER, n, raw);
+        if (raw_len <= 0) {
+            return 0;  /* an empty slot */
+        }
+    } else {
+        const uint8_t *nib = bank_buf + BANK_HEADER + n * 2 * kind->item_len;
+        for (int i = 0; i < raw_len; i++) {
+            raw[i] = nib[2 * i] | nib[2 * i + 1] << 4;
+        }
     }
     memcpy(name, raw, NAME_CHARS);
     name[NAME_CHARS] = 0;
@@ -171,7 +191,7 @@ static int save_item_to_library(int bank, int n)
     FILE *f = fopen(path, "wb");
     int ok = 0;
     if (f) {
-        ok = fwrite(raw, 1, kind->item_len, f) == (size_t)kind->item_len;
+        ok = fwrite(raw, 1, raw_len, f) == (size_t)raw_len;
         fclose(f);
     }
     return ok;
@@ -223,7 +243,7 @@ void ws_banks_import(const ws_kind_t *k, uint16_t mask, int channel)
 
 void ws_banks_store(const ws_kind_t *k, int bank, int num, const uint8_t *raw, int channel)
 {
-    if (job_stage != JOB_NONE) {
+    if (job_stage != JOB_NONE || k->extract) {  /* a kind that can only be imported is not stored */
         return;
     }
     kind = k;
@@ -408,3 +428,51 @@ void ws_banks_draw(int disp)
         display_text(1, 6, 42, &font_medium, buf, true);
     }
 }
+
+/* ---- wave names (kept in memory: reading a file while a knob is turned stalls the editor) ---- */
+
+#define ROM_WAVES 486
+static char rom_wave_names[ROM_WAVES][WS_WAVE_NAME_LEN];
+static char seq_names[12][32][WS_WAVE_NAME_LEN];
+static bool names_loaded;
+
+static void read_lines(const char *path, char *out, int count, int stride)
+{
+    FILE *f = fopen(path, "r");
+    char line[64];
+    for (int i = 0; f && i < count && fgets(line, sizeof(line), f); i++) {
+        line[strcspn(line, "\r\n")] = 0;
+        snprintf(out + i * stride, stride, "%s", line);
+    }
+    if (f) {
+        fclose(f);
+    }
+}
+
+static void load_names(void)
+{
+    if (names_loaded) {
+        return;
+    }
+    names_loaded = true;
+    read_lines(STORAGE_ROOT "/ws/waves", &rom_wave_names[0][0], ROM_WAVES, WS_WAVE_NAME_LEN);
+    for (int b = 0; b < 12; b++) {
+        char path[40];
+        snprintf(path, sizeof(path), STORAGE_ROOT "/ws/wavesq/%02d", b);
+        read_lines(path, &seq_names[b][0][0], 32, WS_WAVE_NAME_LEN);
+    }
+}
+
+/* Wave 0-31 are wave sequences (named per bank), the rest ROM waves; a card has its own */
+void ws_wave_name(int bank, int num, char *buf, size_t len)
+{
+    load_names();
+    if (num < 32) {
+        snprintf(buf, len, "%s", seq_names[bank][num]);
+    } else if (bank != 11 && num - 32 < ROM_WAVES) {
+        snprintf(buf, len, "%s", rom_wave_names[num - 32]);
+    } else {
+        buf[0] = 0;
+    }
+}
+

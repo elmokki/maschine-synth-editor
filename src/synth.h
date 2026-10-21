@@ -290,3 +290,4 @@ extern const synth_t synth_jv880p;
 extern const synth_t synth_u110;
 extern const synth_t synth_wsp;
 extern const synth_t synth_wsperf;
+extern const synth_t synth_wsseq;

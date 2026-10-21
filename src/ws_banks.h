@@ -31,10 +31,15 @@ typedef struct {
     uint8_t request, reply;
     int count;            /* items in a bank: 35, 50 */
     int item_len;         /* raw bytes of an item: 426, 181 */
+    /* Kinds whose dump is not count x item_len nibbles (wave sequences): the dump's total length, and the item n
+     * lifted out of the dump (nibbles from the byte after the 6 byte header) into raw; returns the raw length, 0 if
+     * the item is empty. Such a kind can only be imported, not stored. */
+    int dump_len;
+    int (*extract)(const uint8_t *nib, int n, uint8_t *raw);
 } ws_kind_t;
 
 /* The two kinds the SR's drivers use: patches (35 a bank, 426 bytes) and performances (50, 181) */
-extern const ws_kind_t ws_kind_patch, ws_kind_perf;
+extern const ws_kind_t ws_kind_patch, ws_kind_perf, ws_kind_seq;
 
 /* Reads the banks in mask (bit n = bank n, Edisyn's order) into the library */
 void ws_banks_import(const ws_kind_t *kind, uint16_t mask, int channel);
@@ -47,3 +52,8 @@ void ws_banks_draw(int disp);
 bool ws_banks_sysex(const uint8_t *d, size_t len);
 /* The library's name of an item (after an import), "" when unknown */
 const char *ws_banks_lib_name(const ws_kind_t *kind, int bank, int num);
+
+/* A wave's name (names kept in memory, from /lfs/ws/waves and /lfs/ws/wavesq): bank 0-11 in Edisyn's order, num =
+ * the SR's wave number (0-31 the bank's wave sequences, 32+ the PCM waves; a card has its own: empty). "" if unknown */
+#define WS_WAVE_NAME_LEN 16
+void ws_wave_name(int bank, int num, char *buf, size_t len);

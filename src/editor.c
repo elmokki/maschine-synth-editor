@@ -148,7 +148,7 @@ static int64_t led_anim_at;
 #define LED_HALF_DIM 6  /* percent of full for the unlit half */
 
 /* The synths to pick from (Step), and the active one */
-static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110, &synth_wsp, &synth_wsperf};
+static const synth_t *const synths[] = {&synth_minimax, &synth_b4000, &synth_volca, &synth_d110, &synth_d110p, &synth_d110r, &synth_jv880, &synth_jv880r, &synth_jv880p, &synth_u110, &synth_wsp, &synth_wsperf, &synth_wsseq};
 #define SYNTH_COUNT ((int)(sizeof(synths) / sizeof(synths[0])))
 #define ACTIVE_SYNTH_FILE STORAGE_ROOT "/state/active_synth"
 #define SYNTH_CONFIRM_US 3000000
