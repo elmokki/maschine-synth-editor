@@ -253,10 +253,17 @@ static int fx_unit_of(int p) { return (p - P_FX_FIRST) / WS_FX_MAX_PARAMS + 1; }
 
 static uint8_t *fx_unit_bytes(int unit) { return fx_block() + (unit == 1 ? 5 : 13); }
 
+/* The Stereo Vocoder effects (the last two types) take up both effect slots: "when you select one of the Stereo
+ * Vocoders for Effect 1 or 2, the other Effect changes to display Stereo Vocoder as well" (Reference Guide, FX
+ * SELECT, FX 1/2). So both units get the type, and FX 2 follows FX 1 (can't be changed on its own) */
+#define FIRST_STEREO_VOCODER 54
+
+static bool fx_locked(int unit) { return unit == 2 && ws_fx_type_get(fx_block(), 1) >= FIRST_STEREO_VOCODER; }
+
 /* What a slot means now: the effect group's parameter, NULL when the type has fewer */
 static const ws_fx_param_t *fx_param(int p)
 {
-    if (p < P_FX_FIRST) {
+    if (p < P_FX_FIRST || fx_locked(fx_unit_of(p))) {
         return NULL;
     }
     int unit = fx_unit_of(p), slot = (p - P_FX_FIRST) % WS_FX_MAX_PARAMS;
@@ -314,8 +321,17 @@ static void fx_set(int p, int v)
         b[4] = (b[4] & 0x0F) | mag << 4;
         b[1] = (b[1] & ~0x40) | (v < 0 ? 0x40 : 0);
         break;
-    case P_FX1_TYPE: ws_fx_type_set(b, 1, v); break;
-    default: ws_fx_type_set(b, 2, v); break;
+    default: {
+        int unit = p == P_FX1_TYPE ? 1 : 2;
+        int old = ws_fx_type_get(b, unit);
+        ws_fx_type_set(b, unit, v);
+        if (v >= FIRST_STEREO_VOCODER) {
+            ws_fx_type_set(b, 3 - unit, v);
+        } else if (unit == 1 && old >= FIRST_STEREO_VOCODER) {
+            ws_fx_type_set(b, 2, 0);  /* FX 2 was only the vocoder's second half */
+        }
+        break;
+    }
     }
 }
 
@@ -334,6 +350,9 @@ static void value_set(int p, int v)
 /* false = no such parameter right now (an effect slot the type doesn't use) */
 static bool range_of(int p, int *lo, int *hi)
 {
+    if ((p == P_FX1_TYPE && fx_locked(1)) || (p == P_FX2_TYPE && fx_locked(2))) {
+        return false;
+    }
     if (p >= P_FX_FIRST) {
         const ws_fx_param_t *fp = fx_param(p);
         if (!fp) {
@@ -630,7 +649,7 @@ static void param_format(int p, char *buf, size_t len)
         break;
     case P_FX1_TYPE:
     case P_FX2_TYPE:
-        snprintf(buf, len, "%s", ws_fx_type_names[v]);
+        snprintf(buf, len, "%s", fx_locked(p == P_FX1_TYPE ? 1 : 2) ? "= FX 1" : ws_fx_type_names[v]);
         break;
     case P_BANK:
         snprintf(buf, len, "%s", ws_bank_names[v]);
@@ -731,6 +750,22 @@ static bool column_draw(int p, int disp, int x)
 static int param_draw(int p, int disp, int x, int y, int w, int h)
 {
     (void)h;
+    if (is_type(p)) {
+        /* The effect's name, its place in the SR's list of 55 below (the SR itself shows only the name) */
+        ensure();
+        if (fx_locked(p == P_FX1_TYPE ? 1 : 2)) {
+            return SYNTH_DRAW_NONE;
+        }
+        int type = fx_get(p);
+        char num[12];
+        const char *name = ws_fx_type_names[type];
+        const font_t *f = display_text_width(&font_medium, name) <= w - 2 ? &font_medium : &font_small;
+        display_text(disp, x + (w - display_text_width(f, name)) / 2, y + 1 - f->cap_top, f, name, true);
+        snprintf(num, sizeof(num), "%d/%d", type, WS_FX_TYPES - 1);
+        display_text(disp, x + (w - display_text_width(&font_small, num)) / 2, y + 15 - font_small.cap_top,
+                     &font_small, num, true);
+        return SYNTH_DRAW_FULL;
+    }
     if (p != P_PATCH) {
         return SYNTH_DRAW_NONE;
     }
@@ -759,7 +794,11 @@ static void overview_fx_list(int disp)
 {
     int unit = disp + 1, type = ws_fx_type_get(fx_block(), unit);
     char buf[48];
-    snprintf(buf, sizeof(buf), "FX %d  %s", unit, ws_fx_type_long[type]);
+    if (fx_locked(unit)) {
+        snprintf(buf, sizeof(buf), "FX %d  (stereo vocoder: both slots)", unit);
+    } else {
+        snprintf(buf, sizeof(buf), "FX %d  %s", unit, ws_fx_type_long[type]);
+    }
     display_text(disp, 1, 0, &font_tiny, buf, true);
     display_line(disp, 0, 9, 255, 9, true);
     for (int slot = 0; slot < WS_FX_MAX_PARAMS; slot++) {
