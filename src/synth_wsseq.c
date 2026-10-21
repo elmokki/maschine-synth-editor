@@ -741,6 +741,138 @@ static void tick(int64_t now)
     audition_tick(now);
 }
 
+/* ---- the overview (Grid) ----
+ * Page 1: the steps as a list, 16 at a time (the window follows the step picked): wave, level, duration, crossfade,
+ * tuning; > the step picked, S the start step, [ ] | the loop's ends (: between them). Page 2: the whole sequence as
+ * one picture over both displays: a bar a step - as wide as its duration, as high as its level (the one picked
+ * filled) - the crossfade as a line under the bar's end, the loop as a bracket on top. */
+
+#define PIC_X0 4
+#define PIC_W 504  /* both displays are 256 wide: 512 in all */
+#define PIC_TOP 17
+#define PIC_BASE 57
+
+/* A rectangle of the picture's 512 px wide canvas on display disp (clipped to it) */
+static void canvas_rect(int disp, int x, int y, int w, int h, bool filled)
+{
+    int x0 = x - disp * 256, x1 = x0 + w;
+    if (x1 <= 0 || x0 >= 256 || w <= 0) {
+        return;
+    }
+    int cx0 = x0 < 0 ? 0 : x0, cx1 = x1 > 256 ? 256 : x1;
+    if (filled) {
+        display_fill_rect(disp, cx0, y, cx1 - cx0, h, true);
+    } else {
+        /* only the sides that are on this display */
+        display_line(disp, cx0, y, cx1 - 1, y, true);
+        display_line(disp, cx0, y + h - 1, cx1 - 1, y + h - 1, true);
+        if (x0 >= 0) {
+            display_line(disp, x0, y, x0, y + h - 1, true);
+        }
+        if (x1 <= 256) {
+            display_line(disp, x1 - 1, y, x1 - 1, y + h - 1, true);
+        }
+    }
+}
+
+static void overview_list(int disp)
+{
+    char buf[80], name[WS_WAVE_NAME_LEN + 1];
+    int len = length();
+    if (len == 0) {
+        if (disp == 0) {
+            display_text(0, 1, 0, &font_tiny, "NO STEPS", true);
+        }
+        return;
+    }
+    int first = cur / 16 * 16 + disp * 8;
+    for (int r = 0; r < 8 && first + r < len; r++) {
+        int i = first + r, n = i + 1;
+        const uint8_t *st = step_at(i);
+        name[0] = 0;
+        if (!(st[9] & 1)) {
+            ws_wave_name(3, wave_of(st) + 32, name, sizeof(name));
+        }
+        int ls = seq[OFF_LSTART], le = seq[OFF_LEND];
+        char loop = n == ls && n == le ? '|' : n == ls ? '[' : n == le ? ']' : n > ls && n < le ? ':' : ' ';
+        snprintf(buf, sizeof(buf), "%c%c%c%3d %-14.14s L%2d D%3d X%3d %+d/%+d", i == cur ? '>' : ' ', loop,
+                 n == seq[OFF_START] ? 'S' : ' ', n, name[0] ? name : "-", st[8], dur_of(st), xfade_of(st),
+                 (int8_t)st[2], (int8_t)st[3]);
+        display_text(disp, 1, r * 8, &font_tiny, buf, true);
+    }
+}
+
+static void overview_picture(int disp)
+{
+    int len = length();
+    if (len == 0) {
+        if (disp == 0) {
+            display_text(0, 1, 0, &font_tiny, "NO STEPS", true);
+        }
+        return;
+    }
+    long total = 0;
+    for (int i = 0; i < len; i++) {
+        total += dur_of(step_at(i));
+    }
+    if (total < 1) {
+        total = 1;
+    }
+    char buf[40];
+    if (disp == 0) {
+        snprintf(buf, sizeof(buf), "%d steps  %ld ticks", len, total);
+        display_text(0, 1, 0, &font_tiny, buf, true);
+    }
+    int ls = seq[OFF_LSTART], le = seq[OFF_LEND];
+    long acc = 0;
+    int loop_x0 = -1, loop_x1 = -1, start_x = -1;
+    for (int i = 0; i < len; i++) {
+        const uint8_t *st = step_at(i);
+        int x = PIC_X0 + (int)(acc * PIC_W / total);
+        acc += dur_of(st);
+        int xe = PIC_X0 + (int)(acc * PIC_W / total);
+        int w = xe - x > 1 ? xe - x - 1 : 1;
+        int h = 1 + st[8] * (PIC_BASE - PIC_TOP) / 99;
+        canvas_rect(disp, x, PIC_BASE - h, w, h, i == cur || w < 3);
+        if (w >= 3 && i != cur) {
+            canvas_rect(disp, x, PIC_BASE - h, w, h, false);
+        }
+        int fw = (int)((long)xfade_of(st) * PIC_W / total);  /* the fade runs on into the next step */
+        if (fw > 0 && x + w + fw < 512) {
+            canvas_rect(disp, x + w, PIC_BASE + 2, fw, 1, true);
+        }
+        if (i + 1 == ls) {
+            loop_x0 = x;
+        }
+        if (i + 1 == le) {
+            loop_x1 = x + w;
+        }
+        if (i + 1 == seq[OFF_START]) {
+            start_x = x;
+        }
+    }
+    if (loop_x0 >= 0 && loop_x1 > loop_x0) {  /* the loop: a bracket over the bars */
+        canvas_rect(disp, loop_x0, 11, loop_x1 - loop_x0, 1, true);
+        canvas_rect(disp, loop_x0, 11, 1, 4, true);
+        canvas_rect(disp, loop_x1 - 1, 11, 1, 4, true);
+    }
+    if (start_x >= 0) {  /* the start step: a triangle under the baseline */
+        canvas_rect(disp, start_x, PIC_BASE + 4, 1, 1, true);
+        canvas_rect(disp, start_x - 1, PIC_BASE + 5, 3, 1, true);
+        canvas_rect(disp, start_x - 2, PIC_BASE + 6, 5, 1, true);
+    }
+}
+
+static void overview_draw(int page, int disp)
+{
+    ensure();
+    if (page == 0) {
+        overview_list(disp);
+    } else {
+        overview_picture(disp);
+    }
+}
+
 /* ---- sequences (library) ---- */
 
 static bool patch_load(const char *path)
@@ -838,10 +970,10 @@ static int unknown_count(void) { return 0; }
 static const synth_tip_t tips[] = {
     {"WAVE SEQUENCE", {"A sequence plays up to 255 steps: a wave,", "level, duration, crossfade, tuning. Pick the", "step with the STEP knob or the STEP arrows",
                        "(SHIFT: 8 steps). Display buttons: INSERT", "copies the step after itself, DELETE removes", "it. B: start, loop, repeats, modulation.",
-                       "The SR plays the unedited sequence."},
+                       "GRID: the steps, and a picture of them."},
      {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_SHIFT, BTN_GROUP_A, BTN_GROUP_A + 1, -1, -1, -1}},
     {"FROM THE UNIT", {"CONTROL > IMPORT (twice) reads the banks'", "sequences into the library as 1-384", "(bank x 32 + n + 1; ~5 s a bank).",
-                       "AUTO reads the READ BANK / READ SEQ one.", "The SR must send on its MIDI OUT to the", "Maschine's MIDI IN.", ""},
+                       "AUTO reads the READ BANK / READ SEQ one.", "The SR must send on its MIDI OUT to the", "Maschine's MIDI IN. A sequence in the SR is", "heard as the SR has it, not as edited."},
      {BTN_CONTROL, BTN_AUTO, -1, -1, -1, -1, -1, -1}},
 };
 
@@ -881,6 +1013,8 @@ const synth_t synth_wsseq = {
     .read = read_seq,
     .sysex_in = sysex_in,
     .tick = tick,
+    .overview_pages = 2,
+    .overview_draw = overview_draw,
     .busy = busy,
     .busy_draw = busy_draw,
     .action_name = "IMPORT",
