@@ -24,3 +24,7 @@
 /* Sequence n (0-31) of a bank dump (nibbles from the byte after the header) into raw; returns its length, or 0
  * when the slot is empty (no name and no steps) */
 int ws_seq_extract(const uint8_t *nib, int n, uint8_t *raw);
+
+/* Sequence n (0-31) of a bank dump replaced by the item raw (the layout above): its steps go into free step slots,
+ * the links, loop and start are made as the unit's own sequences have them. NULL = done, else why not. */
+const char *ws_seq_put(uint8_t *nib, int n, const uint8_t *raw);

@@ -33,9 +33,10 @@ typedef struct {
     int item_len;         /* raw bytes of an item: 426, 181 */
     /* Kinds whose dump is not count x item_len nibbles (wave sequences): the dump's total length, and the item n
      * lifted out of the dump (nibbles from the byte after the 6 byte header) into raw; returns the raw length, 0 if
-     * the item is empty. Such a kind can only be imported, not stored. */
+     * the item is empty; put does the opposite (NULL = done, else why not): these kinds have no item_len. */
     int dump_len;
     int (*extract)(const uint8_t *nib, int n, uint8_t *raw);
+    const char *(*put)(uint8_t *nib, int n, const uint8_t *raw);
 } ws_kind_t;
 
 /* The two kinds the SR's drivers use: patches (35 a bank, 426 bytes) and performances (50, 181) */
@@ -46,6 +47,8 @@ void ws_banks_import(const ws_kind_t *kind, uint16_t mask, int channel);
 /* Puts raw (item_len bytes) into bank / num of the unit: reads the bank, replaces, sends it back */
 void ws_banks_store(const ws_kind_t *kind, int bank, int num, const uint8_t *raw, int channel);
 bool ws_banks_busy(void);
+/* The last job ended with the unit taking the bank (its status 21 / 23) */
+bool ws_banks_last_ok(void);
 void ws_banks_tick(int64_t now);
 void ws_banks_draw(int disp);
 /* Offer every SysEx from the unit: true if it was the job's (a bank dump, or a status message 21-24) */

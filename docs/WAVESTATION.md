@@ -58,9 +58,18 @@ librarian-tested.
   performance and an Init patch with wave A = the sequence into the edit buffer (RAM 1 #0 is only the name), about 1.6 s
   of messages; the SR's own version plays, our edits do not. The loading screen stays 3 s and blocks input (a second load
   in the middle of the messages froze the editor once).
-- Writing (not done): Edisyn writes a sequence by commands: bank + number (`WAVE_SEQ_BANK` 176 / `WAVE_SEQ_NUM` 175),
-  `EXECUTE_WAVESEQ_INIT` (1 s pause), `WAVE_SEQ_STEP` 0 + `EXECUTE_INSERT_WS_STEP` for each extra step (pauses
-  7 ms * n + 250 ms), then for every step `WAVE_SEQ_STEP` and the parameters (80 ms each). It overwrites that sequence in
-  the unit's RAM bank. Decision: **RAM 3, sequence 31 (the last)** is the only place the editor will write, with the bank
-  kept in `/lfs/ws/backup/` first. A bank dump written back would be faster, but Edisyn has no writer for the links
-  (`Block.write` is commented out): to be tried later, after the commands work.
+- Writing (done 2026-10-21, tested): the SR accepts the whole sequence bank as a dump (reply type `54` sent back, status 23
+  + SUCCESS as for patches; Edisyn's own docs say so, it just never did it). `ws_seq_put` replaces one sequence in the dump;
+  the bank as it was goes to `/lfs/ws/backup/seq02` first. Decision: **RAM 3, sequence 31 (the last)** is the only place
+  the editor writes - sequences have no edit buffer, a write is permanent. What the unit's own sequences show (read
+  from RAM 1 and 2): links fLink / bLink with 0 for none, steps 0 and 500 sentinels (f = b = 65535), 499 usable steps for
+  all 32 sequences; a step's lLink = 65534 at the loop's first step, the loop's first step's number at the loop's last
+  step (the last step wins if one step is both), 65535 elsewhere; sLink = the start step's number, the start byte is
+  0-based (like loop start / end); time = the durations' sum + the last step's crossfade / 2 (matched every sample);
+  start time = ? (0 when start is the first step; the editor writes the durations before the start step, a guess);
+  a step's mod index 127 and dyno mod 0 without modulation (with a modulation amount the indexes are i * dyno-ish and
+  dyno mod depends on something not understood: the amount is NOT written, left 0); mod source byte = 0x80 | source.
+  A step's wave: value = low byte + 256 if high byte 0x81; the SR codes waves >= 365 as expanded (low = wave - 365,
+  coarse + 72). RAM 1 of the author's unit had garbage in sequences 11-13 (nonsense links): chains are walked with a
+  guard. The dump has no wave bank per step, so card waves (the BANK knob = CARD) are refused when writing.
+  Edisyn's command route (erase, insert steps, parameters: minutes, immediate, buggy) is not used.

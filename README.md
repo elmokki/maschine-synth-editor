@@ -46,7 +46,7 @@ on the Maschine's MIDI IN, but is never required.
 | Roland U-110 | one patch = 6 parts, read, IMPORT, store to the unit | done |
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
 | Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
-| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop, modulation); IMPORT of the banks' sequences, read, listening to the SR's version | in progress: editing and library work, writing to the unit is not done |
+| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into **RAM 3 sequence 31 only** (see the warning below) |
 
 Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), MIDI thru, LED brightness, a Volume button for the synths that have one.
 
@@ -71,13 +71,12 @@ the screen; **Play** starts and stops it from anywhere, and Scene pulses while i
 
 Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns into scenes.
 
+> **Warning, Wavestation SR SEQ:** the SR has no edit buffer for wave sequences, so REC > TO SR replaces a sequence in
+> the unit for good. The editor writes to one place only, **RAM 3, sequence 31 (the last one)**, and keeps the whole
+> bank as it was in `/lfs/ws/backup/seq02` first. Use a sequence there that you do not care about.
+
 ### Planned
 
-- **Wavestation SR wave sequences, the rest:** the SR has no single-sequence write; Edisyn builds a sequence with
-  erase + insert-step commands, straight into a RAM bank's sequence. **Warning: that will overwrite a sequence in the
-  unit.** The editor will use only one place for it, **RAM 3, sequence 31 (the last one)**, and keep the bank as it was
-  in `/lfs/ws/backup/` first. Nothing is written to the unit yet; IMPORT and listening only read. Still to do: the
-  writing, the Grid overview and a picture of the steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.

@@ -7,10 +7,12 @@
  * B LOOP (start, loop start, loop end, repeats + back and forth, modulation source and amount). The step is picked
  * with the STEP knob, the transport Step arrows (Shift: 8 steps).
  *
+ * REC > TO SR writes the sequence into RAM 3 sequence 31 (the last), nothing else: it reads the bank, replaces that
+ * sequence in the dump (ws_seq_put) and sends the bank back; the bank as it was is kept in /lfs/ws/backup/seq02.
+ * Not written: the modulation amount, card waves.
  * Listening: a sequence that is in the SR (imported, or read with AUTO) is played by a test patch (wave A = the
- * sequence) in the edit buffer - the SR's version, not our edits. Not yet: sending edits (the SR builds a sequence
- * only by commands, written straight into a RAM bank's sequence - to be agreed on first), the Grid overview, the
- * SR's own storing. Working now: IMPORT of the banks'
+ * sequence) in the edit buffer - the SR's version, not our edits. Not yet: sending edits as they are made (the SR
+ * has no edit buffer for sequences), group C. Working now: IMPORT of the banks'
  * sequences into the library (/lfs/wsseq/NNN name, NNN = bank * 32 + n + 1; the file layout is in ws_seq.h), AUTO
  * (reads the READ BANK / READ SEQ one back from the unit), editing, saving to the library.
  */
@@ -732,11 +734,52 @@ static bool sound_name(char *buf, size_t len)
     return true;
 }
 
+/* REC > TO SR: the one place the editor writes, RAM 3 sequence 31 (the last): the unit has no edit buffer for
+ * sequences, so what goes in replaces that sequence for good - the bank as it was is kept in /lfs/ws/backup/seq02 */
+#define STORE_BANK 2  /* RAM 3 */
+#define STORE_NUM 31
+static bool storing;
+static void set_name(const char *name);
+
+static void unit_slot_name(int slot, char *buf, size_t len)
+{
+    (void)slot;
+    snprintf(buf, len, "%s:%02d", ws_bank_tags[STORE_BANK], STORE_NUM);
+}
+
+static void unit_slot_info(int slot, char *buf, size_t len)
+{
+    (void)slot;
+    snprintf(buf, len, "%.12s", ws_banks_lib_name(&ws_kind_seq, STORE_BANK, STORE_NUM));
+}
+
+static void unit_store(int slot, const char *name)
+{
+    (void)slot;
+    if (ws_banks_busy()) {
+        return;
+    }
+    ensure();
+    if (length() == 0) {
+        synth_notice("NOTHING TO STORE: NO STEPS");
+        return;
+    }
+    set_name(name);
+    storing = true;
+    ws_banks_store(&ws_kind_seq, STORE_BANK, STORE_NUM, seq, channel());
+}
+
 static void tick(int64_t now)
 {
     if (ws_banks_busy()) {
         ws_banks_tick(now);
         return;
+    }
+    if (storing) {
+        storing = false;
+        if (ws_banks_last_ok()) {
+            audition(STORE_BANK, STORE_NUM);  /* hear what went in */
+        }
     }
     audition_tick(now);
 }
@@ -1013,6 +1056,11 @@ const synth_t synth_wsseq = {
     .read = read_seq,
     .sysex_in = sysex_in,
     .tick = tick,
+    .unit_store_label = "TO SR",
+    .unit_store_slots = 1,
+    .unit_slot_name = unit_slot_name,
+    .unit_slot_info = unit_slot_info,
+    .unit_store = unit_store,
     .overview_pages = 2,
     .overview_draw = overview_draw,
     .busy = busy,

@@ -46,6 +46,7 @@ const ws_kind_t ws_kind_seq = {
     .item_len = 0,
     .dump_len = 6 + 2 * 8784 + 2,
     .extract = ws_seq_extract,
+    .put = ws_seq_put,
 };
 const ws_kind_t ws_kind_perf = {
     .item = "performance",
@@ -80,6 +81,7 @@ static uint8_t *bank_buf;  /* in PSRAM */
 static bool bank_in;       /* a good bank reply is in bank_buf */
 static int bank_in_idx;
 static uint8_t store_raw[ITEM_MAX];
+static bool last_ok;       /* the last job ended with the unit's OK */
 static uint8_t sr_code;    /* the SR's last status message: 21 write complete, 22 error, 23 data load completed, 24 error */
 
 static size_t bank_len(const ws_kind_t *k) { return k->dump_len ? (size_t)k->dump_len : BANK_HEADER + k->count * k->item_len * 2 + 2; }
@@ -198,7 +200,7 @@ static int save_item_to_library(int bank, int n)
 }
 
 /* The item into the bank in bank_buf, the bank's checksum redone; the bank as it was kept first */
-static void prepare_store(void)
+static const char *prepare_store(void)
 {
     mkdir(STORAGE_ROOT "/ws", 0777);
     mkdir(STORAGE_ROOT "/ws/backup", 0777);
@@ -209,10 +211,17 @@ static void prepare_store(void)
         fwrite(bank_buf, 1, bank_len(kind), f);
         fclose(f);
     }
-    uint8_t *dst = bank_buf + BANK_HEADER + store_num * 2 * kind->item_len;
-    for (int i = 0; i < kind->item_len; i++) {
-        dst[2 * i] = store_raw[i] & 0x0F;
-        dst[2 * i + 1] = store_raw[i] >> 4;
+    if (kind->put) {
+        const char *why = kind->put(bank_buf + BANK_HEADER, store_num, store_raw);
+        if (why) {
+            return why;
+        }
+    } else {
+        uint8_t *dst = bank_buf + BANK_HEADER + store_num * 2 * kind->item_len;
+        for (int i = 0; i < kind->item_len; i++) {
+            dst[2 * i] = store_raw[i] & 0x0F;
+            dst[2 * i + 1] = store_raw[i] >> 4;
+        }
     }
     size_t len = bank_len(kind);
     int sum = 0;
@@ -222,9 +231,11 @@ static void prepare_store(void)
     bank_buf[2] = 0x30 + job_channel;
     bank_buf[len - 2] = sum & 0x7F;
     bank_buf[len - 1] = 0xF7;
+    return NULL;
 }
 
 bool ws_banks_busy(void) { return job_stage != JOB_NONE; }
+bool ws_banks_last_ok(void) { return last_ok; }
 
 void ws_banks_import(const ws_kind_t *k, uint16_t mask, int channel)
 {
@@ -243,15 +254,16 @@ void ws_banks_import(const ws_kind_t *k, uint16_t mask, int channel)
 
 void ws_banks_store(const ws_kind_t *k, int bank, int num, const uint8_t *raw, int channel)
 {
-    if (job_stage != JOB_NONE || k->extract) {  /* a kind that can only be imported is not stored */
+    if (job_stage != JOB_NONE || !(k->item_len || k->put)) {
         return;
     }
     kind = k;
     job_channel = channel & 0x0F;
-    memcpy(store_raw, raw, k->item_len);
+    memcpy(store_raw, raw, k->item_len ? k->item_len : WSSEQ_MAX_LEN);
     job_bank = bank;
     store_num = num;
     job_is_store = true;
+    last_ok = false;
     job_tries = 0;
     job_stage = JOB_ASK;
 }
@@ -273,11 +285,15 @@ void ws_banks_tick(int64_t now)
         if (bank_in && bank_in_idx == job_bank) {
             bank_in = false;
             if (job_is_store) {
-                prepare_store();
-                job_stage = JOB_SEND;
-                stream_pos = 0;
-                stream_next = 0;
-                synth_notice("WRITING THE BANK TO THE SR...");
+                const char *why = prepare_store();
+                if (why) {
+                    job_finish(why);  /* nothing was sent: the unit is as it was */
+                } else {
+                    job_stage = JOB_SEND;
+                    stream_pos = 0;
+                    stream_next = 0;
+                    synth_notice("WRITING THE BANK TO THE SR...");
+                }
             } else {
                 ESP_LOGI(TAG, "bank %d is in: saving", job_bank);
                 job_stage = JOB_SAVE;
@@ -333,6 +349,7 @@ void ws_banks_tick(int64_t now)
     }
     case JOB_ACK:
         if (sr_code == 0x23 || sr_code == 0x21) {
+            last_ok = true;
             job_finish("SR: DATA LOADED");
         } else if (sr_code == 0x24 || sr_code == 0x22) {
             job_finish("SR: ERROR - memory protect OFF? (GLOBAL)");
