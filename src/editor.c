@@ -88,6 +88,7 @@ static const scale_t scales[] = {
 #define LED_BRIGHT_ID 104
 #define NOTES_IN_ID 106
 #define HANG_NOTES_ID 107
+#define PAD_AT_ID 108  /* pad pressure after the hit: 0 off, 1 channel aftertouch, 2 polyphonic */
 /* Notes arriving on DIN IN on the synth's channel act like pad hits: the
  * pad lights, and e.g. the D-110 rhythm picks that key */
 static int notes_in;
@@ -108,12 +109,15 @@ static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
 /* The notes each pad started (a chord in chord mode), so a release stops
  * exactly those even if the settings changed meanwhile */
 static uint8_t pad_notes[16][4], pad_note_count[16];
+static int64_t pad_at_t0[16];  /* when each pad was hit, for the aftertouch to wait out the strike */
+static int pad_at_f[16];        /* its smoothed pressure, 16 x 0-127 */
 /* ...and the channel they started on: a release goes there, so changing the
  * part (the pads' channel) with a pad held doesn't leave the note ringing -
  * unless HANG NOTES is on (Setup), which sends it to the channel now and
  * leaves the old one's note on: good for playing with */
 static uint8_t pad_channel[16];
 static int hang_notes;
+static int pad_at;  /* off by default: a pad brushed by accident would send pressure */
 /* Chord mode: a pad plays the triad built on its note (thirds up the
  * scale), with Shift held the seventh chord */
 static int pad_chord;
@@ -1562,9 +1566,10 @@ static void setting_encoder(int i, int col, int delta)
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
                  : i == PAD_KEY_ID ? &pad_key : i == PAD_CHORD_ID ? &pad_chord
                  : i == MIDI_THRU_ID ? &midi_thru : i == NOTES_IN_ID ? &notes_in : i == HANG_NOTES_ID ? &hang_notes
+                 : i == PAD_AT_ID ? &pad_at
                  : &led_bright;
         int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
-                  : i == PAD_CHORD_ID || i == NOTES_IN_ID || i == HANG_NOTES_ID ? 1 : i == MIDI_THRU_ID ? 2 : LED_BRIGHT_MAX;
+                  : i == PAD_CHORD_ID || i == NOTES_IN_ID || i == HANG_NOTES_ID ? 1 : i == MIDI_THRU_ID || i == PAD_AT_ID ? 2 : LED_BRIGHT_MAX;
         int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
         int nv = *v + steps;
         if (i == PAD_LOW_ID && pad_scale != 0) {
@@ -1629,6 +1634,8 @@ static void load_global_settings(void)
             notes_in = v;
         } else if (sscanf(line, "HANG NOTES=%d", &v) == 1 && v >= 0 && v <= 1) {
             hang_notes = v;
+        } else if (sscanf(line, "PAD AFTERTOUCH=%d", &v) == 1 && v >= 0 && v <= 2) {
+            pad_at = v;
         } else if (sscanf(line, "CHORD=%d", &v) == 1 && v >= 0 && v <= 1) {
             pad_chord = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
@@ -1687,8 +1694,8 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\nHANG NOTES=%d\n",
-                pad_low, pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in, hang_notes);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\nHANG NOTES=%d\nPAD AFTERTOUCH=%d\n",
+                pad_low, pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in, hang_notes, pad_at);
         fclose(f);
     }
 }
@@ -1781,8 +1788,11 @@ static void draw_pads(void)
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS  (all synths)", true);
-    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS (all synths)   PAD MODE closes", true);
+    /* The fifth setting, over its encoder (the first of the right display) */
+    static const char *const at_names[3] = {"OFF", "CHANNEL", "POLY"};
+    snprintf(buf, sizeof(buf), "AFTERTOUCH %s", at_names[pad_at]);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, buf, true);
     const char *names[4] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD"};
     int low = lowest_pad_note();  /* in a scale: the first scale note from PAD LOW */
     snprintf(buf, sizeof(buf), "%s%d", keys[low % 12], low / 12 - 1);  /* 60 = C4 */
@@ -2258,6 +2268,8 @@ static void editor_encoder_impl(int i, int delta)
         static const int pad_settings[4] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID, PAD_CHORD_ID};
         if (i < 4) {
             setting_encoder(pad_settings[i], i, delta);
+        } else if (i == 4) {
+            setting_encoder(PAD_AT_ID, i, delta);
         }
         return;
     }
@@ -3054,6 +3066,8 @@ static void editor_connected_impl(void)
     start_activation();
 }
 
+static void pad_pressure_released(int pad, int channel, const uint8_t *notes, int count);
+
 /* Pads play notes on the synth's channel, or type in the name screen */
 static void editor_pad_impl(int pad, bool down, int raw)
 {
@@ -3086,6 +3100,8 @@ static void editor_pad_impl(int pad, bool down, int raw)
             pad_note_count[pad] = 1;
         }
         pad_channel[pad] = channel;
+        pad_at_t0[pad] = esp_timer_get_time();
+        pad_at_f[pad] = 0;
         for (int i = 0; i < pad_note_count[pad]; i++) {
             midi_send(0x90 | channel, pad_notes[pad][i], vel);
         }
@@ -3101,9 +3117,100 @@ static void editor_pad_impl(int pad, bool down, int raw)
         for (int i = 0; i < pad_note_count[pad]; i++) {
             midi_send(0x80 | (hang_notes ? channel : pad_channel[pad]), pad_notes[pad][i], 0);
         }
+        int cnt = pad_note_count[pad];
         pad_note_count[pad] = 0;
+        pad_pressure_released(pad, pad_channel[pad], pad_notes[pad], cnt);
         pad_idle(pad);
     }
+}
+
+/* Pad pressure after the hit (main.c reports it every pad report): aftertouch, if the pad is playing notes.
+ * 0-127 from the pressure range above the hit threshold; sent when it moved by 2 and 15 ms passed (the DIN cable
+ * carries ~3 KB/s). Channel aftertouch follows the hardest held pad. */
+#define AT_MIN_RAW 3000
+#define AT_MAX_RAW 4000
+#define AT_INTERVAL_US 20000
+#define AT_SETTLE_US 80000   /* the strike itself is not pressure: nothing is sent until it has died down */
+#define AT_SMOOTH 16         /* a pressure report (2 ms) moves the smoothed value 1/16 of the way: ~30 ms */
+#define AT_STEP 4            /* the value must move this much before it is sent */
+static uint8_t pad_at_val[16];      /* the latest pressure of each held pad */
+static uint8_t pad_at_sent[16];     /* polyphonic: what was last sent */
+static int chan_at_sent;
+static int64_t at_sent_us[16], chan_at_us;
+
+static int held_pads_max(int *count)
+{
+    int mx = 0;
+    *count = 0;
+    for (int p = 0; p < 16; p++) {
+        if (pad_note_count[p]) {
+            (*count)++;
+            mx = pad_at_val[p] > mx ? pad_at_val[p] : mx;
+        }
+    }
+    return mx;
+}
+
+static void editor_pad_pressure_impl(int pad, int raw)
+{
+    if (!pad_at || !pad_note_count[pad] || mode == MODE_SEQ || mode == MODE_NAME || synth_busy()) {
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    int target = (raw - AT_MIN_RAW) * 127 * 16 / (AT_MAX_RAW - AT_MIN_RAW);
+    target = target < 0 ? 0 : target > 127 * 16 ? 127 * 16 : target;
+    if (now - pad_at_t0[pad] < AT_SETTLE_US) {
+        pad_at_f[pad] = target;  /* follows silently, so it starts from where the finger is */
+        return;
+    }
+    pad_at_f[pad] += (target - pad_at_f[pad]) / AT_SMOOTH;
+    int v = pad_at_f[pad] / 16;
+    pad_at_val[pad] = (uint8_t)v;
+    int channel = pad_channel[pad];
+    if (pad_at == 2) {
+        if (abs(v - pad_at_sent[pad]) >= AT_STEP && now - at_sent_us[pad] >= AT_INTERVAL_US) {
+            for (int i = 0; i < pad_note_count[pad]; i++) {
+                midi_send(0xA0 | channel, pad_notes[pad][i], v);
+            }
+            pad_at_sent[pad] = (uint8_t)v;
+            at_sent_us[pad] = now;
+        }
+        return;
+    }
+    int n;
+    int mx = held_pads_max(&n);
+    if (abs(mx - chan_at_sent) >= AT_STEP && now - chan_at_us >= AT_INTERVAL_US) {
+        midi_send(0xD0 | channel, mx, 0);
+        chan_at_sent = mx;
+        chan_at_us = now;
+    }
+}
+
+/* A pad let go: its pressure ends (channel aftertouch when the last one is up) */
+static void pad_pressure_released(int pad, int channel, const uint8_t *notes, int count)
+{
+    if (pad_at == 2) {
+        if (pad_at_sent[pad]) {
+            for (int i = 0; i < count; i++) {
+                midi_send(0xA0 | channel, notes[i], 0);
+            }
+        }
+    } else if (pad_at == 1) {
+        int n;
+        pad_at_val[pad] = 0;
+        held_pads_max(&n);
+        if (n == 0 && chan_at_sent) {
+            midi_send(0xD0 | channel, 0, 0);
+            chan_at_sent = 0;
+        }
+    }
+    pad_at_sent[pad] = 0;
+    pad_at_val[pad] = 0;
+}
+
+void editor_pad_pressure(int pad, int raw)
+{
+    editor_pad_pressure_impl(pad, raw);
 }
 
 /* Public entry points: run the handler, then bring the button LEDs in line

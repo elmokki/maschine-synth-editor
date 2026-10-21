@@ -422,6 +422,8 @@ static void handle_report20(const uint8_t *buf, int len)
             if (released) {
                 pad_down[pad] = false;
                 editor_pad(pad, false, 0);
+            } else if (!pad_wait[pad]) {
+                editor_pad_pressure(pad, raw[pad]);
             }
         }
     }

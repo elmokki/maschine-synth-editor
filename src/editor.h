@@ -22,6 +22,7 @@ void editor_button(int bit, bool down);    /* report 0x01 button bit */
 void editor_encoder(int i, int delta);     /* 0-7, raw counter units */
 void editor_main_encoder(int steps);       /* +-1 per detent */
 void editor_pad(int pad, bool down, int raw);  /* raw pressure 0-4095 */
+void editor_pad_pressure(int pad, int raw);  /* while a pad is held: aftertouch */
 void editor_tick(int64_t now_us);          /* patch browse timeout */
 void editor_redraw(void);                  /* e.g. after a reconnect */
 void editor_connected(void);               /* Maschine (and DIN MIDI) ready */
