@@ -31,3 +31,4 @@
 #define BTN_RESTART 32
 #define BTN_PLAY 36
 #define BTN_SCENE 40       /* opens the sequencer */
+#define BTN_PATTERN 41     /* the sequencer's pattern slots */

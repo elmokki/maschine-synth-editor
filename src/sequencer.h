@@ -38,6 +38,11 @@ typedef struct {
 
 extern sq_pattern_t sq_pattern;
 
+void sq_pattern_clear(sq_pattern_t *p);   /* an empty pattern: 120 BPM, 16 steps, track n on channel n */
+/* Makes this the playing pattern: at once when stopped, else at the next pass of the longest track (the
+ * pattern is copied, a later change to p does nothing) */
+void sq_load(const sq_pattern_t *p);
+bool sq_pending(void);                    /* a loaded pattern is still waiting for its turn */
 void sq_init(void);          /* starts the task and the timer (once) */
 void sq_play(bool on);       /* stopping sends the notes off */
 bool sq_playing(void);

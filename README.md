@@ -45,18 +45,40 @@ on the Maschine's MIDI IN, but is never required.
 | Roland JV-880 | PATCH (4 tones), RHYTHM (61 keys), PERF (8 parts); expansion boards, read, IMPORT, store to the unit | done |
 | Roland U-110 | one patch = 6 parts, read, IMPORT, store to the unit | done |
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
-| Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings); IMPORT, read, store | done except effects |
+| Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
 
 Also in: pad scales and chords, MIDI thru, LED brightness, a Volume button for the synths that have one.
 
+## Sequencer
+
+The **Scene** button opens a step sequencer that runs on top of every synth (it keeps playing when you leave
+the screen; **Play** starts and stops it from anywhere, and Scene pulses while it plays).
+
+- 8 tracks (Group A-H, each its own colour), up to 128 steps each, 16th notes; every track has its own
+  length, MIDI channel, transpose and mute. A step has a note, velocity, gate, ratchet (1-8 hits) and a tie
+  (continues the previous note; a different note is played legato).
+- The 16 pads are the shown page's steps; Step arrows turn the page. **Rec** switches between WRITE (pads
+  switch steps on and off) and SELECT (pads only pick the step to edit). The NOTE knob moves along the scale
+  chosen on the Pad Mode screen, and a new step starts from the previous step's note or the scale's root.
+- **Control** inside Scene opens the sequencer's settings: a MIDI IN channel on which incoming notes fill the
+  picked step (pitch, velocity, and how long the key is held becomes the gate or a chain of ties).
+- **Pattern** opens 16 pattern slots on the pads, stored on LittleFS and saved automatically; a playing
+  sequencer switches at the end of the longest track. Erase + a pad clears a slot, Erase + a Group button
+  clears a track.
+- The engine runs in its own task on core 1, clocked by a hardware timer.
+- **Shift + Control** in Scene opens the sequencer's own tutorial.
+
+Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns into scenes.
+
 ### Planned
 
-- Wavestation SR: effects in the performance editor (types, routing, mixes, parameters), wave sequences
-  (the SR has no single-sequence write; Edisyn builds them with erase + insert-step commands).
+- **Next: Wavestation SR wave sequences** (the SR has no single-sequence write; Edisyn builds them with erase +
+  insert-step commands). Important for the SR editor now that the performance editor is done.
+- Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.
 - Overviews for the RHYTHM entries (JV-880, D-110).
-- Scene: saved multi-synth scenes.
+- Scene: saved multi-synth scenes (patterns of the sequencer plus each synth's patch).
 - A MIDI joystick of the author's own (vector control for the Wavestation, CC 16/17 through a splitter).
 
 ## Layout
@@ -64,8 +86,9 @@ Also in: pad scales and chords, MIDI thru, LED brightness, a Volume button for t
 - `docs/PROTOCOL.md` — the protocol reference. Read this first.
 - `docs/ESP32_NOTES.md` — firmware notes, step by step, incl. the full-speed workarounds.
 - `src/` — ESP32-S3 firmware (`main.c` HID side, `display.c`, `midi.c`, generated `fonts.c`, `editor.c` the generic
-  editor, `synth_*.c` one driver per synth entry; `CLAUDE.md` has the code map).
+  editor, `synth_*.c` one driver per synth entry, `sequencer.c` / `seq_ui.c` the step sequencer; `CLAUDE.md` has the code map).
 - `docs/WAVESTATION.md` — notes on the Wavestation SR's SysEx and data.
+- `tools/ws_fx_gen.py` — generates `src/ws_fx_data.c` (the Wavestation effect tables) from the local Edisyn clone.
 - `tools/gen_font.py` — regenerates `src/fonts.c`/`fonts.h` from a TTF.
 - `tools/*_import.py`, `tools/*_names.py` — build the patch libraries and name lists in `data/` for each synth.
 - `tools/plugiator_import.py` — Plugiator parameter tables + factory presets from the Plug-in

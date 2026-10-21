@@ -275,6 +275,8 @@ void synth_state_received(void);
 /* Provided by the editor: the note `steps` notes of the pads' scale (Pad
  * Mode) from `note` - chromatic unless a scale is chosen; -1 if past 0-127 */
 int synth_scale_note(int note, int steps);
+/* The lowest pad's note (the Pad Mode screen's key and scale): the sequencer's default note */
+int synth_pad_root(void);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;

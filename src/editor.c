@@ -231,6 +231,12 @@ typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CA
                MODE_OVERVIEW, MODE_SEQ } ui_mode_t;
 static ui_mode_t mode;
 
+/* The pages shown: the synth's, or the sequencer's when opened from Scene (and back to it when closed) */
+static const synth_tip_t *tips_cur;
+static int tips_n;
+static const char *tips_name;
+static ui_mode_t tips_return;
+
 /* Screens opened by their own button (Step, All, Pad Mode, Control) */
 static bool is_menu(ui_mode_t m)
 {
@@ -424,6 +430,8 @@ static int pad_note(int pad) { return scale_note(pad_index(pad)); }
 
 int synth_scale_note(int note, int steps) { return scale_step(note, steps); }
 
+int synth_pad_root(void) { return lowest_pad_note(); }
+
 /* The pad's chord: thirds up the scale (chromatic: major, dominant 7th) */
 static int pad_chord_notes(int pad, bool seventh, uint8_t out[4])
 {
@@ -479,7 +487,7 @@ static void update_group_leds(void)
     }
     if (mode == MODE_TUTORIAL) {
         /* The page's Group buttons lit, the rest dark */
-        const synth_tip_t *tip = &synth->tips[tip_page];
+        const synth_tip_t *tip = &tips_cur[tip_page];
         for (int g = 0; g < 8; g++) {
             bool lit = false;
             for (int k = 0; k < 8; k++) {
@@ -566,7 +574,7 @@ static void update_button_leds(void)
         return;
     }
     if (mode == MODE_SEQ) {
-        seq_ui_button_leds();
+        seq_ui_button_leds(shift_held ? pulse(LED_ON) : 0);
         return;
     }
     if (mode == MODE_TUTORIAL) {
@@ -575,7 +583,7 @@ static void update_button_leds(void)
         /* Each LED set once to its final value: this runs on every tick,
          * and an LED changed twice per call kept the LED reports so busy
          * that the displays never got sent */
-        const synth_tip_t *tip = &synth->tips[tip_page];
+        const synth_tip_t *tip = &tips_cur[tip_page];
         for (int bit = 0; bit < 48; bit++) {
             if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + 8) {
                 continue;  /* RGB: update_group_leds */
@@ -1810,13 +1818,13 @@ static void draw_pads(void)
  * the buttons it's about are lit (update_button_leds) */
 static void draw_tutorial(void)
 {
-    const synth_tip_t *tip = &synth->tips[tip_page];
+    const synth_tip_t *tip = &tips_cur[tip_page];
     char buf[64];
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    snprintf(buf, sizeof(buf), "TUTORIAL  %s  %d/%d", synth->name, tip_page + 1, synth->tip_count);
+    snprintf(buf, sizeof(buf), "TUTORIAL  %s  %d/%d", tips_name, tip_page + 1, tips_n);
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
     draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "< > pages", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "CONTROL closes", true);
@@ -2435,10 +2443,30 @@ static void editor_button_impl(int bit, bool down)
     /* Menu screens (Step, All, Pad Mode, Control): their button opens or
      * closes them, from the editor or straight from another menu; a Group
      * button goes straight back to the editor, at that section */
-    if (bit == BTN_CONTROL && down && synth->tips && (shift_held || mode == MODE_TUTORIAL) &&
-        (mode == MODE_EDIT || is_menu(mode))) {
-        /* Shift + Control: the tutorial (again, or Control: out) */
-        mode = mode == MODE_TUTORIAL ? MODE_EDIT : MODE_TUTORIAL;
+    if (bit == BTN_CONTROL && down && (synth->tips || mode == MODE_SEQ || mode == MODE_TUTORIAL) &&
+        (shift_held || mode == MODE_TUTORIAL) && (mode == MODE_EDIT || is_menu(mode))) {
+        /* Shift + Control: the tutorial (again, or Control: out) - the sequencer's from Scene */
+        if (mode == MODE_TUTORIAL) {
+            mode = tips_return == MODE_SEQ ? MODE_SEQ : MODE_EDIT;
+            if (mode == MODE_SEQ) {
+                seq_ui_enter();
+            }
+        } else {
+            tips_return = mode;
+            if (mode == MODE_SEQ) {
+                seq_ui_leave();
+                for (int pad = 0; pad < 16; pad++) {
+                    pad_idle(pad);
+                }
+                tips_cur = seq_ui_tips(&tips_n);
+                tips_name = "SEQUENCER";
+            } else {
+                tips_cur = synth->tips;
+                tips_n = synth->tip_count;
+                tips_name = synth->name;
+            }
+            mode = MODE_TUTORIAL;
+        }
         tip_page = 0;
         overview = false;
         end_browse();
@@ -2452,7 +2480,7 @@ static void editor_button_impl(int bit, bool down)
     if (mode == MODE_TUTORIAL && down &&
         (bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 || bit == BTN_ARROW_RIGHT_2)) {
         int d = bit == BTN_ARROW_LEFT || bit == BTN_ARROW_LEFT_2 ? -1 : 1;
-        tip_page = (tip_page + d + synth->tip_count) % synth->tip_count;
+        tip_page = (tip_page + d + tips_n) % tips_n;
         draw_tutorial();
         update_group_leds();
         return;
@@ -2724,7 +2752,7 @@ static void editor_main_encoder_impl(int steps)
         return;
     }
     if (mode == MODE_TUTORIAL) {
-        tip_page = (tip_page + (steps > 0 ? 1 : -1) + synth->tip_count) % synth->tip_count;
+        tip_page = (tip_page + (steps > 0 ? 1 : -1) + tips_n) % tips_n;
         draw_tutorial();
         update_group_leds();
         return;
@@ -2997,6 +3025,7 @@ static void editor_init_impl(void)
         }
     }
     ESP_LOGI(TAG, "synth: %s", synth->name);
+    seq_ui_init();
     load_global_settings();
     maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
     load_settings();

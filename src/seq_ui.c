@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "buttons.h"
 #include "display.h"
 #include "esp_timer.h"
 #include "maschine.h"
 #include "seq_ui.h"
 #include "sequencer.h"
+#include "synth.h"
 
 #define COLUMN_WIDTH 64
 #define COLUMN_INNER 63
@@ -18,7 +20,11 @@
 #define LED_DIM 9
 #define LED_ON 127
 #define REDRAW_US 50000     /* LEDs and displays: never faster (see CLAUDE.md) */
-#define SETTINGS_FILE "/lfs/seq.cfg"
+#define SEQ_DIR "/lfs/seq"
+#define SETTINGS_FILE SEQ_DIR "/settings"   /* IN channel, the pattern slot in use */
+#define SLOTS 16
+#define PATTERN_MAGIC 0x31505153u           /* "SQP1" */
+#define SAVE_DELAY_US 2000000               /* a pattern is written this long after its last edit */
 
 /* One colour per track, so the picked one is never in doubt */
 static const uint8_t track_color[SQ_TRACKS][3] = {
@@ -30,9 +36,16 @@ static int sel_track, sel_step, page;
 static bool follow = true;       /* the page follows the playing track */
 static bool rec_write = true;    /* Rec: the pads switch steps on and off; off: they only pick the step */
 static bool settings_open;       /* Control: the sequencer's settings */
+static bool pattern_open;        /* Pattern: the pads are the pattern slots */
+static int cur_slot, queued_slot = -1;
+static bool slot_used[SLOTS];
+static bool pattern_dirty;
+static bool erase_held, erase_used;  /* Erase + Group clears a track, Erase + pad (patterns) a slot */
+static int64_t save_at;
+static sq_pattern_t loaded;      /* scratch for reading a slot */
 static int in_channel;           /* MIDI IN channel that fills steps, 0 = off, else 1-16 */
 static int acc[8];
-static uint8_t last_note = 60, last_vel = 100, last_gate = 50;
+static uint8_t last_vel = 100, last_gate = 50;
 static bool dirty_head, dirty_top, dirty_cols, dirty_leds;
 static int64_t next_at;
 static int shown_pos = -2;
@@ -79,19 +92,67 @@ static void load_settings(void)
 {
     FILE *f = fopen(SETTINGS_FILE, "rb");
     if (f) {
-        int c = fgetc(f);
+        int c = fgetc(f), slot = fgetc(f);
         fclose(f);
         in_channel = c >= 0 && c <= 16 ? c : 0;
+        cur_slot = slot >= 0 && slot < SLOTS ? slot : 0;
     }
 }
 
 static void save_settings(void)
 {
+    mkdir(SEQ_DIR, 0777);  /* fails harmlessly if it exists */
     FILE *f = fopen(SETTINGS_FILE, "wb");
     if (f) {
         fputc(in_channel, f);
+        fputc(cur_slot, f);
         fclose(f);
     }
+}
+
+static void slot_path(int slot, char *buf, size_t len)
+{
+    snprintf(buf, len, SEQ_DIR "/p%02d", slot + 1);
+}
+
+/* A slot's file: magic, size of the pattern struct (a layout change makes old files unreadable, not wrong), data */
+static bool read_slot(int slot, sq_pattern_t *out)
+{
+    char path[32];
+    slot_path(slot, path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return false;
+    }
+    uint32_t head[2];
+    bool ok = fread(head, sizeof head, 1, f) == 1 && head[0] == PATTERN_MAGIC && head[1] == sizeof *out &&
+              fread(out, sizeof *out, 1, f) == 1;
+    fclose(f);
+    return ok;
+}
+
+static void write_slot(int slot)
+{
+    char path[32];
+    mkdir(SEQ_DIR, 0777);
+    slot_path(slot, path, sizeof path);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        uint32_t head[2] = {PATTERN_MAGIC, sizeof sq_pattern};
+        fwrite(head, sizeof head, 1, f);
+        fwrite(&sq_pattern, sizeof sq_pattern, 1, f);
+        fclose(f);
+        slot_used[slot] = true;
+    }
+    pattern_dirty = false;
+    save_at = 0;
+}
+
+/* Every edit of the pattern: it is written to its slot a moment later */
+static void touched(void)
+{
+    pattern_dirty = true;
+    save_at = esp_timer_get_time() + SAVE_DELAY_US;
 }
 
 static void draw_head(void)
@@ -105,6 +166,11 @@ static void draw_head(void)
     if (settings_open) {
         text_cap(0, 2, 1, &font_small, "SEQUENCER SETTINGS", true);
         text_cap(1, 2, 1, &font_small, "Control: back", true);
+        return;
+    }
+    if (pattern_open) {
+        text_cap(0, 2, 1, &font_small, "SEQUENCER PATTERNS", true);
+        text_cap(1, 2, 1, &font_small, "Pattern: back", true);
         return;
     }
     snprintf(buf, sizeof buf, "SEQUENCER  TRACK %d  CH %d", sel_track + 1, t->channel + 1);
@@ -242,8 +308,49 @@ static int pulse_pct(void)
     return 30 + 70 * v / 450;
 }
 
+static void draw_patterns(void)
+{
+    char b[24];
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_fill_rect(d, 0, HEADER_LINE_Y + 1, DISPLAY_WIDTH, DISPLAY_HEIGHT - HEADER_LINE_Y - 1, false);
+    }
+    text_cap(0, 4, 22, &font_small, "PATTERN", true);
+    snprintf(b, sizeof b, "%d", cur_slot + 1);
+    text_cap(0, 4, 36, &font_large, b, true);
+    if (queued_slot >= 0) {
+        snprintf(b, sizeof b, "NEXT: %d", queued_slot + 1);
+        text_cap(0, 100, 36, &font_medium, b, true);
+    }
+    text_cap(1, 2, 20, &font_small, "Pads: pick a pattern", true);
+    text_cap(1, 2, 32, &font_small, "Erase + pad: clear it", true);
+    text_cap(1, 2, 44, &font_small, "Playing: switch at the end", true);
+}
+
+static void pattern_pad_leds(void)
+{
+    bool blink = (esp_timer_get_time() / 150000) & 1;
+    int pc = pulse_pct();
+    for (int pad = 0; pad < 16; pad++) {
+        int slot = pad_index(pad);
+        uint8_t r = 3, g = 3, b = 3;
+        if (slot_used[slot]) {
+            r = 0, g = 30, b = 60;
+        }
+        if (slot == queued_slot) {
+            r = g = b = blink ? 127 : 0;
+        } else if (slot == cur_slot) {
+            r = g = b = 127 * pc / 100;
+        }
+        maschine_set_pad_led(pad, r, g, b);
+    }
+}
+
 static void pad_leds(void)
 {
+    if (pattern_open) {
+        pattern_pad_leds();
+        return;
+    }
     const sq_track_t *t = track();
     int pos = sq_position(sel_track);
     const uint8_t *c = track_color[sel_track];
@@ -276,6 +383,8 @@ void seq_ui_draw(void)
     draw_head();
     if (settings_open) {
         draw_settings();
+    } else if (pattern_open) {
+        draw_patterns();
     } else {
         draw_top();
         draw_cols();
@@ -286,15 +395,26 @@ void seq_ui_draw(void)
     dirty_head = dirty_top = dirty_cols = dirty_leds = false;
 }
 
+/* At boot: the settings, which slots exist, and the pattern of the slot in use */
+void seq_ui_init(void)
+{
+    load_settings();
+    for (int i = 0; i < SLOTS; i++) {
+        char path[32];
+        struct stat st;
+        slot_path(i, path, sizeof path);
+        slot_used[i] = stat(path, &st) == 0;
+    }
+    if (read_slot(cur_slot, &loaded)) {
+        sq_load(&loaded);
+    }
+}
+
 void seq_ui_enter(void)
 {
-    static bool loaded;
-    if (!loaded) {
-        loaded = true;
-        load_settings();
-    }
     follow = true;
-    settings_open = false;
+    settings_open = pattern_open = false;
+    erase_held = false;
     keys_down = 0;
     memset(acc, 0, sizeof acc);
     seq_ui_draw();
@@ -305,11 +425,31 @@ void seq_ui_leave(void)
     if (settings_open) {
         save_settings();
     }
-    settings_open = false;
+    settings_open = pattern_open = false;
+    if (pattern_dirty && !sq_pending()) {
+        write_slot(cur_slot);
+    }
 }
 
 void seq_ui_tick(int64_t now_us)
 {
+    if (queued_slot >= 0 && !sq_pending()) {
+        /* The queued pattern has taken over (edits made while it waited went to the old one and are not kept) */
+        cur_slot = queued_slot;
+        queued_slot = -1;
+        pattern_dirty = false;
+        save_at = 0;
+        sel_step = 0;
+        page = 0;
+        save_settings();
+        dirty_head = dirty_top = dirty_cols = dirty_leds = true;
+    }
+    if (save_at && now_us >= save_at && !sq_pending()) {
+        write_slot(cur_slot);
+    }
+    if (pattern_open && now_us >= next_at) {
+        dirty_leds = true;  /* the pulse and the blink */
+    }
     int pos = sq_position(sel_track);
     if (pos != shown_pos) {
         if (follow && pos >= 0 && pos / 16 != page) {
@@ -332,7 +472,11 @@ void seq_ui_tick(int64_t now_us)
     if (dirty_head) {
         draw_head();
     }
-    if (!settings_open) {
+    if (pattern_open) {
+        if (dirty_head || dirty_top || dirty_cols) {
+            draw_patterns();
+        }
+    } else if (!settings_open) {
         if (dirty_top) {
             draw_top();
         }
@@ -363,22 +507,86 @@ static void select_track(int tr)
     shown_pos = -2;
 }
 
-static void toggle_settings(void)
+/* Erase + Group: the track's steps back to empty (channel, length, transpose and mute stay) */
+static void clear_track(int tr)
+{
+    sq_pattern_clear(&loaded);
+    memcpy(sq_pattern.track[tr].steps, loaded.track[tr].steps, sizeof sq_pattern.track[tr].steps);
+    touched();
+    dirty_top = dirty_cols = dirty_leds = true;
+}
+
+/* Erase + pad in the patterns screen: the slot is emptied (its file removed); the one in use is cleared in place,
+ * keeping the tempo */
+static void clear_slot(int slot)
+{
+    char path[32];
+    slot_path(slot, path, sizeof path);
+    remove(path);
+    slot_used[slot] = false;
+    sq_pattern_clear(&loaded);
+    if (slot == cur_slot) {
+        memcpy(sq_pattern.track, loaded.track, sizeof sq_pattern.track);
+        pattern_dirty = false;
+        save_at = 0;
+        sel_step = 0;
+        page = 0;
+    } else if (slot == queued_slot) {
+        loaded.bpm = sq_pattern.bpm;
+        sq_load(&loaded);  /* the waiting copy is replaced by the empty one */
+    }
+    dirty_head = dirty_top = dirty_cols = dirty_leds = true;
+}
+
+static void open_screen(bool settings, bool patterns)
 {
     if (settings_open) {
         save_settings();
     }
-    settings_open = !settings_open;
+    settings_open = settings;
+    pattern_open = patterns;
     for (int d = 0; d < DISPLAY_COUNT; d++) {
         display_clear(d);
     }
     seq_ui_draw();
 }
 
+/* A pattern slot picked on its pad: the one in use is written first; a stopped sequencer takes the new one at
+ * once, a playing one when the longest track comes round */
+static void pick_slot(int slot)
+{
+    if (slot == cur_slot && queued_slot < 0) {
+        return;
+    }
+    if (pattern_dirty && !sq_pending()) {
+        write_slot(cur_slot);
+    }
+    pattern_dirty = false;
+    save_at = 0;
+    if (!read_slot(slot, &loaded)) {
+        sq_pattern_clear(&loaded);
+        loaded.bpm = sq_pattern.bpm;  /* a new pattern keeps the tempo */
+    }
+    sq_load(&loaded);
+    if (sq_playing()) {
+        queued_slot = slot;
+    } else {
+        cur_slot = slot;
+        queued_slot = -1;
+        sel_step = 0;
+        page = 0;
+        save_settings();
+    }
+    dirty_head = dirty_top = dirty_cols = dirty_leds = true;
+}
+
 bool seq_ui_button(int bit, bool down)
 {
     if (bit >= BTN_GROUP_A && bit < BTN_GROUP_A + SQ_TRACKS) {
-        if (down) {
+        if (down && erase_held && !settings_open && !pattern_open) {
+            erase_used = true;
+            clear_track(bit - BTN_GROUP_A);
+        } else if (down) {
             select_track(bit - BTN_GROUP_A);
         }
         return true;
@@ -388,7 +596,12 @@ bool seq_ui_button(int bit, bool down)
     switch (bit) {
     case BTN_CONTROL:
         if (down) {
-            toggle_settings();
+            open_screen(!settings_open, false);
+        }
+        return true;
+    case BTN_PATTERN:
+        if (down) {
+            open_screen(false, !pattern_open);
         }
         return true;
     case BTN_REC:
@@ -398,14 +611,16 @@ bool seq_ui_button(int bit, bool down)
         }
         return true;
     case BTN_DISPLAY_1:
-        if (down && !settings_open && st->vel) {
+        if (down && !settings_open && !pattern_open && st->vel) {
             st->tie = !st->tie;
+            touched();
             dirty_top = dirty_cols = true;
         }
         return true;
     case BTN_DISPLAY_1 + 4:
-        if (down && !settings_open) {
+        if (down && !settings_open && !pattern_open) {
             t->mute = !t->mute;
+            touched();
             dirty_cols = true;
         }
         return true;
@@ -417,7 +632,7 @@ bool seq_ui_button(int bit, bool down)
         return true;
     case BTN_STEP_LEFT:
     case BTN_STEP_RIGHT:
-        if (down && !settings_open) {
+        if (down && !settings_open && !pattern_open) {
             int p = page + (bit == BTN_STEP_LEFT ? -1 : 1);
             if (p >= 0 && p < pages_of(t)) {
                 page = p;
@@ -427,10 +642,18 @@ bool seq_ui_button(int bit, bool down)
         }
         return true;
     case BTN_ERASE:
-        if (down && !settings_open) {
-            st->vel = 0;
-            st->tie = false;
-            dirty_top = dirty_cols = dirty_leds = true;
+        /* Alone (let go without a Group or pad): clears the picked step */
+        if (down) {
+            erase_held = true;
+            erase_used = false;
+        } else if (erase_held) {
+            erase_held = false;
+            if (!erase_used && !settings_open && !pattern_open) {
+                st->vel = 0;
+                st->tie = false;
+                touched();
+                dirty_top = dirty_cols = dirty_leds = true;
+            }
         }
         return true;
     default:
@@ -438,11 +661,12 @@ bool seq_ui_button(int bit, bool down)
     }
 }
 
-/* A step being switched on takes the note of the nearest step before it (else the last note used) */
+/* A step being switched on takes the note of the nearest step before it (else the Pad Mode screen's lowest pad,
+ * the root of the chosen key and scale) */
 static void new_step(sq_step_t *s)
 {
     const sq_track_t *t = track();
-    int idx = (int)(s - t->steps), note = last_note;
+    int idx = (int)(s - t->steps), note = synth_pad_root();
     for (int i = idx - 1; i >= 0; i--) {
         if (t->steps[i].vel) {
             note = t->steps[i].note[0];
@@ -461,6 +685,15 @@ void seq_ui_pad(int pad, bool down, int raw)
     if (!down || settings_open) {
         return;
     }
+    if (pattern_open) {
+        if (erase_held) {
+            erase_used = true;
+            clear_slot(pad_index(pad));
+        } else {
+            pick_slot(pad_index(pad));
+        }
+        return;
+    }
     sq_track_t *t = track();
     int idx = page * 16 + pad_index(pad);
     if (idx >= t->length) {
@@ -475,6 +708,7 @@ void seq_ui_pad(int pad, bool down, int raw)
         } else {
             new_step(s);
         }
+        touched();
     }
     dirty_top = dirty_cols = dirty_leds = true;
 }
@@ -494,6 +728,9 @@ void seq_ui_encoder(int i, int delta)
         }
         return;
     }
+    if (pattern_open) {
+        return;
+    }
     acc[i] += delta;
     int n = acc[i] / units[i];
     if (!n) {
@@ -504,8 +741,12 @@ void seq_ui_encoder(int i, int delta)
     sq_step_t *s = &t->steps[sel_step];
     switch (i) {
     case 0:
-        s->note[0] = last_note = clampi(s->note[0] + n, 0, 127);
+    {
+        /* Along the Pad Mode screen's scale (a note outside it, from MIDI IN, moves to the next one in it) */
+        int note = synth_scale_note(s->note[0], n);
+        s->note[0] = note < 0 ? s->note[0] : note;
         break;
+    }
     case 1:
         if (!s->vel && n > 0) {
             new_step(s);
@@ -536,12 +777,14 @@ void seq_ui_encoder(int i, int delta)
         break;
     }
     clamp_state();
+    touched();
     dirty_head = dirty_top = dirty_cols = dirty_leds = true;
 }
 
 void seq_ui_main_encoder(int steps)
 {
     sq_set_bpm(sq_pattern.bpm + steps);
+    touched();
     dirty_head = dirty_cols = true;
 }
 
@@ -549,7 +792,7 @@ void seq_ui_main_encoder(int steps)
  * released the time it was held is the gate, or - over a step - a chain of ties; the pick moves on */
 void seq_ui_midi_note(int channel, int note, int velocity)
 {
-    if (settings_open || sq_playing() || !in_channel || channel != in_channel - 1) {
+    if (settings_open || pattern_open || sq_playing() || !in_channel || channel != in_channel - 1) {
         return;
     }
     sq_track_t *t = track();
@@ -562,8 +805,9 @@ void seq_ui_midi_note(int channel, int note, int velocity)
         entry_vel = velocity;
         sq_step_t *s = &t->steps[sel_step];
         new_step(s);
-        s->note[0] = last_note = note;
+        s->note[0] = note;
         s->vel = last_vel = velocity;
+        touched();
         dirty_top = dirty_cols = dirty_leds = true;
         return;
     }
@@ -587,6 +831,7 @@ void seq_ui_midi_note(int channel, int note, int velocity)
     sel_step = clampi(sel_step + steps, 0, t->length - 1);
     page = sel_step / 16;
     follow = false;
+    touched();
     dirty_top = dirty_cols = dirty_leds = true;
 }
 
@@ -599,7 +844,7 @@ void seq_ui_group_leds(void)
     }
 }
 
-void seq_ui_button_leds(void)
+void seq_ui_button_leds(uint8_t control_led)
 {
     const sq_track_t *t = track();
     const sq_step_t *s = &t->steps[sel_step];
@@ -619,18 +864,23 @@ void seq_ui_button_leds(void)
             v = rec_write ? LED_ON : LED_DIM;
             break;
         case BTN_CONTROL:
-            v = settings_open ? LED_ON : LED_DIM;
+            v = control_led ? control_led : settings_open ? LED_ON : LED_DIM;
+            break;
+        case BTN_PATTERN:
+            v = pattern_open ? LED_ON : LED_DIM;
             break;
         case BTN_DISPLAY_1:
-            v = settings_open || !s->vel ? 0 : s->tie ? LED_ON : LED_DIM;
+            v = settings_open || pattern_open || !s->vel ? 0 : s->tie ? LED_ON : LED_DIM;
             break;
         case BTN_DISPLAY_1 + 4:
-            v = settings_open ? 0 : t->mute ? LED_ON : LED_DIM;
+            v = settings_open || pattern_open ? 0 : t->mute ? LED_ON : LED_DIM;
+            break;
+        case BTN_ERASE:
+            v = erase_held ? LED_ON : LED_DIM;
             break;
         case BTN_RESTART:
         case BTN_STEP_LEFT:
         case BTN_STEP_RIGHT:
-        case BTN_ERASE:
         case BTN_STEP:
         case BTN_PAD_MODE:
         case BTN_MUTE:
@@ -640,4 +890,34 @@ void seq_ui_button_leds(void)
         }
         maschine_set_button_led(bit, v);
     }
+}
+
+static const synth_tip_t tips[] = {
+    {"SEQUENCER", {"SCENE opens it; it keeps playing when", "you leave. PLAY works on every screen,", "SCENE pulses while it plays.",
+                   "GROUP A-H: the track (own colours,", "the picked one bright).", "Main encoder: the tempo.",
+                   "RESTART: back to the first step."},
+     {BTN_SCENE, BTN_PLAY, BTN_RESTART, BTN_GROUP_A, BTN_GROUP_A + 7, BTN_TEMPO, -1, -1}},
+    {"STEPS", {"The pads are the shown page's 16", "steps; STEP arrows turn the page.", "REC lit = WRITE: a pad switches its",
+               "step on or off. REC dim = SELECT:", "a pad only picks the step to edit.",
+               "ERASE clears the picked step.", "The picked step's pad pulses."},
+     {BTN_REC, BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_ERASE, -1, -1, -1, -1}},
+    {"STEP EDIT", {"Knobs edit the picked step: NOTE", "(along the Pad Mode scale), VELOCITY,", "GATE, RATCHET (1-8 hits a step).",
+                   "Display button 1: TIE - the step", "continues the one before it, a", "different note is played legato.",
+                   "A new step takes the previous note."},
+     {BTN_DISPLAY_1, -1, -1, -1, -1, -1, -1, -1}},
+    {"TRACK", {"Knobs: CHANNEL, LENGTH (1-128 steps,", "each track its own), TRANSPOSE, TEMPO.", "Display button 5: MUTE the track.",
+               "ERASE + a GROUP button: clear that", "track's steps."},
+     {BTN_DISPLAY_1 + 4, BTN_ERASE, BTN_GROUP_A, BTN_GROUP_A + 7, -1, -1, -1, -1}},
+    {"PATTERNS", {"PATTERN: 16 slots on the pads, kept", "on the flash and saved by themselves.", "While playing, the new pattern starts",
+                  "at the end of the longest track.", "ERASE + a pad: clear that slot."},
+     {BTN_PATTERN, BTN_ERASE, -1, -1, -1, -1, -1, -1}},
+    {"MIDI IN", {"CONTROL (in Scene): the IN CHANNEL.", "A note on it fills the picked step:", "pitch, velocity, and how long you hold",
+                 "it = the gate, or a chain of ties.", "Then the pick moves on. Only while", "the sequencer is stopped."},
+     {BTN_CONTROL, -1, -1, -1, -1, -1, -1, -1}},
+};
+
+const synth_tip_t *seq_ui_tips(int *count)
+{
+    *count = (int)(sizeof tips / sizeof tips[0]);
+    return tips;
 }

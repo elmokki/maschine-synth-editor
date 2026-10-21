@@ -22,6 +22,42 @@ static uint32_t tick;
 static uint8_t on_note[SQ_TRACKS][SQ_POLY], on_chan[SQ_TRACKS][SQ_POLY];
 static uint32_t off_tick[SQ_TRACKS][SQ_POLY];
 
+/* A pattern waiting to take over at the next pass of the longest track */
+static sq_pattern_t staging;
+static volatile bool pending;
+static void set_alarm(void);
+
+void sq_pattern_clear(sq_pattern_t *p)
+{
+    memset(p, 0, sizeof *p);
+    p->bpm = 120;
+    for (int t = 0; t < SQ_TRACKS; t++) {
+        p->track[t].length = 16;
+        p->track[t].channel = t;
+        for (int i = 0; i < SQ_STEPS; i++) {
+            p->track[t].steps[i].note[0] = 60;
+            p->track[t].steps[i].gate = 50;
+            p->track[t].steps[i].ratchet = 1;
+        }
+    }
+}
+
+void sq_load(const sq_pattern_t *p)
+{
+    pending = false;
+    if (!playing) {
+        memcpy(&sq_pattern, p, sizeof sq_pattern);
+        return;
+    }
+    memcpy(&staging, p, sizeof staging);
+    pending = true;
+}
+
+bool sq_pending(void)
+{
+    return pending;
+}
+
 static int tick_us(void)
 {
     int bpm = sq_pattern.bpm;
@@ -88,6 +124,17 @@ static void do_tick(void)
         }
     }
     uint32_t phase = t % SQ_STEP_TICKS, stepno = t / SQ_STEP_TICKS;
+    if (pending && !phase) {
+        int maxlen = 1;
+        for (int tr = 0; tr < SQ_TRACKS; tr++) {
+            maxlen = sq_pattern.track[tr].length > maxlen ? sq_pattern.track[tr].length : maxlen;
+        }
+        if (stepno % maxlen == 0) {
+            memcpy(&sq_pattern, &staging, sizeof sq_pattern);
+            pending = false;
+            set_alarm();  /* the new pattern's tempo */
+        }
+    }
     for (int tr = 0; tr < SQ_TRACKS; tr++) {
         const sq_track_t *trk = &sq_pattern.track[tr];
         int len = trk->length < 1 ? 1 : trk->length > SQ_STEPS ? SQ_STEPS : trk->length;
@@ -143,16 +190,7 @@ void sq_init(void)
         return;
     }
     memset(on_note, NO_NOTE, sizeof on_note);
-    sq_pattern.bpm = 120;
-    for (int t = 0; t < SQ_TRACKS; t++) {
-        sq_pattern.track[t].length = 16;
-        sq_pattern.track[t].channel = t;
-        for (int i = 0; i < SQ_STEPS; i++) {
-            sq_pattern.track[t].steps[i].note[0] = 60;
-            sq_pattern.track[t].steps[i].gate = 50;
-            sq_pattern.track[t].steps[i].ratchet = 1;
-        }
-    }
+    sq_pattern_clear(&sq_pattern);
     xTaskCreatePinnedToCore(seq_task, "seq", 4096, xTaskGetCurrentTaskHandle(), configMAX_PRIORITIES - 3, &task, 1);
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     ESP_LOGI(TAG, "sequencer ready");
