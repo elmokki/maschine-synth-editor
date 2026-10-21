@@ -27,3 +27,7 @@
 #define BTN_STEP_RIGHT 34
 #define BTN_SHIFT 39       /* + Group: synth_t.shift_group */
 #define BTN_AUTO 15        /* synth_t.read: fetch the synth's current sound */
+#define BTN_TEMPO 18       /* Maschine's transport/pattern group, used by the sequencer */
+#define BTN_RESTART 32
+#define BTN_PLAY 36
+#define BTN_SCENE 40       /* opens the sequencer */

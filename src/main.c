@@ -30,6 +30,7 @@
 #include "midi.h"
 #include "storage.h"
 #include "editor.h"
+#include "sequencer.h"
 #include "maschine.h"
 #include "usb_recover.h"
 
@@ -715,6 +716,7 @@ void app_main(void)
     pad_leds[0] = 0x80;
     group_leds[0] = 0x81;
     other_leds[0] = 0x82;
+    sq_init();
     editor_init();
 
     ESP_LOGI(TAG, "Waiting for the Maschine Mk2...");

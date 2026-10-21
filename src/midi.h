@@ -4,8 +4,9 @@
  * of the Maschine's DIN OUT jack; whatever arrives on its DIN IN jack is
  * logged.
  *
- * Like main.c's HID code, everything here runs in the USB host client
- * event loop, so it isn't thread-safe and must be called from there.
+ * The USB side runs in the USB host client event loop. The send functions
+ * (midi_send, midi_send_sysex, midi_send_sysex_part) may also be called from
+ * another task, e.g. the sequencer's: the OUT queue is guarded by a mutex.
  */
 #pragma once
 #include <stdbool.h>

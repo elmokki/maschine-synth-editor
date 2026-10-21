@@ -2,6 +2,8 @@
 #include <string.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "usb/usb_helpers.h"
 #include "midi.h"
 #include "usb_recover.h"
@@ -26,6 +28,12 @@ static int in_mps;
 static usb_transfer_t *xfer_in[IN_XFERS], *xfer_out;
 static bool attached, out_busy;
 
+/* The sequencer sends from its own task, so the OUT queue is guarded (recursive: out_kick is called with it held).
+ * Created with the first attach; until then nothing is sent (attached is false). */
+static SemaphoreHandle_t q_lock;
+#define Q_LOCK() do { if (q_lock) xSemaphoreTakeRecursive(q_lock, portMAX_DELAY); } while (0)
+#define Q_UNLOCK() do { if (q_lock) xSemaphoreGiveRecursive(q_lock); } while (0)
+
 /* Pending USB-MIDI event packets (4 bytes each) waiting for xfer_out */
 static uint8_t queue[QUEUE_LEN][4];
 static unsigned q_head, q_tail;
@@ -35,7 +43,9 @@ static const uint8_t cin_len[16] = {0, 0, 2, 3, 3, 1, 2, 3, 3, 3, 3, 3, 2, 2, 3,
 
 static void out_kick(void)
 {
+    Q_LOCK();
     if (!attached || out_busy || q_head == q_tail) {
+        Q_UNLOCK();
         return;
     }
     int n = 0;
@@ -53,10 +63,12 @@ static void out_kick(void)
         out_busy = false;
         ESP_LOGE(TAG, "OUT submit failed: %s", esp_err_to_name(err));
     }
+    Q_UNLOCK();
 }
 
 static void out_cb(usb_transfer_t *xfer)
 {
+    Q_LOCK();
     out_busy = false;
     if (xfer->status != USB_TRANSFER_STATUS_COMPLETED) {
         ESP_LOGW(TAG, "OUT transfer status %d", xfer->status);
@@ -66,6 +78,7 @@ static void out_cb(usb_transfer_t *xfer)
         }
     }
     out_kick();
+    Q_UNLOCK();
 }
 
 void midi_send(uint8_t status, uint8_t data1, uint8_t data2)
@@ -73,8 +86,10 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2)
     if (!attached || status < 0x80 || status >= 0xF0) {
         return;
     }
+    Q_LOCK();
     if (q_head - q_tail >= QUEUE_LEN) {
         ESP_LOGW(TAG, "OUT queue full, dropping 0x%02X", status);
+        Q_UNLOCK();
         return;
     }
     uint8_t *ev = queue[q_head % QUEUE_LEN];
@@ -87,6 +102,7 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2)
     }
     q_head++;
     out_kick();
+    Q_UNLOCK();
 }
 
 /* System Exclusive, F0 ... F7 inclusive, as USB-MIDI event packets:
@@ -98,8 +114,10 @@ bool midi_send_sysex(const uint8_t *data, size_t len)
         return false;
     }
     size_t packets = (len + 2) / 3;
+    Q_LOCK();
     if (QUEUE_LEN - (q_head - q_tail) < packets) {
         ESP_LOGW(TAG, "OUT queue full, dropping %u byte SysEx", (unsigned)len);
+        Q_UNLOCK();
         return false;
     }
     for (size_t i = 0; i < len; i += 3) {
@@ -113,6 +131,7 @@ bool midi_send_sysex(const uint8_t *data, size_t len)
         q_head++;
     }
     out_kick();
+    Q_UNLOCK();
     return true;
 }
 
@@ -125,7 +144,9 @@ bool midi_send_sysex_part(const uint8_t *data, size_t len, bool last)
         return false;
     }
     size_t packets = (len + 2) / 3;
+    Q_LOCK();
     if (QUEUE_LEN - (q_head - q_tail) < packets) {
+        Q_UNLOCK();
         return false;
     }
     for (size_t i = 0; i < len; i += 3) {
@@ -139,6 +160,7 @@ bool midi_send_sysex_part(const uint8_t *data, size_t len, bool last)
         q_head++;
     }
     out_kick();
+    Q_UNLOCK();
     return true;
 }
 
@@ -163,12 +185,13 @@ void midi_set_thru(midi_thru_t mode, int channel)
 /* One USB-MIDI event packet to the OUT queue as is */
 static void queue_packet(const uint8_t *ev)
 {
-    if (q_head - q_tail >= QUEUE_LEN) {
-        return;
+    Q_LOCK();
+    if (q_head - q_tail < QUEUE_LEN) {
+        memcpy(queue[q_head % QUEUE_LEN], ev, 4);
+        queue[q_head % QUEUE_LEN][0] = (MIDI_CABLE << 4) | (ev[0] & 0x0F);
+        q_head++;
     }
-    memcpy(queue[q_head % QUEUE_LEN], ev, 4);
-    queue[q_head % QUEUE_LEN][0] = (MIDI_CABLE << 4) | (ev[0] & 0x0F);
-    q_head++;
+    Q_UNLOCK();
 }
 
 static midi_sysex_handler_t sysex_handler;
@@ -329,6 +352,9 @@ static bool find_endpoints(const usb_config_desc_t *cfg, bool full_speed)
 bool midi_attach(usb_host_client_handle_t client, usb_device_handle_t dev,
                  const usb_config_desc_t *cfg)
 {
+    if (!q_lock) {
+        q_lock = xSemaphoreCreateRecursiveMutex();
+    }
     if (!xfer_out) {
         /* Allocated once and reused across reconnects */
         for (int k = 0; k < IN_XFERS; k++) {
@@ -354,9 +380,11 @@ bool midi_attach(usb_host_client_handle_t client, usb_device_handle_t dev,
 
     client_hdl = client;
     dev_hdl = dev;
+    Q_LOCK();
     attached = true;
     out_busy = false;
     q_head = q_tail = 0;
+    Q_UNLOCK();
 
     for (int k = 0; k < IN_XFERS; k++) {
         xfer_in[k]->num_bytes = usb_round_up_to_mps(MIDI_BUF_SIZE, in_mps);

@@ -15,6 +15,8 @@
 #include "synth.h"
 #include "textentry.h"
 #include "editor.h"
+#include "seq_ui.h"
+#include "sequencer.h"
 
 static const char *TAG = "editor";
 
@@ -226,14 +228,14 @@ static int64_t settings_save_at;   /* when to write the settings file, 0 = nothi
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
 typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL,
-               MODE_OVERVIEW } ui_mode_t;
+               MODE_OVERVIEW, MODE_SEQ } ui_mode_t;
 static ui_mode_t mode;
 
 /* Screens opened by their own button (Step, All, Pad Mode, Control) */
 static bool is_menu(ui_mode_t m)
 {
     return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP ||
-           m == MODE_TUTORIAL || m == MODE_OVERVIEW;
+           m == MODE_TUTORIAL || m == MODE_OVERVIEW || m == MODE_SEQ;
 }
 
 static int store_target;  /* NONE = new patch, else index of a user patch */
@@ -465,6 +467,10 @@ static void update_group_leds(void)
         }
         return;
     }
+    if (mode == MODE_SEQ) {
+        seq_ui_group_leds();
+        return;
+    }
     if (mode != MODE_EDIT && !is_menu(mode)) {
         for (int g = 0; g < 8; g++) {
             maschine_set_group_led(g, 0, 0, 0);  /* sections can't be picked here */
@@ -559,6 +565,10 @@ static void update_button_leds(void)
         }
         return;
     }
+    if (mode == MODE_SEQ) {
+        seq_ui_button_leds();
+        return;
+    }
     if (mode == MODE_TUTORIAL) {
         /* Only the page's buttons lit; the arrows (pages) and Control (out)
          * dim; everything else dark */
@@ -592,6 +602,17 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_CONTROL, shift_held && synth->tips && menus ? pulse(LED_ON)
                                          : mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
+    /* The sequencer keeps playing when its screen is left: Scene pulses (a step every 50 ms at most) */
+    static int64_t scene_pulse_at;
+    static uint8_t scene_led;
+    int64_t now = esp_timer_get_time();
+    if (now >= scene_pulse_at) {
+        scene_pulse_at = now + 50000;
+        int ph = (int)((now / 1000) % 1000), tri = ph < 500 ? ph : 1000 - ph;
+        scene_led = (uint8_t)(10 + (LED_ON - 10) * tri / 500);
+    }
+    maschine_set_button_led(BTN_SCENE, sq_playing() ? scene_led : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_PLAY, sq_playing() ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_GRID, !synth->overview_draw ? 0 : mode == MODE_OVERVIEW ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
@@ -985,6 +1006,10 @@ static void draw_page(void)
     }
     if (mode == MODE_PADS) {
         draw_pads();
+        return;
+    }
+    if (mode == MODE_SEQ) {
+        seq_ui_draw();
         return;
     }
     if (mode == MODE_TUTORIAL) {
@@ -2196,6 +2221,10 @@ static void editor_encoder_impl(int i, int delta)
     if (mode == MODE_OVERVIEW) {
         return;  /* the overview only shows */
     }
+    if (mode == MODE_SEQ) {
+        seq_ui_encoder(i, delta);
+        return;
+    }
     if (mode == MODE_SETUP) {
         setting_encoder(setup_setting_at(i), i, delta);
         return;
@@ -2428,20 +2457,37 @@ static void editor_button_impl(int bit, bool down)
         update_group_leds();
         return;
     }
+    if (bit == BTN_PLAY && down && (mode == MODE_EDIT || is_menu(mode))) {
+        sq_play(!sq_playing());  /* the sequencer plays whatever screen is open */
+        return;
+    }
+    if (mode == MODE_SEQ && seq_ui_button(bit, down)) {
+        return;
+    }
     int menu = bit == BTN_STEP ? MODE_SYNTH
                : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
                : bit == BTN_PAD_MODE ? MODE_PADS
                : bit == BTN_GRID && synth->overview_draw ? MODE_OVERVIEW
                : bit == BTN_CONTROL ? MODE_SETUP
+               : bit == BTN_SCENE ? MODE_SEQ
                : NONE;
     if (menu != NONE && down && (mode == MODE_EDIT || is_menu(mode))) {
         end_browse();
         cancel_init();
         overview = false;
         synth_confirm = -1;
+        if (mode == MODE_SEQ) {
+            seq_ui_leave();
+            for (int pad = 0; pad < 16; pad++) {
+                pad_idle(pad);  /* the sequencer coloured them */
+            }
+        }
         mode = mode == (ui_mode_t)menu ? MODE_EDIT : (ui_mode_t)menu;
         if (mode == MODE_SYNTH) {
             show_active_card();
+        }
+        if (mode == MODE_SEQ) {
+            seq_ui_enter();
         }
         memset(encoder_acc, 0, sizeof(encoder_acc));
         for (int d = 0; d < DISPLAY_COUNT; d++) {
@@ -2520,7 +2566,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL || mode == MODE_OVERVIEW) {
+    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL || mode == MODE_OVERVIEW || mode == MODE_SEQ) {
         return;
     }
     if (mode != MODE_EDIT) {
@@ -2668,6 +2714,10 @@ static void editor_main_encoder_impl(int steps)
         draw_header();
         return;
     }
+    if (mode == MODE_SEQ) {
+        seq_ui_main_encoder(steps);
+        return;
+    }
     cancel_init();
     if (mode == MODE_STORE) {
         store_main_encoder(shift_held ? steps * SHIFT_BROWSE_STEPS : steps);
@@ -2747,6 +2797,9 @@ static void editor_tick_impl(int64_t now_us)
             arrow_action(arrow_bit, fast);
             arrow_repeat_at = now_us + (patches ? ARROW_PATCH_US : fast ? ARROW_PAGE_FAST_US : ARROW_PAGE_US);
         }
+    }
+    if (mode == MODE_SEQ && !synth_busy()) {
+        seq_ui_tick(now_us);
     }
     /* Follows the setting and the selected synth's channel */
     midi_set_thru((midi_thru_t)midi_thru, play_channel());
@@ -2897,6 +2950,10 @@ static void load_settings(void);
  * pad playing that note (if any) and tells the driver, like a pad hit */
 static void note_from_din(int channel, int note, int velocity)
 {
+    if (mode == MODE_SEQ) {
+        seq_ui_midi_note(channel, note, velocity);
+        return;
+    }
     if (!notes_in || channel != play_channel() || mode == MODE_NAME) {
         return;
     }
@@ -2981,6 +3038,10 @@ static void editor_pad_impl(int pad, bool down, int raw)
         if (down) {
             textentry_pad(pad, esp_timer_get_time());
         }
+        return;
+    }
+    if (mode == MODE_SEQ) {
+        seq_ui_pad(pad, down, raw);
         return;
     }
     int channel = play_channel();
