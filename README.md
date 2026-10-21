@@ -77,6 +77,7 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 
 ### Planned
 
+- Wavestation SR SEQ: store slot choice (RAM 1-3, 96 slots), name search and name lists for waves, patches and library browsing, copy / paste of steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.
