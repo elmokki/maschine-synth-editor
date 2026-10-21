@@ -3,10 +3,12 @@
  * patch of the SR's own memory (bank + number) with its level, FX bus, key and velocity range, tuning and
  * play settings. The patches are edited in the PATCH entry; here they are put together.
  *
- * Layout: A PART (page 1: patch, level, bus, key and velocity range; page 2: tuning, delay, play settings).
- * The part is picked with Shift + Group A-H or the transport Step arrows. The effects block (21 bytes: types,
- * routing, mixes and the effects' own parameters, packed by effect group) is kept as it is and sent back as it
- * came - not edited yet.
+ * Layout: A PART (page 1: patch, level, bus, key and velocity range; page 2: tuning, delay, play settings),
+ * B FX ROUTING (the two effect types, series / parallel, mixes 3 and 4 with their modulation), C FX 1 and D FX 2
+ * (the unit's type and its parameters over two pages: what they are depends on the type).
+ * The part is picked with Shift + Group A-H or the transport Step arrows. The effects block (21 bytes: routing and
+ * mixes, then 8 bytes per unit, packed by effect group) is edited through the generated tables (ws_fx.c,
+ * ws_fx_data.c); a new type starts from its factory preset.
  *
  * The performance goes to the SR as one dump into its edit buffer (RAM 1 #0 selected first, as the PATCH entry's
  * test performance), a little after the last change. Storing goes through the bank dumps (ws_banks.c).
@@ -26,6 +28,7 @@
 #include "storage.h"
 #include "synth.h"
 #include "ws_banks.h"
+#include "ws_fx.h"
 
 static const char *TAG = "wsperf";
 
@@ -46,17 +49,26 @@ static const char *TAG = "wsperf";
 
 /* ---- parameters (of the part being edited) ---- */
 
+/* The part's parameters (the part being edited), then the effects block's: routing and mixes, the two units' types,
+ * and WS_FX_MAX_PARAMS slots per unit that mean whatever the unit's effect type has there (name, range and text
+ * from the generated tables) */
 enum {
     P_BANK, P_PATCH, P_VOLUME, P_FXBUS, P_LOKEY, P_HIKEY, P_LOVEL, P_HIVEL, P_TRANS, P_DETUNE, P_DELAY, P_SCALE,
-    P_SCALEKEY, P_PLAY, P_VOICE, P_PRIO, P_SUSTAIN, P_COUNT
+    P_SCALEKEY, P_PLAY, P_VOICE, P_PRIO, P_SUSTAIN,
+    P_SERIES, P_MIX3, P_MOD3SRC, P_MOD3AMT, P_MIX4, P_MOD4SRC, P_MOD4AMT, P_FX1_TYPE, P_FX2_TYPE,
+    P_FX_FIRST,
+    P_FX1_0 = P_FX_FIRST,
+    P_FX2_0 = P_FX1_0 + WS_FX_MAX_PARAMS,
+    P_COUNT = P_FX2_0 + WS_FX_MAX_PARAMS
 };
+#define P_FX_NAMED P_FX_FIRST  /* the ones with a fixed name in pinfo */
 
 typedef struct {
     const char *name;
     int16_t min, max, def;
 } pinfo_t;
 
-static const pinfo_t pinfo[P_COUNT] = {
+static const pinfo_t pinfo[P_FX_NAMED] = {
     [P_BANK] = {"BANK", 0, 11, 0},
     [P_PATCH] = {"PATCH", -1, 34, 0},
     [P_VOLUME] = {"VOLUME", 0, 99, 99},
@@ -74,7 +86,20 @@ static const pinfo_t pinfo[P_COUNT] = {
     [P_VOICE] = {"VOICE", 0, 2, 0},
     [P_PRIO] = {"PRIORITY", 0, 2, 2},
     [P_SUSTAIN] = {"SUSTAIN", 0, 1, 1},
+    [P_SERIES] = {"SERIES", 0, 1, 0},
+    [P_MIX3] = {"MIX 3", 0, 11, 1},
+    [P_MOD3SRC] = {"MOD 3 SRC", 0, 14, 0},
+    [P_MOD3AMT] = {"MOD 3 AMT", -15, 15, 0},
+    [P_MIX4] = {"MIX 4", 0, 11, 11},
+    [P_MOD4SRC] = {"MOD 4 SRC", 0, 14, 0},
+    [P_MOD4AMT] = {"MOD 4 AMT", -15, 15, 0},
+    [P_FX1_TYPE] = {"FX 1 TYPE", 0, WS_FX_TYPES - 1, 0},
+    [P_FX2_TYPE] = {"FX 2 TYPE", 0, WS_FX_TYPES - 1, 0},
 };
+
+/* Mix 3 and 4 name the same 0-11 differently when the effects run in series (dry...wet) or in parallel (left...right) */
+static const char *const mix_parallel[12] = {"OFF", "LEFT", "9/1", "8/2", "7/3", "6/4", "5/5", "4/6", "3/7", "2/8", "1/9", "RIGHT"};
+static const char *const mix_series[12] = {"OFF", "DRY", "9/1", "8/2", "7/3", "6/4", "5/5", "4/6", "3/7", "2/8", "1/9", "WET"};
 
 static const char *const scale_names[16] = {"EQUAL 1", "EQUAL 2", "PURE MAJ", "PURE MIN", "USER 1", "USER 2",
                                             "USER 3", "USER 4", "USER 5", "USER 6", "USER 7", "USER 8",
@@ -87,11 +112,22 @@ static const char *const key_names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", 
 
 #define _ SYNTH_NONE
 #define NO_SW {_, _, _, _, _, _, _, _}
-enum { PG_PART, PG_PART2 };
+enum { PG_PART, PG_PART2, PG_ROUTE, PG_FX1, PG_FX1B, PG_FX2, PG_FX2B };
+#define FXP(unit, n) (P_FX##unit##_0 + (n))
 static const synth_page_t pages[] = {
     [PG_PART] = {0, "PART", {P_BANK, P_PATCH, P_VOLUME, P_FXBUS, P_LOKEY, P_HIKEY, P_LOVEL, P_HIVEL}, NO_SW},
     [PG_PART2] = {0, "PART 2", {P_TRANS, P_DETUNE, P_DELAY, P_SCALE, P_SCALEKEY, P_PLAY, P_VOICE, P_PRIO},
                   {P_SUSTAIN, _, _, _, _, _, _, _}},
+    /* B: the two effect units and how they meet (the switch sits above Mix 3, whose names it changes) */
+    [PG_ROUTE] = {1, "FX ROUTING", {P_FX1_TYPE, P_FX2_TYPE, P_MIX3, P_MIX4, P_MOD3SRC, P_MOD3AMT, P_MOD4SRC, P_MOD4AMT},
+                  {_, _, P_SERIES, _, _, _, _, _}},
+    /* C, D: one unit each, the same two pages (parallel: the page stays when switching) */
+    [PG_FX1] = {2, "FX 1", {P_FX1_TYPE, FXP(1, 0), FXP(1, 1), FXP(1, 2), FXP(1, 3), FXP(1, 4), FXP(1, 5), FXP(1, 6)},
+                NO_SW, 1},
+    [PG_FX1B] = {2, "FX 1 (2)", {FXP(1, 7), FXP(1, 8), FXP(1, 9), FXP(1, 10), FXP(1, 11), _, _, _}, NO_SW, 1},
+    [PG_FX2] = {3, "FX 2", {P_FX2_TYPE, FXP(2, 0), FXP(2, 1), FXP(2, 2), FXP(2, 3), FXP(2, 4), FXP(2, 5), FXP(2, 6)},
+                NO_SW, 1},
+    [PG_FX2B] = {3, "FX 2 (2)", {FXP(2, 7), FXP(2, 8), FXP(2, 9), FXP(2, 10), FXP(2, 11), _, _, _}, NO_SW, 1},
 };
 #undef _
 
@@ -207,6 +243,122 @@ static void set(int p, int pt, int v)
     case P_PRIO: q[4] = (q[4] & ~0x03) | v; break;
     default: q[15] = v; break;
     }
+}
+
+/* ---- the effects block ---- */
+
+static uint8_t *fx_block(void) { return perf + FX_OFFSET; }
+
+static int fx_unit_of(int p) { return (p - P_FX_FIRST) / WS_FX_MAX_PARAMS + 1; }
+
+static uint8_t *fx_unit_bytes(int unit) { return fx_block() + (unit == 1 ? 5 : 13); }
+
+/* What a slot means now: the effect group's parameter, NULL when the type has fewer */
+static const ws_fx_param_t *fx_param(int p)
+{
+    if (p < P_FX_FIRST) {
+        return NULL;
+    }
+    int unit = fx_unit_of(p), slot = (p - P_FX_FIRST) % WS_FX_MAX_PARAMS;
+    const ws_fx_group_t *g = &ws_fx_groups[ws_fx_type_group[ws_fx_type_get(fx_block(), unit)]];
+    return slot < g->nparams ? &g->params[slot] : NULL;
+}
+
+/* Routing, mixes and types: Mix 3/4 are the low/high nibble of byte 2, their sources of byte 3, their amounts' size
+ * of byte 4 and the sign bit 6 of byte 0/1; the series flag is bit 7 of byte 0 */
+static int fx_get(int p)
+{
+    const uint8_t *b = fx_block();
+    int v;
+    switch (p) {
+    case P_SERIES: v = b[0] >> 7; break;
+    case P_MIX3: v = b[2] & 15; break;
+    case P_MIX4: v = b[2] >> 4; break;
+    case P_MOD3SRC: v = b[3] & 15; break;
+    case P_MOD4SRC: v = b[3] >> 4; break;
+    case P_MOD3AMT: v = b[0] & 0x40 ? -(b[4] & 15) : b[4] & 15; break;
+    case P_MOD4AMT: v = b[1] & 0x40 ? -(b[4] >> 4) : b[4] >> 4; break;
+    case P_FX1_TYPE: return ws_fx_type_get(b, 1);
+    case P_FX2_TYPE: return ws_fx_type_get(b, 2);
+    default: {
+        const ws_fx_param_t *fp = fx_param(p);
+        return fp ? ws_fx_get(fx_unit_bytes(fx_unit_of(p)), fp) : 0;
+    }
+    }
+    return clampi(v, pinfo[p].min, pinfo[p].max);
+}
+
+static void fx_set(int p, int v)
+{
+    uint8_t *b = fx_block();
+    if (p >= P_FX_FIRST) {
+        const ws_fx_param_t *fp = fx_param(p);
+        if (fp) {
+            ws_fx_put(fx_unit_bytes(fx_unit_of(p)), fp, v);
+        }
+        return;
+    }
+    v = clampi(v, pinfo[p].min, pinfo[p].max);
+    int mag = v < 0 ? -v : v;
+    switch (p) {
+    case P_SERIES: b[0] = (b[0] & 0x7F) | v << 7; break;
+    case P_MIX3: b[2] = (b[2] & 0xF0) | v; break;
+    case P_MIX4: b[2] = (b[2] & 0x0F) | v << 4; break;
+    case P_MOD3SRC: b[3] = (b[3] & 0xF0) | v; break;
+    case P_MOD4SRC: b[3] = (b[3] & 0x0F) | v << 4; break;
+    case P_MOD3AMT:
+        b[4] = (b[4] & 0xF0) | mag;
+        b[0] = (b[0] & ~0x40) | (v < 0 ? 0x40 : 0);
+        break;
+    case P_MOD4AMT:
+        b[4] = (b[4] & 0x0F) | mag << 4;
+        b[1] = (b[1] & ~0x40) | (v < 0 ? 0x40 : 0);
+        break;
+    case P_FX1_TYPE: ws_fx_type_set(b, 1, v); break;
+    default: ws_fx_type_set(b, 2, v); break;
+    }
+}
+
+/* One accessor for every parameter: the part's (part being edited) or the effects block's */
+static int value_of(int p) { return p >= P_SERIES ? fx_get(p) : get(p, part); }
+
+static void value_set(int p, int v)
+{
+    if (p >= P_SERIES) {
+        fx_set(p, v);
+    } else {
+        set(p, part, v);
+    }
+}
+
+/* false = no such parameter right now (an effect slot the type doesn't use) */
+static bool range_of(int p, int *lo, int *hi)
+{
+    if (p >= P_FX_FIRST) {
+        const ws_fx_param_t *fp = fx_param(p);
+        if (!fp) {
+            return false;
+        }
+        *lo = fp->min;
+        *hi = fp->max;
+        return true;
+    }
+    *lo = pinfo[p].min;
+    *hi = pinfo[p].max;
+    return true;
+}
+
+/* What the init patch / a fresh effect has there */
+static int default_of(int p)
+{
+    if (p >= P_FX_FIRST) {
+        const ws_fx_param_t *fp = fx_param(p);
+        return fp ? ws_fx_get(ws_fx_type_preset[ws_fx_type_get(fx_block(), fx_unit_of(p))], fp) : 0;
+    }
+    if (p == P_MIX3) {
+        return fx_get(P_SERIES) ? 11 : 1;
+    }
+    return pinfo[p].def;
 }
 
 /* ---- sending ---- */
@@ -387,43 +539,99 @@ static void note_text(int n, char *buf, size_t len) { snprintf(buf, len, "%s%d",
 
 /* ---- params ---- */
 
+/* A new effect type changes what the unit's other columns are */
+static bool is_type(int p) { return p == P_FX1_TYPE || p == P_FX2_TYPE; }
+
+static void value_changed(int p)
+{
+    changed();
+    if (is_type(p) || p == P_SERIES) {
+        synth_redraw();
+    }
+}
+
 static bool param_step(int p, int steps)
 {
     ensure();
-    int v = get(p, part), nv = clampi(v + steps, pinfo[p].min, pinfo[p].max);
+    int lo, hi;
+    if (!range_of(p, &lo, &hi)) {
+        return false;
+    }
+    int v = value_of(p), nv = clampi(v + steps, lo, hi);
     if (nv == v) {
         return false;
     }
-    set(p, part, nv);
-    changed();
+    value_set(p, nv);
+    value_changed(p);
     return true;
 }
 
 static void param_toggle(int p)
 {
     ensure();
-    set(p, part, !get(p, part));
-    changed();
+    value_set(p, !value_of(p));
+    value_changed(p);
 }
 
 static bool param_reset(int p)
 {
     ensure();
-    if (get(p, part) == pinfo[p].def) {
+    int lo, hi;
+    if (!range_of(p, &lo, &hi) || value_of(p) == default_of(p)) {
         return false;
     }
-    set(p, part, pinfo[p].def);
-    changed();
+    value_set(p, default_of(p));
+    value_changed(p);
     return true;
 }
 
-static const char *param_name(int p) { return pinfo[p].name; }
+static const char *param_name(int p)
+{
+    if (p >= P_FX_FIRST) {
+        ensure();
+        const ws_fx_param_t *fp = fx_param(p);
+        return fp ? fp->name : "";
+    }
+    if (p == P_SERIES) {
+        ensure();
+        return fx_get(P_SERIES) ? "SERIES" : "PARALLEL";
+    }
+    return pinfo[p].name;
+}
 
 static void param_format(int p, char *buf, size_t len)
 {
     ensure();
-    int v = get(p, part);
+    if (p >= P_FX_FIRST) {
+        const ws_fx_param_t *fp = fx_param(p);
+        if (fp) {
+            ws_fx_format(fp, fx_get(p), buf, len);
+        } else {
+            buf[0] = 0;
+        }
+        return;
+    }
+    int v = value_of(p);
     switch (p) {
+    case P_SERIES:
+        snprintf(buf, len, v ? "SERIES" : "PARALLEL");
+        break;
+    case P_MIX3:
+    case P_MIX4:
+        snprintf(buf, len, "%s", (fx_get(P_SERIES) ? mix_series : mix_parallel)[v]);
+        break;
+    case P_MOD3SRC:
+    case P_MOD4SRC:
+        snprintf(buf, len, "%s", ws_fx_tables[0][v]);
+        break;
+    case P_MOD3AMT:
+    case P_MOD4AMT:
+        snprintf(buf, len, v ? "%+d" : "0", v);
+        break;
+    case P_FX1_TYPE:
+    case P_FX2_TYPE:
+        snprintf(buf, len, "%s", ws_fx_type_names[v]);
+        break;
     case P_BANK:
         snprintf(buf, len, "%s", ws_bank_names[v]);
         break;
@@ -471,22 +679,52 @@ static void param_format(int p, char *buf, size_t len)
 static int param_bar(int p)
 {
     ensure();
-    if (p == P_BANK || p == P_PATCH || p == P_SCALE || p == P_PLAY || p == P_VOICE || p == P_PRIO || p == P_SUSTAIN) {
+    int lo, hi;
+    if (!range_of(p, &lo, &hi) || hi == lo) {
         return -1;
     }
-    return (get(p, part) - pinfo[p].min) * 1000 / (pinfo[p].max - pinfo[p].min);
+    if (p >= P_FX_FIRST) {
+        int fmt = fx_param(p)->fmt;
+        if (fmt == WS_FX_CHOICE || fmt == WS_FX_CHECK) {
+            return -1;
+        }
+    }
+    if (p == P_BANK || p == P_PATCH || p == P_SCALE || p == P_PLAY || p == P_VOICE || p == P_PRIO || p == P_SUSTAIN ||
+        p == P_SERIES || p == P_MOD3SRC || p == P_MOD4SRC || is_type(p)) {
+        return -1;
+    }
+    return (value_of(p) - lo) * 1000 / (hi - lo);
 }
 
 static bool param_on(int p)
 {
     ensure();
-    return p == P_SUSTAIN && get(P_SUSTAIN, part);
+    return (p == P_SUSTAIN && get(P_SUSTAIN, part)) || (p == P_SERIES && fx_get(P_SERIES));
 }
 
 static int param_units(int p)
 {
-    int range = pinfo[p].max - pinfo[p].min;
+    int lo, hi;
+    if (!range_of(p, &lo, &hi)) {
+        return 80;
+    }
+    int range = hi - lo;
+    if (is_type(p)) {
+        return 25;  /* 56 types: one at a time */
+    }
     return range <= 1 ? 80 : range <= 6 ? 70 : range <= 16 ? 40 : range <= 30 ? 25 : 10;
+}
+
+/* An effect slot the type has no parameter for leaves its column empty */
+static bool column_draw(int p, int disp, int x)
+{
+    (void)disp;
+    (void)x;
+    if (p < P_FX_FIRST) {
+        return false;
+    }
+    ensure();
+    return fx_param(p) == NULL;
 }
 
 /* The part's patch: its place big, its name below */
@@ -504,12 +742,146 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
-/* ---- overview (Grid): the eight parts as a table (no header: eight rows fill the display) ---- */
+/* Page 2 and 3 of FX 1 / FX 2 exist only when the effect has that many parameters */
+static bool page_enabled(int pg)
+{
+    if (pg != PG_FX1B && pg != PG_FX2B) {
+        return true;
+    }
+    ensure();
+    return fx_param(pg == PG_FX1B ? FXP(1, 7) : FXP(2, 7)) != NULL;
+}
+
+/* ---- overview (Grid): the eight parts as a table (no header: eight rows fill the display); the effects as
+ * lists, one unit per display; the routing as a picture over both displays ---- */
+
+static void overview_fx_list(int disp)
+{
+    int unit = disp + 1, type = ws_fx_type_get(fx_block(), unit);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "FX %d  %s", unit, ws_fx_type_long[type]);
+    display_text(disp, 1, 0, &font_tiny, buf, true);
+    display_line(disp, 0, 9, 255, 9, true);
+    for (int slot = 0; slot < WS_FX_MAX_PARAMS; slot++) {
+        const ws_fx_param_t *fp = fx_param(P_FX_FIRST + (unit - 1) * WS_FX_MAX_PARAMS + slot);
+        if (!fp) {
+            break;
+        }
+        int x = slot < 6 ? 1 : 130, y = 12 + (slot % 6) * 8;
+        ws_fx_format(fp, ws_fx_get(fx_unit_bytes(unit), fp), buf, sizeof(buf));
+        display_text(disp, x, y, &font_tiny, fp->name, true);
+        display_text(disp, x + 124 - display_text_width(&font_tiny, buf), y, &font_tiny, buf, true);
+    }
+}
+
+/* The routing as the Reference Guide's FX MIX page draws it. Buses A/B go into FX 1, C/D into FX 2 (parallel) or past
+ * FX 1 (series); Mix 3 / 4 belong to bus C / D (series: how much goes through FX 2, how much straight to the main
+ * outputs) or to FX 2's left / right output (parallel: where it is panned on the main outputs). Left display: the
+ * picture, right display: what the two mixes do now. */
+static void routing_box(int x, int y, int unit)
+{
+    char t[16];
+    display_round_rect(0, x, y, 76, 24, false, true);
+    snprintf(t, sizeof(t), "FX %d", unit);
+    display_text(0, x + 5, y + 3, &font_tiny, t, true);
+    display_text(0, x + 5, y + 13, &font_tiny, ws_fx_type_names[ws_fx_type_get(fx_block(), unit)], true);
+}
+
+static void routing_arrow(int x0, int y, int x1)
+{
+    display_line(0, x0, y, x1, y, true);
+    display_line(0, x1 - 4, y - 3, x1, y, true);
+    display_line(0, x1 - 4, y + 3, x1, y, true);
+}
+
+static void routing_mix_text(int mix, bool series, char *buf, size_t len)
+{
+    int v = fx_get(mix == 3 ? P_MIX3 : P_MIX4);
+    const char *bus = mix == 3 ? "C" : "D";
+    if (series) {
+        if (v == 0) {
+            snprintf(buf, len, "MIX %d OFF: bus %s to out %d only", mix, bus, mix);
+        } else if (v == 1) {
+            snprintf(buf, len, "MIX %d DRY: bus %s to main, no FX 2", mix, bus);
+        } else if (v == 11) {
+            snprintf(buf, len, "MIX %d WET: bus %s all via FX 2", mix, bus);
+        } else {
+            snprintf(buf, len, "MIX %d: bus %s %d direct, %d FX 2", mix, bus, 11 - v, v - 1);
+        }
+    } else if (v == 0) {
+        snprintf(buf, len, "MIX %d OFF: FX 2 %s to out %d only", mix, mix == 3 ? "L" : "R", mix);
+    } else if (v == 1) {
+        snprintf(buf, len, "MIX %d: FX 2 %s to main 1/L", mix, mix == 3 ? "L" : "R");
+    } else if (v == 11) {
+        snprintf(buf, len, "MIX %d: FX 2 %s to main 2/R", mix, mix == 3 ? "L" : "R");
+    } else {
+        snprintf(buf, len, "MIX %d: FX 2 %s pan 1/L %d, 2/R %d", mix, mix == 3 ? "L" : "R", 11 - v, v - 1);
+    }
+}
+
+static void overview_routing(int disp)
+{
+    bool series = fx_get(P_SERIES);
+    char buf[48];
+    if (disp == 1) {
+        display_text(1, 1, 0, &font_tiny, series ? "SERIES" : "PARALLEL", true);
+        display_line(1, 0, 9, 255, 9, true);
+        display_text(1, 1, 13, &font_tiny, series ? "A/B > FX 1 > FX 2 > main 1/L 2/R" : "A/B > FX 1 > main 1/L 2/R", true);
+        display_text(1, 1, 22, &font_tiny, series ? "C/D skip FX 1, go to out 3 / 4" : "C/D > FX 2 > out 3 / 4", true);
+        routing_mix_text(3, series, buf, sizeof(buf));
+        display_text(1, 1, 37, &font_tiny, buf, true);
+        routing_mix_text(4, series, buf, sizeof(buf));
+        display_text(1, 1, 46, &font_tiny, buf, true);
+        return;
+    }
+    display_text(0, 2, 13, &font_tiny, "A/B", true);
+    routing_arrow(20, 16, 28);
+    routing_box(28, 4, 1);
+    if (series) {
+        routing_arrow(104, 16, 118);
+        routing_box(118, 4, 2);
+        routing_arrow(194, 16, 210);
+        display_text(0, 212, 9, &font_tiny, "1/L", true);
+        display_text(0, 212, 18, &font_tiny, "2/R", true);
+        display_text(0, 2, 45, &font_tiny, "C/D", true);
+        display_line(0, 20, 48, 60, 48, true);
+        display_round_rect(0, 60, 40, 58, 16, false, true);
+        display_text(0, 65, 44, &font_tiny, "MIX 3/4", true);
+        routing_arrow(118, 48, 236);
+        display_line(0, 156, 48, 156, 28, true);  /* up into FX 2 */
+        display_line(0, 153, 32, 156, 28, true);
+        display_line(0, 159, 32, 156, 28, true);
+        display_text(0, 168, 51, &font_tiny, "direct", true);
+        return;
+    }
+    routing_arrow(104, 16, 210);
+    display_text(0, 212, 9, &font_tiny, "1/L", true);
+    display_text(0, 212, 18, &font_tiny, "2/R", true);
+    display_text(0, 2, 45, &font_tiny, "C/D", true);
+    routing_arrow(20, 48, 28);
+    routing_box(28, 36, 2);
+    routing_arrow(104, 44, 150);
+    display_round_rect(0, 150, 36, 58, 16, false, true);
+    display_text(0, 155, 40, &font_tiny, "MIX 3/4", true);
+    display_text(0, 212, 51, &font_tiny, "3 4", true);
+    routing_arrow(104, 56, 200);
+    display_line(0, 208, 44, 222, 44, true);
+    display_line(0, 222, 44, 222, 27, true);  /* panned to the main outputs */
+    display_line(0, 219, 31, 222, 27, true);
+    display_line(0, 225, 31, 222, 27, true);
+}
 
 static void overview_draw(int page, int disp)
 {
-    (void)page;
     ensure();
+    if (page == 1) {
+        overview_fx_list(disp);
+        return;
+    }
+    if (page == 2) {
+        overview_routing(disp);
+        return;
+    }
     char buf[80], code[12], lo[8], hi[8], bus[10];
     for (int pt = 0; pt < PARTS; pt++) {
         char mark = pt == part ? '>' : ' ';
@@ -740,9 +1112,9 @@ static int unknown_count(void) { return 0; }
 static const synth_tip_t tips[] = {
     {"PERFORMANCE", {"A performance = 8 parts, each playing a", "patch of the SR's memory (bank + number).",
                      "Pick the part with SHIFT + A-H or the", "STEP arrows. A PART: patch, level, bus,",
-                     "key and velocity range; page 2: tuning,", "delay, play settings. Effects: not edited",
-                     "yet, kept as they are."},
-     {BTN_GROUP_A, BTN_SHIFT, BTN_STEP_LEFT, BTN_STEP_RIGHT, -1, -1, -1, -1}},
+                     "key and velocity range; page 2: tuning,", "delay, play settings. B: effect types,",
+                     "routing, mixes; C / D: FX 1 / FX 2 settings."},
+     {BTN_GROUP_A, BTN_SHIFT, BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_GROUP_A + 1, BTN_GROUP_A + 2, BTN_GROUP_A + 3, -1}},
     {"TO THE UNIT", {"The performance goes to the SR as one", "dump (edit buffer), a moment after the", "last change. AUTO reads the one READ",
                      "BANK / READ PERF name (CONTROL).", "CONTROL > IMPORT (twice) reads the banks", "as library 1-600 (bank x 50 + n + 1).",
                      "REC > TO SR: SR PROTECT INT must be OFF."},
@@ -772,7 +1144,9 @@ const synth_t synth_wsperf = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
-    .overview_pages = 1,
+    .column_draw = column_draw,
+    .page_enabled = page_enabled,
+    .overview_pages = 3,
     .overview_draw = overview_draw,
     .patch_load = patch_load,
     .patch_save = patch_save,

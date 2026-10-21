@@ -98,6 +98,8 @@ typedef struct {
 
     const synth_page_t *pages;
     int page_count;
+    /* Optional: false = this page is out of use right now and is skipped (the section's first page must stay in use) */
+    bool (*page_enabled)(int page);
     const synth_setting_t *settings;
     int setting_count;
     /* Optional: a few small words under a setting's value on Setup (up to

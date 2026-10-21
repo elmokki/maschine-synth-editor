@@ -298,10 +298,13 @@ static void synth_file(char *buf, size_t len, const char *dir, const char *suffi
 
 /* ---- sections ---- */
 
+/* A driver may switch a page off for now (e.g. a second page the chosen effect has nothing for) */
+static bool page_on(int i) { return !synth->page_enabled || synth->page_enabled(i); }
+
 static int section_first_page(int section)
 {
     for (int i = 0; i < synth->page_count; i++) {
-        if (synth->pages[i].section == section) {
+        if (synth->pages[i].section == section && page_on(i)) {
             return i;
         }
     }
@@ -312,9 +315,43 @@ static int section_page_count(int section)
 {
     int n = 0;
     for (int i = 0; i < synth->page_count; i++) {
-        n += synth->pages[i].section == section;
+        n += synth->pages[i].section == section && page_on(i);
     }
     return n;
+}
+
+/* Position of page i among its section's pages in use */
+static int section_page_index(int i)
+{
+    int n = 0;
+    for (int j = 0; j < i; j++) {
+        n += synth->pages[j].section == synth->pages[i].section && page_on(j);
+    }
+    return n;
+}
+
+/* The k-th page in use of a section */
+static int section_page_at(int section, int k)
+{
+    for (int i = 0; i < synth->page_count; i++) {
+        if (synth->pages[i].section == section && page_on(i) && k-- == 0) {
+            return i;
+        }
+    }
+    return NONE;
+}
+
+/* The page d (+1 / -1) steps from the current one that is in use */
+static int neighbour_page(int d)
+{
+    int p = page;
+    for (int n = 0; n < synth->page_count; n++) {
+        p = (p + d + synth->page_count) % synth->page_count;
+        if (page_on(p)) {
+            return p;
+        }
+    }
+    return page;
 }
 
 static bool has_theme(void)
@@ -464,7 +501,7 @@ static void update_group_leds(void)
         bool own_dim = synth->section_dim && synth->section_dim(g, own);
         if (g == synth->pages[page].section && mode == MODE_EDIT) {  /* not while a menu covers it */
             int count = section_page_count(g);
-            int k = page - section_first_page(g);
+            int k = section_page_index(page);
             bool lit_l = count == 1 || k != 1;
             bool lit_r = count == 1 || k >= 1;
             int left = lit_l ? 100 : LED_HALF_DIM;
@@ -664,11 +701,10 @@ static void draw_header(void)
         return;
     }
 
-    int first = section_first_page(synth->pages[page].section);
     int count = section_page_count(synth->pages[page].section);
     if (count > 1) {
         snprintf(buf, sizeof(buf), "%c  %s  %d/%d", 'A' + synth->pages[page].section,
-                 synth->pages[page].title, page - first + 1, count);
+                 synth->pages[page].title, section_page_index(page) + 1, count);
     } else {
         snprintf(buf, sizeof(buf), "%c  %s", 'A' + synth->pages[page].section, synth->pages[page].title);
     }
@@ -732,9 +768,9 @@ static void draw_header(void)
         draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "BROWSE: encoder picks patch", true);
     } else {
         /* Where the main encoder leads */
-        snprintf(buf, sizeof(buf), "< %s", synth->pages[(page + synth->page_count - 1) % synth->page_count].title);
+        snprintf(buf, sizeof(buf), "< %s", synth->pages[neighbour_page(-1)].title);
         draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, buf, true);
-        snprintf(buf, sizeof(buf), "%s >", synth->pages[(page + 1) % synth->page_count].title);
+        snprintf(buf, sizeof(buf), "%s >", synth->pages[neighbour_page(1)].title);
         draw_right(1, right, HEADER_CAP_Y, &font_small, buf, true);
     }
 }
@@ -799,6 +835,8 @@ static void draw_column_only(int col)
     }
 }
 
+static void go_to_page(int new_page);
+
 void synth_redraw(void)
 {
     if (mode == MODE_OVERVIEW && !activating_until) {
@@ -806,6 +844,11 @@ void synth_redraw(void)
         return;
     }
     if (mode == MODE_EDIT && !overview && !activating_until) {
+        if (!page_on(page)) {
+            /* The page went out of use (e.g. another effect type): to the section's first */
+            go_to_page(section_first_page(synth->pages[page].section));
+            return;
+        }
         draw_page();
         update_group_leds();
     }
@@ -1888,6 +1931,15 @@ static void draw_patch_overview(void)
         display_clear(d);
         synth->overview_draw(po_page, d);
     }
+    if (synth->overview_pages > 1) {
+        /* Page number in the right display's bottom corner, over whatever is there */
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d/%d", po_page + 1, synth->overview_pages);
+        int w = display_text_width(&font_tiny, buf);
+        int x = DISPLAY_USABLE_WIDTH - w - 2;
+        display_fill_rect(DISPLAY_COUNT - 1, x - 2, DISPLAY_HEIGHT - 9, w + 4, 9, false);
+        display_text(DISPLAY_COUNT - 1, x, DISPLAY_HEIGHT - 8, &font_tiny, buf, true);
+    }
 }
 
 static void draw_synths(void)
@@ -2236,7 +2288,7 @@ static void go_to_page(int new_page)
 {
     page = new_page;
     int section = synth->pages[page].section;
-    section_last[section] = page - section_first_page(section);
+    section_last[section] = section_page_index(page);
     memset(encoder_acc, 0, sizeof(encoder_acc));
     draw_page();
     update_group_leds();
@@ -2244,7 +2296,7 @@ static void go_to_page(int new_page)
 
 static void change_page(int d)
 {
-    go_to_page((page + d + synth->page_count) % synth->page_count);
+    go_to_page(neighbour_page(d));
 }
 
 /* Steps the patch shown (inverted) in the header; Enter loads it */
@@ -2283,7 +2335,7 @@ static void select_section(int section)
     int count = section_page_count(section);
     if (section == synth->pages[page].section) {
         /* Already here: step to the section's next page */
-        go_to_page(first + (page - first + 1) % count);
+        go_to_page(section_page_at(section, (section_page_index(page) + 1) % count));
         return;
     }
     /* Parallel sections: keep the position within the section, clamped to
@@ -2291,9 +2343,9 @@ static void select_section(int section)
     int offset = section_last[section];
     uint8_t par = synth->pages[page].parallel;
     if (par && synth->pages[first].parallel == par) {
-        offset = page - section_first_page(synth->pages[page].section);
+        offset = section_page_index(page);
     }
-    go_to_page(first + (offset < count ? offset : count - 1));
+    go_to_page(section_page_at(section, offset < count ? offset : count - 1));
 }
 
 /* Held arrows repeat: after a moment, and faster after a couple of seconds */
