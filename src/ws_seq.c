@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include "ws_seq.h"
 
@@ -62,6 +63,24 @@ int ws_seq_extract(const uint8_t *nib, int n, uint8_t *raw)
     return WSSEQ_HEADER + len * WSSEQ_STEP_LEN;
 }
 
+int ws_seq_describe(const uint8_t *nib, int n, char *buf, int len)
+{
+    const int s = SEQ_OFF + n * 16;
+    int step = dw(nib, s), k = 0;
+    if (step == 0) {
+        return 0;
+    }
+    k += snprintf(buf + k, len - k, "seq %2d: link=%d slink=%d loop=%d..%d cnt=0x%02X start=%d modsrc=0x%02X modamt=%d dyno=%d startT=%d time=%d | steps:",
+                  n, step, dw(nib, s + 2), db(nib, s + 4), db(nib, s + 5), db(nib, s + 6), db(nib, s + 7), db(nib, s + 8),
+                  (int8_t)db(nib, s + 9), dw(nib, s + 10), dw(nib, s + 12), dw(nib, s + 14));
+    for (int g = 0; step != 0 && step < 501 && g < 6 && k < len - 40; g++) {
+        const int t = STEP_OFF + step * 16;
+        k += snprintf(buf + k, len - k, " #%d(dur=%d mod=%d l=%d)", step, dw(nib, t + 12), db(nib, t + 15), dw(nib, t + 4));
+        step = dw(nib, t);
+    }
+    return k;
+}
+
 /* ---- writing one sequence into a bank dump ----
  * What the unit's own sequences show (read 2026-10-21 from RAM 1 and 2): step links fLink / bLink with 0 for none
  * and steps 0 and 500 untouched sentinels; a step's lLink is -2 (65534) at the loop's first step, the loop's first
@@ -121,6 +140,11 @@ const char *ws_seq_put(uint8_t *nib, int n, const uint8_t *raw)
     start = start < 0 ? 0 : start > len - 1 ? len - 1 : start;
     long time = 0, start_time = 0;
     int last_xfade = 0;
+    /* A modulation amount: the unit spreads the modulation value 0-127 over the steps from the start step to
+     * the loop's end, each step with the threshold it starts at (read from 28 of the SR's own sequences: spaced
+     * evenly, 127 * 127 / (2 * |amount| * steps), 127 before the start step and after the loop end) */
+    const int amt = (int8_t)raw[23], amt_abs = amt < 0 ? -amt : amt;
+    const int span = le >= start ? le - start + 1 : 1;
     for (int j = 0; j < len; j++) {
         const uint8_t *st = raw + WSSEQ_HEADER + j * WSSEQ_STEP_LEN;
         const int t = STEP_OFF + ids[j] * 16;
@@ -144,7 +168,13 @@ const char *ws_seq_put(uint8_t *nib, int n, const uint8_t *raw)
         sdw(nib, t + 10, xf);
         sdw(nib, t + 12, dur);
         sdb(nib, t + 14, st[8]);
-        sdb(nib, t + 15, 127);
+        int index = 127;
+        if (amt && j >= start && j <= le) {
+            long num = (long)(j - start) * 127 * 127, den = 2L * amt_abs * span;
+            index = (int)((2 * num + den) / (2 * den));
+            index = index > 127 ? 127 : index;
+        }
+        sdb(nib, t + 15, index);
         time += dur;
         if (j < start) {
             start_time += dur;
@@ -159,8 +189,8 @@ const char *ws_seq_put(uint8_t *nib, int n, const uint8_t *raw)
     sdb(nib, s + 6, (raw[19] & 127) | (raw[20] & 1) << 7);
     sdb(nib, s + 7, start);
     sdb(nib, s + 8, 0x80 | (raw[22] & 127));
-    sdb(nib, s + 9, 0);  /* modulation amount: not written (its per-step indexes are not understood) */
-    sdw(nib, s + 10, 0);
+    sdb(nib, s + 9, amt & 0xFF);
+    sdw(nib, s + 10, (int)((long)amt * (time + last_xfade / 2) / 127));  /* dyno = amount * time / 127 (as the unit's) */
     sdw(nib, s + 12, (int)start_time);
     sdw(nib, s + 14, (int)(time + last_xfade / 2));
     for (int i = 0; i < 8; i++) {

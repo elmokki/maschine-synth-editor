@@ -89,6 +89,11 @@ static const scale_t scales[] = {
 #define NOTES_IN_ID 106
 #define HANG_NOTES_ID 107
 #define PAD_AT_ID 108  /* pad pressure after the hit: 0 off, 1 channel aftertouch, 2 polyphonic */
+#define PAD_VEL_ID 109  /* pad velocity curve: 0 linear, 1 soft, 2 hard */
+#define PAD_MIN_ID 110  /* the pressure a pad counts as hit from, 200-1500 */
+#define PAD_MAX_ID 111  /* the pressure velocity 127 is at, 2000-4000 */
+#define AT_THR_ID 112   /* the pressure aftertouch starts from, 1500-3800 */
+#define AT_END_ID 113   /* the pressure aftertouch is 127 at, 2500-4000 */
 /* Notes arriving on DIN IN on the synth's channel act like pad hits: the
  * pad lights, and e.g. the D-110 rhythm picks that key */
 static int notes_in;
@@ -118,6 +123,33 @@ static int pad_at_f[16];        /* its smoothed pressure, 16 x 0-127 */
 static uint8_t pad_channel[16];
 static int hang_notes;
 static int pad_at;  /* off by default: a pad brushed by accident would send pressure */
+/* Velocity from a hit's peak raw value (0-4095): pad_min = where the pad counts as hit (velocity 1), pad_max =
+ * where it is 127 (a firm hit reaches ~3500, holding goes to ~3990), in between linear, SOFT (square root, lifts
+ * light hits) or HARD (square). Aftertouch starts at at_thr and is 127 at 4000. */
+static int pad_min = 700, pad_max = 2600, pad_vel = 0, at_thr = 3000, at_end = 3600;
+/* aftertouch 0-127 from a pressure; the end is kept at least 100 above the start */
+static int at_of(int raw)
+{
+    int end = at_end < at_thr + 100 ? at_thr + 100 : at_end;
+    int v = (raw - at_thr) * 127 / (end - at_thr);
+    return v < 0 ? 0 : v > 127 ? 127 : v;
+}
+/* The last pad's measurements, shown on Pad Mode page 2: the peak the hit's velocity came from, the velocity, the
+ * pressure now and the aftertouch it would be */
+static int live_pad = -1, live_hit, live_vel, live_now, live_at;
+static int64_t live_draw_us;
+static int pad_velocity(int raw)
+{
+    int x = (raw - pad_min) * 1000 / (pad_max - pad_min);  /* 0-1000 */
+    x = x < 0 ? 0 : x > 1000 ? 1000 : x;
+    if (pad_vel == 1) {
+        x = (int)(1000.0f * sqrtf(x / 1000.0f));
+    } else if (pad_vel == 2) {
+        x = x * x / 1000;
+    }
+    int v = 1 + x * 126 / 1000;
+    return v < 1 ? 1 : v > 127 ? 127 : v;
+}
 /* Chord mode: a pad plays the triad built on its note (thirds up the
  * scale), with Shift held the seventh chord */
 static int pad_chord;
@@ -259,6 +291,7 @@ static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
 static void draw_list(void);
+static int action_button(void);
 static void list_move(int steps);
 static const synth_list_t *wave_list_now(void);
 static int list_cursor;  /* the wave list's cursor */
@@ -267,6 +300,8 @@ static void draw_patch_overview(void);
 static int po_page;  /* the patch overview's page (Grid) */
 static void end_browse(void);
 static void draw_pads(void);
+static void draw_pad_live(void);
+static int pads_page;  /* Pad Mode: 0 notes, 1 aftertouch and velocity; the main encoder turns it */
 static void draw_tutorial(void);
 
 int synth_setting(int index)
@@ -683,7 +718,7 @@ static void update_button_leds(void)
             v = category_filter & (1 << col) ? LED_ON : LED_DIM;
             v = shift_held ? pulse(v) : v;  /* Shift + category: solo */
         } else if (mode == MODE_SETUP) {
-            v = col == 7 && synth->action ? (action_armed_until ? LED_ON : LED_DIM) : 0;
+            v = action_button() == BTN_DISPLAY_1 + col ? (action_armed_until ? LED_ON : LED_DIM) : 0;
         } else if (mode == MODE_STORE) {
             v = store_keys[col] ? LED_DIM : 0;
         } else if (mode == MODE_NAME) {
@@ -723,6 +758,8 @@ static void fit_text(const font_t *font, const char *s, int max_px, char *buf, s
 
 /* Header row: left display = page title + patch name (or the patch being
  * browsed, inverted), right display = where the arrow buttons lead */
+static const char *patch_title(int idx);
+
 static void draw_header(void)
 {
     if (overview || mode != MODE_EDIT || synth_busy()) {
@@ -778,6 +815,10 @@ static void draw_header(void)
         snprintf(buf, sizeof(buf), pending ? "%s  [ENTER]" : modified ? "%s *" : "%s", file);
     }
     int right = DISPLAY_USABLE_WIDTH - 2;
+    if (patch_browse == NONE && shown != NONE) {
+        /* Not browsing: just the name, without its place in the instrument (R2:25) */
+        snprintf(buf, sizeof(buf), modified ? "%s *" : "%s", patch_title(shown));
+    }
     /* Browsing patches, the name comes first: the page title keeps what room
      * is left of the row */
     int title_room = patch_browse != NONE ? right - display_text_width(&font_small, buf) - 10 : right;
@@ -1289,6 +1330,9 @@ static void enter_store(void)
     overview = false;
     mode = MODE_STORE;
     memset(encoder_acc, 0, sizeof(encoder_acc));
+    if (synth->unit_slot_origin && synth->unit_slot_origin() >= 0) {
+        unit_slot = synth->unit_slot_origin();  /* back where it came from */
+    }
     set_store_target(patch_loaded != NONE && patch_number(patch_loaded) >= synth->first_user_patch
                      ? patch_loaded : NONE);
     if (store_target == NONE) {
@@ -1500,13 +1544,35 @@ static void format_setting(int i, char *buf, size_t len)
 /* Same column layout as the parameters: one setting per encoder */
 /* Setup screen column -> setting index (columns 1-4: the synth's), a
  * global setting id (5-8) or NONE */
+static int setup_page;  /* more than 4 synth settings: the main encoder turns the page */
+
+static int setup_count(void) { return synth->setup_settings ? synth->setup_settings : synth->setting_count; }
+static int setup_pages(void) { return (setup_count() + SETUP_SYNTH_COLS - 1) / SETUP_SYNTH_COLS; }
+
+/* The display button the synth's action (IMPORT) sits on right now, or NONE: above its setting, else the last */
+static int action_button(void)
+{
+    if (!synth->action) {
+        return NONE;
+    }
+    if (synth->action_setting == SYNTH_NONE) {
+        return BTN_DISPLAY_1 + 7;
+    }
+    return synth->action_setting / SETUP_SYNTH_COLS == setup_page
+               ? BTN_DISPLAY_1 + synth->action_setting % SETUP_SYNTH_COLS : NONE;
+}
+
 static int setup_setting_at(int col)
 {
+    if (col >= SETUP_SYNTH_COLS && setup_page) {
+        return NONE;  /* the global settings are on the first page */
+    }
     if (col >= SETUP_SYNTH_COLS) {
         return col == SETUP_SYNTH_COLS ? MIDI_THRU_ID : col == SETUP_SYNTH_COLS + 1 ? LED_BRIGHT_ID
                : col == SETUP_SYNTH_COLS + 2 ? NOTES_IN_ID : col == SETUP_SYNTH_COLS + 3 ? HANG_NOTES_ID : NONE;
     }
-    return col < synth->setting_count ? col : NONE;
+    int i = setup_page * SETUP_SYNTH_COLS + col;
+    return i < setup_count() ? i : NONE;
 }
 
 static void draw_setup(void)
@@ -1516,35 +1582,44 @@ static void draw_setup(void)
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    snprintf(buf, sizeof(buf), "SETUP  %s", synth->name);
+    if (setup_page >= setup_pages()) {
+        setup_page = 0;
+    }
+    if (setup_pages() > 1) {
+        snprintf(buf, sizeof(buf), "SETUP  %s  %d/%d", synth->name, setup_page + 1, setup_pages());
+    } else {
+        snprintf(buf, sizeof(buf), "SETUP  %s", synth->name);
+    }
     draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
-    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "ALL SYNTHS", true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, setup_page ? "MAIN ENCODER: page" : "ALL SYNTHS", true);
     draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "CONTROL closes", true);
-    /* Global: MIDI thru (DIN IN -> DIN OUT, as is or to this synth's channel) */
-    const char *thru = thru_names[midi_thru];
-    draw_centered(1, 0, COLUMN_INNER, NAME_CAP_Y, &font_small, "MIDI THRU", true);
-    const font_t *vf = display_text_width(&font_large, thru) <= COLUMN_INNER - 2 ? &font_large
-                       : display_text_width(&font_medium, thru) <= COLUMN_INNER - 2 ? &font_medium
-                       : &font_small;
-    draw_centered(1, 0, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf, thru,
-                  true);
-    /* Global: all LEDs brighter, for daylight */
-    char pct[8];
-    snprintf(pct, sizeof(pct), "%d%%", led_bright * 10);
-    draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "LED BRIGHT", true);
-    draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, pct, true);
-    /* Global: notes from DIN IN light the pads (and pick e.g. a drum key) */
-    draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "NOTES IN", true);
-    draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, notes_in ? "ON" : "OFF", true);
-    /* Global: a pad released after the part changed - stop its note (OFF) or leave it ringing (ON) */
-    draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "HANG NOTES", true);
-    draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, hang_notes ? "ON" : "OFF", true);
-    if (synth->action) {
-        /* The synth's one-off job, display button 8: press twice */
-        int x = 3 * COLUMN_WIDTH;
+    if (!setup_page) {
+        /* Global: MIDI thru (DIN IN -> DIN OUT, as is or to this synth's channel) */
+        const char *thru = thru_names[midi_thru];
+        draw_centered(1, 0, COLUMN_INNER, NAME_CAP_Y, &font_small, "MIDI THRU", true);
+        const font_t *vf = display_text_width(&font_large, thru) <= COLUMN_INNER - 2 ? &font_large
+                           : display_text_width(&font_medium, thru) <= COLUMN_INNER - 2 ? &font_medium
+                           : &font_small;
+        draw_centered(1, 0, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf, thru,
+                      true);
+        /* Global: all LEDs brighter, for daylight */
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%d%%", led_bright * 10);
+        draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "LED BRIGHT", true);
+        draw_centered(1, COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, pct, true);
+        /* Global: notes from DIN IN light the pads (and pick e.g. a drum key) */
+        draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "NOTES IN", true);
+        draw_centered(1, 2 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, notes_in ? "ON" : "OFF", true);
+        /* Global: a pad released after the part changed - stop its note (OFF) or leave it ringing (ON) */
+        draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, NAME_CAP_Y, &font_small, "HANG NOTES", true);
+        draw_centered(1, 3 * COLUMN_WIDTH, COLUMN_INNER, VALUE_CAP_Y, &font_large, hang_notes ? "ON" : "OFF", true);
+    }
+    if (action_button() != NONE) {
+        /* The synth's one-off job on a display button (above its IMPORT setting): press twice */
+        int col = action_button() - BTN_DISPLAY_1, disp = col / 4, x = col % 4 * COLUMN_WIDTH;
         bool armed = action_armed_until != 0;
-        display_round_rect(1, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, armed, true);
-        draw_centered(1, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
+        display_round_rect(disp, x + 1, SWITCH_BOX_Y, COLUMN_INNER - 2, SWITCH_BOX_H, armed, true);
+        draw_centered(disp, x, COLUMN_INNER, SWITCH_BOX_Y + (SWITCH_BOX_H - font_small.cap_height) / 2,
                       &font_small, armed ? "SURE?" : synth->action_name, !armed);
     }
     for (int col = 0; col < SETUP_SYNTH_COLS; col++) {
@@ -1577,12 +1652,20 @@ static void setting_encoder(int i, int col, int delta)
         int *v = i == PAD_LOW_ID ? &pad_low : i == PAD_SCALE_ID ? &pad_scale
                  : i == PAD_KEY_ID ? &pad_key : i == PAD_CHORD_ID ? &pad_chord
                  : i == MIDI_THRU_ID ? &midi_thru : i == NOTES_IN_ID ? &notes_in : i == HANG_NOTES_ID ? &hang_notes
-                 : i == PAD_AT_ID ? &pad_at
+                 : i == PAD_AT_ID ? &pad_at : i == PAD_VEL_ID ? &pad_vel : i == PAD_MIN_ID ? &pad_min
+                 : i == PAD_MAX_ID ? &pad_max : i == AT_THR_ID ? &at_thr : i == AT_END_ID ? &at_end
                  : &led_bright;
         int max = i == PAD_LOW_ID ? 112 : i == PAD_SCALE_ID ? SCALE_COUNT - 1 : i == PAD_KEY_ID ? 11
-                  : i == PAD_CHORD_ID || i == NOTES_IN_ID || i == HANG_NOTES_ID ? 1 : i == MIDI_THRU_ID || i == PAD_AT_ID ? 2 : LED_BRIGHT_MAX;
+                  : i == PAD_CHORD_ID || i == NOTES_IN_ID || i == HANG_NOTES_ID ? 1 : i == MIDI_THRU_ID || i == PAD_AT_ID || i == PAD_VEL_ID ? 2 : LED_BRIGHT_MAX;
         int min = i == LED_BRIGHT_ID ? LED_BRIGHT_MIN : 0;
-        int nv = *v + steps;
+        /* The pressure settings: steps of 50 / 100 raw, in their own ranges */
+        int mult = 1;
+        if (i == PAD_MIN_ID || i == PAD_MAX_ID || i == AT_THR_ID || i == AT_END_ID) {
+            mult = i == PAD_MIN_ID ? 50 : 100;
+            min = i == PAD_MIN_ID ? 200 : i == PAD_MAX_ID ? 2000 : i == AT_THR_ID ? 1500 : 2500;
+            max = i == PAD_MIN_ID ? 1500 : i == AT_THR_ID ? 3800 : 4000;
+        }
+        int nv = *v + steps * mult;
         if (i == PAD_LOW_ID && pad_scale != 0) {
             /* In a scale, the lowest pad moves a scale note at a time */
             int moved = scale_step(lowest_pad_note(), steps);
@@ -1592,6 +1675,7 @@ static void setting_encoder(int i, int col, int delta)
         if (nv != *v) {
             *v = nv;
             settings_save_at = esp_timer_get_time() + WRITE_DELAY_US;
+            maschine_set_pad_press(pad_min);
             maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
             for (int pad = 0; pad < 16; pad++) {
                 if (!pad_note_count[pad]) {
@@ -1647,6 +1731,20 @@ static void load_global_settings(void)
             hang_notes = v;
         } else if (sscanf(line, "PAD AFTERTOUCH=%d", &v) == 1 && v >= 0 && v <= 2) {
             pad_at = v;
+        } else if (sscanf(line, "PAD VELOCITY=%d", &v) == 1 && v >= 0 && v <= 2) {
+            /* the first curves (0 normal, 1 light, 2 soft): now a maximum and a curve */
+            pad_max = v == 0 ? 4000 : 3500;
+            pad_vel = v == 2 ? 1 : 0;
+        } else if (sscanf(line, "PAD CURVE=%d", &v) == 1 && v >= 0 && v <= 2) {
+            pad_vel = v;
+        } else if (sscanf(line, "PAD MIN=%d", &v) == 1 && v >= 200 && v <= 1500) {
+            pad_min = v;
+        } else if (sscanf(line, "PAD MAX=%d", &v) == 1 && v >= 2000 && v <= 4000) {
+            pad_max = v;
+        } else if (sscanf(line, "AT THRESHOLD=%d", &v) == 1 && v >= 1500 && v <= 3800) {
+            at_thr = v;
+        } else if (sscanf(line, "AT END=%d", &v) == 1 && v >= 2500 && v <= 4000) {
+            at_end = v;
         } else if (sscanf(line, "CHORD=%d", &v) == 1 && v >= 0 && v <= 1) {
             pad_chord = v;
         } else if (sscanf(line, "SCALE=%d", &v) == 1 && v >= 0 && v < SCALE_COUNT) {
@@ -1705,8 +1803,9 @@ static void save_settings(void)
     ESP_LOGI(TAG, "saved settings %s", path);
     f = fopen(GLOBAL_SETTINGS_FILE, "w");
     if (f) {
-        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\nHANG NOTES=%d\nPAD AFTERTOUCH=%d\n",
-                pad_low, pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in, hang_notes, pad_at);
+        fprintf(f, "PAD LOW=%d\nSCALE=%d\nKEY=%d\nMIDI THRU=%d\nLED LEVEL=%d\nCHORD=%d\nNOTES IN=%d\nHANG NOTES=%d\nPAD AFTERTOUCH=%d\nPAD CURVE=%d\nPAD MIN=%d\nPAD MAX=%d\nAT THRESHOLD=%d\nAT END=%d\n",
+                pad_low, pad_scale, pad_key, midi_thru, led_bright, pad_chord, notes_in, hang_notes, pad_at, pad_vel, pad_min,
+                pad_max, at_thr, at_end);
         fclose(f);
     }
 }
@@ -1799,23 +1898,50 @@ static void draw_pads(void)
         display_clear(d);
         display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
     }
-    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, "PADS (all synths)   PAD MODE closes", true);
-    /* The fifth setting, over its encoder (the first of the right display) */
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, pads_page ? "PADS 2/2  touch" : "PADS 1/2  notes", true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "MAIN ENCODER: page", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "PAD MODE closes", true);
     static const char *const at_names[3] = {"OFF", "CHANNEL", "POLY"};
-    snprintf(buf, sizeof(buf), "AFTERTOUCH %s", at_names[pad_at]);
-    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, buf, true);
-    const char *names[4] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD"};
+    static const char *const curve_names[3] = {"LINEAR", "SOFT", "HARD"};
+    const char *names[6] = {"PAD LOW", "PAD SCALE", "PAD KEY", "PAD CHORD", "", ""};
     int low = lowest_pad_note();  /* in a scale: the first scale note from PAD LOW */
     snprintf(buf, sizeof(buf), "%s%d", keys[low % 12], low / 12 - 1);  /* 60 = C4 */
-    const char *vals[4] = {buf, scales[pad_scale].name, keys[pad_key], pad_chord ? "ON" : "OFF"};
-    for (int k = 0; k < 4; k++) {
-        int x = k * COLUMN_WIDTH;
-        draw_centered(0, x, COLUMN_INNER, NAME_CAP_Y, &font_small, names[k], true);
+    char pmin[8], pmax[8], pat[8], pend[8];
+    const char *vals[6] = {buf, scales[pad_scale].name, keys[pad_key], pad_chord ? "ON" : "OFF", "", ""};
+    int shown = 4;
+    if (pads_page) {
+        /* Page 2: what the pad's pressure does - the hit (where it counts, where velocity is 127, the curve),
+         * aftertouch (from where, and its mode over the fifth encoder), and the last pad's measurements */
+        snprintf(pmin, sizeof(pmin), "%d", pad_min);
+        snprintf(pmax, sizeof(pmax), "%d", pad_max);
+        snprintf(pat, sizeof(pat), "%d", at_thr);
+        names[0] = "MIN PRESS";
+        vals[0] = pmin;
+        names[1] = "MAX PRESS";
+        vals[1] = pmax;
+        names[2] = "CURVE";
+        vals[2] = curve_names[pad_vel];
+        names[3] = "AT START";
+        vals[3] = pat;
+        names[4] = "AFTERTOUCH";
+        vals[4] = at_names[pad_at];
+        snprintf(pend, sizeof(pend), "%d", at_end);
+        names[5] = "AT END";
+        vals[5] = pend;
+        shown = 6;
+    }
+    for (int k = 0; k < shown; k++) {
+        int disp = k / 4, x = k % 4 * COLUMN_WIDTH;
+        draw_centered(disp, x, COLUMN_INNER, NAME_CAP_Y, &font_small, names[k], true);
         const font_t *vf = display_text_width(&font_large, vals[k]) <= COLUMN_INNER - 2 ? &font_large
                            : display_text_width(&font_medium, vals[k]) <= COLUMN_INNER - 2 ? &font_medium
                            : &font_small;
-        draw_centered(0, x, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf,
+        draw_centered(disp, x, COLUMN_INNER, VALUE_CAP_Y + (font_large.cap_height - vf->cap_height) / 2, vf,
                       vals[k], true);
+    }
+    if (pads_page) {
+        draw_pad_live();
+        return;
     }
     const int cell_h = (DISPLAY_HEIGHT - HEADER_LINE_Y - 1) / 4;
     for (int pad = 0; pad < 16; pad++) {
@@ -1833,6 +1959,28 @@ static void draw_pads(void)
         draw_centered(1, x, COLUMN_INNER, y + (cell_h - font_small.cap_height) / 2 + 1, &font_small, buf,
                       !root);
     }
+}
+
+/* The measurements column (the right display's second): one small line each */
+static void draw_pad_live(void)
+{
+    const int x = 2 * COLUMN_WIDTH;
+    display_fill_rect(1, x, HEADER_LINE_Y + 1, COLUMN_WIDTH, DISPLAY_HEIGHT - HEADER_LINE_Y - 1, false);
+    char buf[16];
+    if (live_pad < 0) {
+        display_text(1, x + 2, HEADER_LINE_Y + 3, &font_tiny, "hit a pad", true);
+        return;
+    }
+    snprintf(buf, sizeof(buf), "PAD %d", live_pad + 1);
+    display_text(1, x + 2, HEADER_LINE_Y + 3, &font_tiny, buf, true);
+    snprintf(buf, sizeof(buf), "HIT %d", live_hit);
+    display_text(1, x + 2, HEADER_LINE_Y + 12, &font_tiny, buf, true);
+    snprintf(buf, sizeof(buf), "VEL %d", live_vel);
+    display_text(1, x + 2, HEADER_LINE_Y + 21, &font_tiny, buf, true);
+    snprintf(buf, sizeof(buf), "NOW %d", live_now);
+    display_text(1, x + 2, HEADER_LINE_Y + 30, &font_tiny, buf, true);
+    snprintf(buf, sizeof(buf), "AT %d", live_at);
+    display_text(1, x + 2, HEADER_LINE_Y + 39, &font_tiny, buf, true);
 }
 
 /* Tutorial (Shift + Control): one page of the synth's special controls;
@@ -2398,10 +2546,15 @@ static void editor_encoder_impl(int i, int delta)
     }
     if (mode == MODE_PADS) {
         static const int pad_settings[4] = {PAD_LOW_ID, PAD_SCALE_ID, PAD_KEY_ID, PAD_CHORD_ID};
-        if (i < 4) {
+        if (!pads_page && i < 4) {
             setting_encoder(pad_settings[i], i, delta);
-        } else if (i == 4) {
+        } else if (pads_page && i < 4) {
+            static const int touch_settings[4] = {PAD_MIN_ID, PAD_MAX_ID, PAD_VEL_ID, AT_THR_ID};
+            setting_encoder(touch_settings[i], i, delta);
+        } else if (pads_page && i == 4) {
             setting_encoder(PAD_AT_ID, i, delta);
+        } else if (pads_page && i == 5) {
+            setting_encoder(AT_END_ID, i, delta);
         }
         return;
     }
@@ -2683,6 +2836,12 @@ static void editor_button_impl(int bit, bool down)
         if (mode == MODE_SEQ) {
             seq_ui_enter();
         }
+        if (mode == MODE_SETUP) {
+            setup_page = 0;
+        }
+        if (mode == MODE_PADS) {
+            pads_page = 0;
+        }
         memset(encoder_acc, 0, sizeof(encoder_acc));
         for (int d = 0; d < DISPLAY_COUNT; d++) {
             display_clear(d);
@@ -2745,7 +2904,7 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (mode == MODE_SETUP && down && bit == BTN_DISPLAY_1 + 7 && synth->action) {
+    if (mode == MODE_SETUP && down && bit == action_button() && action_button() != NONE) {
         if (action_armed_until) {
             action_armed_until = 0;
             mode = MODE_EDIT;  /* the job reports in the editor's header */
@@ -2970,6 +3129,24 @@ static void editor_main_encoder_impl(int steps)
             po_page = (po_page + (steps > 0 ? 1 : -1) + synth->overview_pages) % synth->overview_pages;
         }
         draw_patch_overview();
+        return;
+    }
+    if (mode == MODE_PADS) {
+        int np = steps > 0 ? 1 : 0;
+        if (np != pads_page) {
+            pads_page = np;
+            memset(encoder_acc, 0, sizeof(encoder_acc));
+            draw_pads();
+        }
+        return;
+    }
+    if (mode == MODE_SETUP) {
+        int np = setup_page + (steps > 0 ? 1 : -1);
+        if (np >= 0 && np < setup_pages() && np != setup_page) {
+            setup_page = np;
+            memset(encoder_acc, 0, sizeof(encoder_acc));
+            draw_setup();
+        }
         return;
     }
     if (mode == MODE_LIST) {
@@ -3242,6 +3419,7 @@ static void editor_init_impl(void)
     }
     seq_ui_init();
     load_global_settings();
+    maschine_set_pad_press(pad_min);
     maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
     load_settings();
     load_patch_list();
@@ -3292,10 +3470,16 @@ static void editor_pad_impl(int pad, bool down, int raw)
     }
     int channel = play_channel();
     if (down) {
-        /* Velocity from the hit's peak pressure (main.c), over the range
-         * from the press threshold (~1000) to full scale (4095) */
-        int vel = 1 + (raw - 1000) * 126 / 3095;
-        vel = vel < 1 ? 1 : vel > 127 ? 127 : vel;
+        /* Velocity from the hit's peak pressure (main.c), by the PAD VELOCITY curve */
+        int vel = pad_velocity(raw);
+        if (mode == MODE_PADS && pads_page) {
+            live_pad = pad;
+            live_hit = raw;
+            live_vel = vel;
+            live_now = raw;
+            live_at = 0;
+            draw_pad_live();
+        }
         if (pad_chord) {
             pad_note_count[pad] = pad_chord_notes(pad, shift_held, pad_notes[pad]);
         } else {
@@ -3330,8 +3514,6 @@ static void editor_pad_impl(int pad, bool down, int raw)
 /* Pad pressure after the hit (main.c reports it every pad report): aftertouch, if the pad is playing notes.
  * 0-127 from the pressure range above the hit threshold; sent when it moved by 2 and 15 ms passed (the DIN cable
  * carries ~3 KB/s). Channel aftertouch follows the hardest held pad. */
-#define AT_MIN_RAW 3000
-#define AT_MAX_RAW 4000
 #define AT_INTERVAL_US 20000
 #define AT_SETTLE_US 80000   /* the strike itself is not pressure: nothing is sent until it has died down */
 #define AT_SMOOTH 16         /* a pressure report (2 ms) moves the smoothed value 1/16 of the way: ~30 ms */
@@ -3356,11 +3538,21 @@ static int held_pads_max(int *count)
 
 static void editor_pad_pressure_impl(int pad, int raw)
 {
+    if (mode == MODE_PADS && pads_page && pad == live_pad && pad_note_count[pad]) {
+        /* the measurements follow the held pad, redrawn every 60 ms at most */
+        int64_t t = esp_timer_get_time();
+        live_now = raw;
+        live_at = at_of(raw);
+        if (t - live_draw_us >= 60000) {
+            live_draw_us = t;
+            draw_pad_live();
+        }
+    }
     if (!pad_at || !pad_note_count[pad] || mode == MODE_SEQ || mode == MODE_NAME || synth_busy()) {
         return;
     }
     int64_t now = esp_timer_get_time();
-    int target = (raw - AT_MIN_RAW) * 127 * 16 / (AT_MAX_RAW - AT_MIN_RAW);
+    int target = (raw - at_thr) * 127 * 16 / ((at_end < at_thr + 100 ? at_thr + 100 : at_end) - at_thr);
     target = target < 0 ? 0 : target > 127 * 16 ? 127 * 16 : target;
     if (now - pad_at_t0[pad] < AT_SETTLE_US) {
         pad_at_f[pad] = target;  /* follows silently, so it starts from where the finger is */

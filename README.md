@@ -45,6 +45,10 @@ the knob of the value itself (WAVE, TONE, ...) moves the cursor too. Lists exist
 Wavestation PERF patches, JV-880 waves (PATCH, RHYTHM) and performance-part patches, D-110 PCM waves (TONE),
 tones (PATCH, RHYTHM key) and U-110 tones.
 
+**Setup (Control):** the synth's own settings (four a page; with more, the main encoder turns the page, e.g. the Wavestation
+PATCH's IMPORT is on page 2) and the global ones (MIDI thru, LED brightness, NOTES IN, HANG NOTES). The IMPORT button sits above
+the IMPORT setting and is pressed twice. The header shows only the patch's name (its place in the instrument, e.g. R3:31, while browsing).
+
 | Synth | Editor | State |
 |---|---|---|
 | Plugiator MiniMax, B4000 (organ) | all parameters, factory presets | done |
@@ -54,7 +58,7 @@ tones (PATCH, RHYTHM key) and U-110 tones.
 | Roland U-110 | one patch = 6 parts, read, IMPORT, store to the unit | done |
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
 | Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
-| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; copy / paste of steps, length, reverse and whole-sequence changes in group C; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into any RAM 1-3 sequence (see the warning below) |
+| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; copy / paste of steps, length, reverse and whole-sequence changes in group C); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into any RAM 1-3 sequence (see the warning below) |
 
 ### What needs the MIDI IN cable
 
@@ -72,7 +76,7 @@ the unit; storing into it still works. The Wavestation PATCH and PERF entries ar
 SR's edit buffer), but cannot store into the SR or read from it; SEQ then only edits the library, because a sequence
 has no edit buffer to hear or keep an edit in.
 
-Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), MIDI thru, LED brightness, a Volume button for the synths that have one.
+Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), pad pressure settings (Pad Mode page 2 - my values: min 700, max 2600, linear, aftertouch 3000-3600, the main encoder turns the page: MIN PRESS = where a pad counts as hit, MAX PRESS = where velocity is 127, CURVE linear / soft / hard, AT START / AT END = where aftertouch starts and is 127, and a column with the last pad's measurements: HIT, VEL, NOW, AT), MIDI thru, LED brightness, a Volume button for the synths that have one.
 
 ## Sequencer
 
@@ -99,6 +103,8 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 > sequence in the unit for good. Any sequence of RAM 1-3 can be chosen (encoder 8 on the Store screen, which starts at
 > **RAM 3, sequence 31**, the last one; the slot's name as of the last IMPORT is shown). The whole bank is kept as it
 > was in `/lfs/ws/backup/seq00` - `seq02` first (one file a bank, overwritten by the next write to that bank).
+> The Store screen opens at the slot the sequence came from, and AUTO reads that slot back (READ BANK / READ SEQ are used only
+> for a sequence that is not in the SR yet). The modulation amount is written too (the unit's own rule, see `docs/WAVESTATION.md`).
 
 ### Planned
 

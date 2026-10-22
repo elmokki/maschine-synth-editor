@@ -1235,6 +1235,7 @@ const synth_t synth_wsperf = {
     .busy_draw = ws_banks_draw,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SETTING_IMPORT,
     .unit_store_label = "TO SR",
     .unit_store_slots = 4 * PERF_BANK_ITEMS,
     .unit_slot_name = unit_slot_name,

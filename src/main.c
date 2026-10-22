@@ -50,12 +50,13 @@ static const char *TAG = "maschine";
 /* Pad thresholds on the raw 0-4095 value. Cross-talk from a firmly pressed
  * neighbour reaches ~750 (see PROTOCOL.md), so press well above that, with
  * hysteresis so a pad near the threshold doesn't chatter. */
-#define PAD_PRESS_RAW 1000
-#define PAD_RELEASE_RAW 300
+static volatile int pad_press_raw = 500;  /* the lightest touches (a firm neighbour's cross-talk, ~750, is above this); the editor sets it */
 /* Velocity: a hit's pressure keeps rising for a few ms after it crosses
  * the press threshold, so the note waits this many pad reports (2 ms each)
  * and uses the peak seen meanwhile */
 #define PAD_PEAK_REPORTS 3
+
+void maschine_set_pad_press(int raw) { pad_press_raw = raw < 100 ? 100 : raw > 3000 ? 3000 : raw; }
 
 static const char *const button_names[48] = {
     "Display 1", "Display 2", "Display 3", "Display 4",
@@ -406,7 +407,7 @@ static void handle_report20(const uint8_t *buf, int len)
     }
 
     for (int pad = 0; pad < 16; pad++) {
-        if (!pad_down[pad] && raw[pad] >= PAD_PRESS_RAW) {
+        if (!pad_down[pad] && raw[pad] >= pad_press_raw) {
             pad_down[pad] = true;
             pad_wait[pad] = PAD_PEAK_REPORTS;
             pad_peak[pad] = raw[pad];
@@ -414,7 +415,7 @@ static void handle_report20(const uint8_t *buf, int len)
             if (raw[pad] > pad_peak[pad]) {
                 pad_peak[pad] = raw[pad];
             }
-            bool released = raw[pad] <= PAD_RELEASE_RAW;
+            bool released = raw[pad] <= pad_press_raw * 3 / 5;
             if (pad_wait[pad] && (--pad_wait[pad] == 0 || released)) {
                 pad_wait[pad] = 0;
                 editor_pad(pad, true, pad_peak[pad]);

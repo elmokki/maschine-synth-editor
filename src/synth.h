@@ -223,6 +223,11 @@ typedef struct {
      * pressed twice to confirm (e.g. import the synth's own sounds) */
     const char *action_name;
     void (*action)(void);
+    /* Setup: the setting the action's button sits above (its IMPORT control), or SYNTH_NONE = the last display
+     * button; every driver with an action sets it */
+    int action_setting;
+    /* Setup: how many of the settings show there (0 = all); the rest are set elsewhere (e.g. the Volume button) */
+    int setup_settings;
 
     /* The instrument keeps its own state (e.g. the D-110's memory): when
      * this synth is selected the editor asks for its current state (read)
@@ -243,6 +248,8 @@ typedef struct {
     void (*unit_slot_info)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
     /* Optional: the slot the Store screen starts at when this synth is selected (0 = the one it had) */
+    /* Optional: when the Store screen opens, the slot the sound shown came from (or -1 = the slot it had) */
+    int (*unit_slot_origin)(void);
     int unit_slot_default;
 
     /* Optional: a long job in the driver (a bank import, a bank written to the unit). While busy() the editor shows

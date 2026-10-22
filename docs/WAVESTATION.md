@@ -67,8 +67,13 @@ librarian-tested.
   step (the last step wins if one step is both), 65535 elsewhere; sLink = the start step's number, the start byte is
   0-based (like loop start / end); time = the durations' sum + the last step's crossfade / 2 (matched every sample);
   start time = ? (0 when start is the first step; the editor writes the durations before the start step, a guess);
-  a step's mod index 127 and dyno mod 0 without modulation (with a modulation amount the indexes are i * dyno-ish and
-  dyno mod depends on something not understood: the amount is NOT written, left 0); mod source byte = 0x80 | source.
+  a step's mod index 127 and dyno 0 without modulation; mod source byte = 0x80 | source. With a modulation amount
+  (read 2026-10-22 from 28 of the SR's own ROM / RAM sequences; the SR zeroes the amount of a sequence stored from its
+  panel, so only factory ones show it): dyno = amount * time / 127 (exact on all 28); the modulation value 0-127 is spread
+  over the steps from the start step to the loop's end: step j's mod index = (j - start) * 127 * 127 / (2 * |amount| * N),
+  N = loop end - start + 1, capped at 127 (the unit's own differ by 1 at most), 127 before the start step and after the
+  loop's end; the sign only shows in dyno. Not fitted: sequences whose start step is not the first with a negative amount (the steps before
+  start have other values), a few with an amount whose indexes were all 127.
   A step's wave: value = low byte + 256 if high byte 0x81; the SR codes waves >= 365 as expanded (low = wave - 365,
   coarse + 72). RAM 1 of the author's unit had garbage in sequences 11-13 (nonsense links): chains are walked with a
   guard. The dump has no wave bank per step, so card waves (the BANK knob = CARD) are refused when writing.

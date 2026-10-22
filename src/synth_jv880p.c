@@ -1009,6 +1009,7 @@ const synth_t synth_jv880p = {
     .overview_draw = overview_draw,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SYNTH_NONE,
     .unit_store_label = "TO JV-880",
     .unit_store_slots = 16,
     .unit_slot_name = unit_slot_name,

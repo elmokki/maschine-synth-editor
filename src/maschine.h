@@ -28,3 +28,5 @@ void maschine_set_button_led(int bit, uint8_t value);
  * clipping keeps its hue at full and gets the rest of its brightness as
  * white, at most max_white_pct of the way. */
 void maschine_set_led_gain(int pct, int max_white_pct);
+/* The raw pad value (0-4095) a pad counts as pressed from (it lets go at 3/5 of it) */
+void maschine_set_pad_press(int raw);

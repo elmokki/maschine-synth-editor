@@ -1082,6 +1082,7 @@ const synth_t synth_u110 = {
     .overview_draw = overview_draw,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SYNTH_NONE,
     .unit_store_label = "TO U-110",
     .unit_store_slots = UNIT_PATCHES,
     .unit_slot_name = unit_slot_name,

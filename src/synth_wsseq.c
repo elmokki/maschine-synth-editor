@@ -10,7 +10,7 @@
  * REC > TO SR writes the sequence into a RAM slot (RAM 1-3, 96 slots, starting at RAM 3 #31, the last): it reads the
  * bank, replaces that sequence in the dump (ws_seq_put) and sends the bank back; the bank as it was is kept in
  * /lfs/ws/backup/seq00-seq02.
- * Not written: the modulation amount, card waves.
+ * Not written: card waves.
  * Listening: a sequence that is in the SR (imported, or read with AUTO) is played by a test patch (wave A = the
  * sequence) in the edit buffer - the SR's version, not our edits. Not yet: sending edits as they are made (the SR
  * has no edit buffer for sequences). Group C EDIT: length, copy / paste of a step, reverse, clear, whole-sequence
@@ -79,7 +79,8 @@ static const synth_page_t pages[] = {
 #define SETTING_IMPORT 3
 static const synth_setting_t settings[] = {
     [SETTING_CHANNEL] = {"CHANNEL", SET_CHANNEL, 0, 15, 0},
-    /* The sequence AUTO reads: bank 0-11 (RAM 1-3, ROM 4-11, Card), number 0-31 */
+    /* The sequence AUTO reads when the one shown isn't in the SR yet (Init, an own one): bank 0-11 (RAM 1-3,
+     * ROM 4-11, Card), number 0-31 */
     [SETTING_BANK] = {"READ BANK", SET_NUMBER, 0, 11, 0},
     [SETTING_NUM] = {"READ SEQ", SET_NUMBER, 0, 31, 0},
     /* What IMPORT reads from the SR into the library: its banks, 32 sequences each */
@@ -928,9 +929,21 @@ static bool activate(void)
 
 /* ---- reading the unit (Auto) ---- */
 
+/* Auto reads the sequence the one shown is in the SR (an imported one, or the slot it was stored to); one that
+ * isn't there yet (Init, an own one) takes READ BANK / READ SEQ */
+static int rd_bank, rd_num;
+
+/* The Store screen's slot (RAM 1-3 = 0-95) of the sequence shown when it came from there; -1 otherwise */
+static int slot_origin(void)
+{
+    return aud_bank >= 0 && aud_bank < 3 /* RAM 1-3 */ ? aud_bank * 32 + aud_num : -1;
+}
+
 static void read_seq(void)
 {
-    int b = clampi(synth_setting(SETTING_BANK), 0, 11);
+    rd_bank = aud_bank >= 0 ? aud_bank : clampi(synth_setting(SETTING_BANK), 0, 11);
+    rd_num = aud_bank >= 0 ? aud_num : clampi(synth_setting(SETTING_NUM), 0, 31);
+    int b = rd_bank;
     uint8_t msg[7] = {0xF0, 0x42, 0x30 + channel(), 0x28, ws_kind_seq.request, ws_to_ws_bank[b], 0xF7};
     midi_send_sysex(msg, sizeof(msg));
 }
@@ -954,7 +967,7 @@ static void sysex_in(const uint8_t *d, size_t len)
     }
     ensure();
     static uint8_t raw[WSSEQ_MAX_LEN];
-    int n = ws_seq_extract(d + 6, clampi(synth_setting(SETTING_NUM), 0, 31), raw);
+    int n = ws_seq_extract(d + 6, rd_num, raw);
     if (n <= 0) {
         synth_notice("THAT SEQUENCE IS EMPTY");
         return;
@@ -964,7 +977,7 @@ static void sysex_in(const uint8_t *d, size_t len)
     cur = 0;
     tally_reset();
     from_unit = as_read_ok = true;
-    audition(clampi(synth_setting(SETTING_BANK), 0, 11), clampi(synth_setting(SETTING_NUM), 0, 31));
+    audition(rd_bank, rd_num);
     synth_sound_replaced();
     synth_redraw();
 }
@@ -1290,7 +1303,7 @@ static const synth_tip_t tips[] = {
                   "REVERSE flips the order; CLEAR asks twice."},
      {BTN_GROUP_A + 2, -1, -1, -1, -1, -1, -1, -1}},
     {"FROM THE UNIT", {"CONTROL > IMPORT (twice) reads the banks'", "sequences into the library as 1-384", "(bank x 32 + n + 1; ~5 s a bank).",
-                       "AUTO reads the READ BANK / READ SEQ one.", "The SR must send on its MIDI OUT to the", "Maschine's MIDI IN. A sequence in the SR is", "heard as the SR has it, not as edited."},
+                       "AUTO reads the one shown back from the SR;", "if it isn't there: READ BANK / READ SEQ.", "SR MIDI OUT -> Maschine MIDI IN. A sequence", "in the SR is heard as it is there, not edited."},
      {BTN_CONTROL, BTN_AUTO, -1, -1, -1, -1, -1, -1}},
 };
 
@@ -1335,6 +1348,7 @@ const synth_t synth_wsseq = {
     .unit_store_label = "TO SR",
     .unit_store_slots = STORE_SLOTS,
     .unit_slot_default = STORE_DEFAULT,
+    .unit_slot_origin = slot_origin,
     .unit_slot_name = unit_slot_name,
     .unit_slot_info = unit_slot_info,
     .unit_store = unit_store,
@@ -1344,6 +1358,7 @@ const synth_t synth_wsseq = {
     .busy_draw = busy_draw,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SETTING_IMPORT,
     .theme_bright = {127, 20, 20},  /* red, as the SR's other entries */
     .theme_dim = {14, 2, 2},
     .tips = tips,

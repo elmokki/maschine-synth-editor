@@ -1377,6 +1377,7 @@ const synth_t synth_d110 = {
     .unit_store = unit_store,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SYNTH_NONE,
     .categories = categories,
     .volume_get = d110_volume_get,
     .volume_set = d110_volume_set,

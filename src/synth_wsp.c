@@ -1735,6 +1735,7 @@ const synth_t synth_wsp = {
     .busy_draw = ws_banks_draw,
     .action_name = "IMPORT",
     .action = import_start,
+    .action_setting = SETTING_IMPORT,
     .unit_store_label = "TO SR",
     .unit_store_slots = 4 * BANK_PATCHES,
     .unit_slot_name = unit_slot_name,
