@@ -35,7 +35,7 @@ Group buttons A-H pick a section (functions of the synth), the main encoder page
 encoders and display buttons above the displays edit the values. Every editor has a patch library on
 LittleFS (browse, store, categories), a patch overview (Grid button), envelope/vector pictures, and a
 tutorial for the synth's special controls (Shift + Control). Reading back from the unit needs its MIDI OUT
-on the Maschine's MIDI IN, but is never required.
+on the Maschine's MIDI IN (see below for what needs it); editing and playing never do.
 
 | Synth | Editor | State |
 |---|---|---|
@@ -47,6 +47,17 @@ on the Maschine's MIDI IN, but is never required.
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
 | Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
 | Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into **RAM 3 sequence 31 only** (see the warning below) |
+
+### What needs the MIDI IN cable
+
+The unit's MIDI OUT goes to the Maschine's MIDI IN only for reading back:
+
+| Editor | Needs the cable for | Works without it |
+|---|---|---|
+| Plugiator MiniMax, B4000; Volca FM2 | nothing | everything |
+| Roland D-110, JV-880, U-110 (all entries) | Auto (read the sound from the unit), IMPORT | editing, playing, **storing into the unit** (direct writes); the remembered patch is loaded when the unit does not answer |
+| Korg Wavestation SR PATCH, PERF, SEQ | Auto, IMPORT, **REC > TO SR** (the bank is read first so the rest of it survives) | editing and sending to the edit buffer, playing; listening to a SEQ sequence |
+| Sequencer (Scene) | note entry from a keyboard on the MIDI IN | everything else |
 
 Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), MIDI thru, LED brightness, a Volume button for the synths that have one.
 
