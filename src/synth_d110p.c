@@ -383,6 +383,32 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* Tone list (Note Repeat): groups a and b (the library's 128 tones); i and r have no names */
+static int tone_list_current(void)
+{
+    int group = patch[byte_of(P_GROUP)];
+    return group < 2 ? group * 64 + value(P_NUMBER) : 0;
+}
+
+static void tone_list_name(int i, char *buf, size_t len)
+{
+    read_tone_names();
+    snprintf(buf, len, "%s%d%d %s", group_labels[i / 64], i % 64 / 8 + 1, i % 8 + 1, tone_names[i]);
+}
+
+static void tone_list_pick(int i)
+{
+    set_value(P_GROUP, i / 64);
+    set_value(P_NUMBER, i % 64);
+}
+
+static const synth_list_t tone_list = {"TONES", 128, tone_list_current, tone_list_name, tone_list_pick, P_NUMBER};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == PG_TIMBRE && value_known(P_NUMBER) && known[byte_of(P_GROUP)] ? &tone_list : NULL;
+}
+
 /* ---- patch overview (Grid): the eight parts as a table (no header: eight rows fill the display) ---- */
 
 /* Part pt's value of p, formatted as the editor does */
@@ -799,6 +825,7 @@ const synth_t synth_d110p = {
     .param_step = param_step,
     .param_toggle = param_toggle,
     .param_draw = param_draw,
+    .page_list = page_list,
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,

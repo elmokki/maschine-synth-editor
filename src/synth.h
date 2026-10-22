@@ -79,6 +79,7 @@ typedef struct {
     int (*current)(void);                            /* the picked item now */
     void (*name)(int i, char *buf, size_t len);      /* "12 Name", up to 24 characters show */
     void (*pick)(int i);                             /* make item i the value (the editor marks the patch edited) */
+    int param;                                       /* the parameter this picks: its knob moves the list cursor too */
 } synth_list_t;
 
 typedef struct {

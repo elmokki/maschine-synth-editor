@@ -459,6 +459,35 @@ static bool param_step(int p, int steps)
     return true;
 }
 
+/* Wave list (Note Repeat) for the selected key; gaps in a group show without a name */
+static synth_list_t wave_list;
+
+static int wave_list_current(void) { return value_or_init(P_WAVE, key); }
+
+static void wave_list_name(int i, char *buf, size_t len)
+{
+    char name[JV880_WAVE_NAME_LEN + 1] = "";
+    jv880_wave_name(value_or_init(P_GROUP, key), i, card_number(), name, sizeof(name));
+    snprintf(buf, len, "%d %s", i + 1, name);
+}
+
+static void wave_list_pick(int i)
+{
+    if (wave_exists(value_or_init(P_GROUP, key), i)) {
+        param_step(P_WAVE, i - wave_list_current());
+    }
+}
+
+static const synth_list_t *page_list(int page)
+{
+    if (page != PG_WAVE) {
+        return NULL;
+    }
+    wave_list = (synth_list_t){"WAVES", card_wave_count(value_or_init(P_GROUP, key)), wave_list_current,
+                               wave_list_name, wave_list_pick, P_WAVE};
+    return &wave_list;
+}
+
 static void param_toggle(int p)
 {
     int k, real;
@@ -818,6 +847,7 @@ const synth_t synth_jv880r = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
+    .page_list = page_list,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .revert = revert,

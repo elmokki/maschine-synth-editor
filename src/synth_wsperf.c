@@ -787,6 +787,35 @@ static bool page_enabled(int pg)
     return fx_param(pg == PG_FX1B ? FXP(1, 7) : FXP(2, 7)) != NULL;
 }
 
+/* Patch list (Note Repeat): the part's bank, entry 0 = OFF */
+static int patch_list_current(void)
+{
+    ensure();
+    return get(P_PATCH, part) + 1;
+}
+
+static void patch_list_name(int i, char *buf, size_t len)
+{
+    int bank = get(P_BANK, part);
+    patch_code(bank, i - 1, buf, len);
+    if (i > 0) {
+        size_t n = strlen(buf);
+        snprintf(buf + n, len - n, " %s", patch_name(bank, i - 1));
+    }
+}
+
+static void patch_list_pick(int i)
+{
+    param_step(P_PATCH, i - 1 - get(P_PATCH, part));
+}
+
+static const synth_list_t patch_list = {"PATCHES", 36, patch_list_current, patch_list_name, patch_list_pick, P_PATCH};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == PG_PART ? &patch_list : NULL;
+}
+
 /* ---- overview (Grid): the eight parts as a table (no header: eight rows fill the display); the effects as
  * lists, one unit per display; the routing as a picture over both displays ---- */
 
@@ -1183,6 +1212,7 @@ const synth_t synth_wsperf = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
+    .page_list = page_list,
     .column_draw = column_draw,
     .page_enabled = page_enabled,
     .overview_pages = 3,

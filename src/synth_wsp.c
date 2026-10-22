@@ -881,7 +881,7 @@ static void wave_list_pick(int i)
     param_step(F_WAVE_NUM, i - get_field(F_WAVE_NUM, cur_wave));
 }
 
-static const synth_list_t wave_list = {"WAVES", 518, wave_list_current, wave_list_name, wave_list_pick};
+static const synth_list_t wave_list = {"WAVES", 518, wave_list_current, wave_list_name, wave_list_pick, F_WAVE_NUM};
 
 static const synth_list_t *page_list(int page)
 {

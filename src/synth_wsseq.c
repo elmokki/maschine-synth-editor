@@ -400,7 +400,7 @@ static void wave_list_pick(int i)
     param_step(P_WAVE, i - get(P_WAVE));
 }
 
-static const synth_list_t wave_list = {"WAVES", WAVES, wave_list_current, wave_list_name, wave_list_pick};
+static const synth_list_t wave_list = {"WAVES", WAVES, wave_list_current, wave_list_name, wave_list_pick, P_WAVE};
 
 static const synth_list_t *page_list(int page)
 {

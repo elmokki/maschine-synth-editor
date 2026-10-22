@@ -336,6 +336,25 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* Tone list (Note Repeat) for the selected key: i01-i64 and r01-r64 */
+static int tone_list_current(void) { return value(P_TONE); }
+
+static void tone_list_name(int i, char *buf, size_t len)
+{
+    char code[8];
+    tone_code(i, code, sizeof(code));
+    snprintf(buf, len, "%s %s", code, i >= 64 ? r_names[i - 64] : "");
+}
+
+static void tone_list_pick(int i) { param_step(P_TONE, i - value(P_TONE)); }
+
+static const synth_list_t tone_list = {"TONES", 128, tone_list_current, tone_list_name, tone_list_pick, P_TONE};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == 0 && value_known(P_TONE) ? &tone_list : NULL;
+}
+
 /* ---- keys ---- */
 
 static void select_key(int k)
@@ -537,6 +556,7 @@ const synth_t synth_d110r = {
     .param_step = param_step,
     .param_toggle = param_toggle,
     .param_draw = param_draw,
+    .page_list = page_list,
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,

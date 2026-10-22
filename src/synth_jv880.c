@@ -1134,6 +1134,35 @@ static int wave_count(int group) { return jv880_wave_count(group, card_number())
 static bool wave_exists(int group, int number) { return jv880_wave_exists(group, number, card_number()); }
 static int wave_nearest(int group, int number) { return jv880_wave_nearest(group, number, card_number()); }
 
+/* Wave list (Note Repeat): the first selected tone's group; gaps in a group show without a name */
+static synth_list_t wave_list;
+
+static int wave_list_current(void) { return raw_value(P_WAVE, first_tone()); }
+
+static void wave_list_name(int i, char *buf, size_t len)
+{
+    char name[JV880_WAVE_NAME_LEN + 1] = "";
+    jv880_wave_name(raw_value(P_GROUP, first_tone()), i, card_number(), name, sizeof(name));
+    snprintf(buf, len, "%d %s", i + 1, name);
+}
+
+static void wave_list_pick(int i)
+{
+    if (wave_exists(raw_value(P_GROUP, first_tone()), i)) {
+        param_step(P_WAVE, i - wave_list_current());
+    }
+}
+
+static const synth_list_t *page_list(int page)
+{
+    if (page != PG_WAVE || !value_known(P_WAVE)) {
+        return NULL;
+    }
+    wave_list = (synth_list_t){"WAVES", wave_count(raw_value(P_GROUP, first_tone())), wave_list_current,
+                               wave_list_name, wave_list_pick, P_WAVE};
+    return &wave_list;
+}
+
 /* The wave number, and its name below when there is one; never a bar */
 static int param_draw(int p, int disp, int x, int y, int w, int h)
 {
@@ -1341,6 +1370,7 @@ const synth_t synth_jv880 = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
+    .page_list = page_list,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .revert = revert,

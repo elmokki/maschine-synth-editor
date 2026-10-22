@@ -40,7 +40,10 @@ on the Maschine's MIDI IN (see below for what needs it); editing and playing nev
 **Name lists (Note Repeat):** fills both displays with names in small text, 24 a page. With Browse off and a
 wave knob on the page (Wavestation PATCH and SEQ) it lists the waves; otherwise, or with Browse on, the library's
 patches. The main encoder moves the cursor (Shift: a page), Enter picks (loads the patch / sets the wave) and
-closes the list, Browse off closes the patch list, a Group button goes back to the editor.
+closes the list, Browse off closes the patch list, a Group button goes back to the editor. In a name list
+the knob of the value itself (WAVE, TONE, ...) moves the cursor too. Lists exist for: Wavestation PATCH / SEQ waves,
+Wavestation PERF patches, JV-880 waves (PATCH, RHYTHM) and performance-part patches, D-110 PCM waves (TONE),
+tones (PATCH, RHYTHM key) and U-110 tones.
 
 | Synth | Editor | State |
 |---|---|---|
@@ -99,7 +102,7 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 
 ### Planned
 
-- Name lists for the other synths' waveforms / sounds (the driver hook is `synth_t.page_list`), jump by letter, Wavestation SR SEQ copy / paste of steps.
+- Jump by letter in the name lists, Wavestation SR SEQ copy / paste of steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.

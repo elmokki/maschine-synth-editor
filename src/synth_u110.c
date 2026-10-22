@@ -863,6 +863,31 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* Tone list (Note Repeat) of the part's media */
+static int tone_list_current(void)
+{
+    ensure();
+    return get(P_TONE);
+}
+
+static void tone_list_name(int i, char *buf, size_t len)
+{
+    load_names(patch[byte_of(P_MEDIA, part)]);
+    snprintf(buf, len, "%d %s", i + 1, i < names_n ? tone_names[i] : "");
+}
+
+static void tone_list_pick(int i)
+{
+    param_step(P_TONE, i - get(P_TONE));
+}
+
+static const synth_list_t tone_list = {"TONES", TONES, tone_list_current, tone_list_name, tone_list_pick, P_TONE};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == PG_PART ? &tone_list : NULL;
+}
+
 /* ---- patch overview (Grid): the six parts as a table, like the manual's patch setting chart ---- */
 
 static void overview_draw(int page, int disp)
@@ -1038,6 +1063,7 @@ const synth_t synth_u110 = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
+    .page_list = page_list,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .unknown_count = unknown_count,

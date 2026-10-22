@@ -937,6 +937,25 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* PCM wave list (Note Repeat) of the selected partial's bank */
+static int pcm_list_current(void) { return raw_value(P_PCM, first_partial()); }
+
+static void pcm_list_name(int i, char *buf, size_t len)
+{
+    char name[16];
+    pcm_name(raw_value(P_BANK, first_partial()), i, name, sizeof(name));
+    snprintf(buf, len, "%d %s", i + 1, name);
+}
+
+static void pcm_list_pick(int i) { param_step(P_PCM, i - pcm_list_current()); }
+
+static const synth_list_t pcm_list = {"PCM WAVES", 128, pcm_list_current, pcm_list_name, pcm_list_pick, P_PCM};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == PG_WG_FORM && value_known(P_PCM) && !not_used(P_PCM) ? &pcm_list : NULL;
+}
+
 #define BAND_Y 14
 #define BAND_H 38
 #define EG_TEXT_CAP_Y 55
@@ -1331,6 +1350,7 @@ const synth_t synth_d110 = {
     .param_step = param_step,
     .param_toggle = param_toggle,
     .param_draw = param_draw,
+    .page_list = page_list,
     .param_reset = param_reset,
     .patch_load = patch_load,
     .patch_save = patch_save,

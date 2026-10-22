@@ -259,6 +259,7 @@ static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
 static void draw_list(void);
+static void list_move(int steps);
 static const synth_list_t *wave_list_now(void);
 static int list_cursor;  /* the wave list's cursor */
 static void draw_page(void);
@@ -2350,7 +2351,24 @@ static void editor_encoder_impl(int i, int delta)
     if (activating_until || synth_busy()) {
         return;  /* the synth isn't listening yet / is busy */
     }
-    if (mode == MODE_OVERVIEW || mode == MODE_LIST) {
+    if (mode == MODE_LIST) {
+        /* The list's own knob moves the cursor, as it would change the value */
+        const synth_list_t *wl = wave_list_now();
+        if (wl && synth->pages[page].knobs[i] == wl->param) {
+            int units = synth->param_units(wl->param);
+            if (units <= ACCEL_UNITS_MAX) {
+                delta = accelerated(delta);
+            }
+            encoder_acc[i] += delta;
+            int steps = encoder_acc[i] / units;
+            encoder_acc[i] -= steps * units;
+            if (steps) {
+                list_move(steps);
+            }
+        }
+        return;
+    }
+    if (mode == MODE_OVERVIEW) {
         return;  /* the overview only shows */
     }
     if (mode == MODE_SEQ) {

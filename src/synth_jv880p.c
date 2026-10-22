@@ -732,6 +732,29 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* Patch list (Note Repeat) for the part: INT, CARD, PRESET A and B; a rhythm part picks its source with the knob */
+static int patch_list_current(void) { return get(perf, P_PATCH, part); }
+
+static void patch_list_name(int i, char *buf, size_t len)
+{
+    char code[8];
+    scan_presets();
+    patch_code(i, false, code, sizeof(code));
+    snprintf(buf, len, "%s %s", code, patch_name(i));
+}
+
+static void patch_list_pick(int i)
+{
+    param_step(P_PATCH, i - patch_list_current());
+}
+
+static const synth_list_t patch_list = {"PATCHES", 256, patch_list_current, patch_list_name, patch_list_pick, P_PATCH};
+
+static const synth_list_t *page_list(int page)
+{
+    return page == PG_PART && value_known(P_PATCH) && !is_rhythm(part) ? &patch_list : NULL;
+}
+
 /* ---- patch overview (Grid): the eight parts as a table (no header: eight rows fill the display) ---- */
 
 static void overview_draw(int page, int disp)
@@ -963,6 +986,7 @@ const synth_t synth_jv880p = {
     .param_toggle = param_toggle,
     .param_reset = param_reset,
     .param_draw = param_draw,
+    .page_list = page_list,
     .patch_load = patch_load,
     .patch_save = patch_save,
     .revert = revert,
