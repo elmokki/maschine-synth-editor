@@ -56,7 +56,7 @@ The unit's MIDI OUT goes to the Maschine's MIDI IN only for reading back:
 |---|---|---|
 | Plugiator MiniMax, B4000; Volca FM2 | nothing | everything |
 | Roland D-110, JV-880, U-110 (all entries) | Auto (read the sound from the unit), IMPORT | editing, playing, **storing into the unit** (direct writes); the remembered patch is loaded when the unit does not answer |
-| Korg Wavestation SR PATCH, PERF, SEQ | Auto, IMPORT, **REC > TO SR** (the bank is read first so the rest of it survives) | editing and sending to the edit buffer, playing; listening to a SEQ sequence |
+| Korg Wavestation SR PATCH, PERF, SEQ | Auto, IMPORT, and **storing into the SR's memory (REC > TO SR, on all three entries)**: the SR only takes whole banks, so the bank is read first, one item replaced and the bank sent back | editing and sending to the edit buffer (PATCH, PERF), playing, listening to a SEQ sequence, saving to the library |
 | Sequencer (Scene) | note entry from a keyboard on the MIDI IN | everything else |
 
 Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), MIDI thru, LED brightness, a Volume button for the synths that have one.
