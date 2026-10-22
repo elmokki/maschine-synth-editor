@@ -59,6 +59,11 @@ The unit's MIDI OUT goes to the Maschine's MIDI IN only for reading back:
 | Korg Wavestation SR PATCH, PERF, SEQ | Auto, IMPORT, and **storing into the SR's memory (REC > TO SR, on all three entries)**: the SR only takes whole banks, so the bank is read first, one item replaced and the bank sent back | editing and sending to the edit buffer (PATCH, PERF), playing, listening to a SEQ sequence, saving to the library |
 | Sequencer (Scene) | note entry from a keyboard on the MIDI IN | everything else |
 
+In short: without the cable the Roland editors (and the Plugiator and Volca ones) only lose the knowledge of what is in
+the unit; storing into it still works. The Wavestation PATCH and PERF entries are live editors (the sound goes to the
+SR's edit buffer), but cannot store into the SR or read from it; SEQ then only edits the library, because a sequence
+has no edit buffer to hear or keep an edit in.
+
 Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), MIDI thru, LED brightness, a Volume button for the synths that have one.
 
 ## Sequencer
