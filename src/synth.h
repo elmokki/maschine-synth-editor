@@ -72,6 +72,15 @@ typedef struct {
     int8_t buttons[8];  /* button bits (buttons.h), -1 = unused */
 } synth_tip_t;
 
+/* A list of names the editor can show (Note Repeat, Browse off) and pick from, e.g. the waves */
+typedef struct {
+    const char *title;                               /* "WAVES" */
+    int count;
+    int (*current)(void);                            /* the picked item now */
+    void (*name)(int i, char *buf, size_t len);      /* "12 Name", up to 24 characters show */
+    void (*pick)(int i);                             /* make item i the value (the editor marks the patch edited) */
+} synth_list_t;
+
 typedef struct {
     const char *name;           /* shown in the UI, e.g. "Plugiator MiniMax" */
     /* Optional: the device this entry belongs to ("D-110") and the entry's
@@ -247,6 +256,8 @@ typedef struct {
      * editor, Shift + Group and the Step arrows still pick the instance (part, wave), the arrows and the
      * main encoder change the page). overview_scroll(page, steps) may take the main encoder for a long page
      * (true = taken). */
+    /* Optional: the name list for the knob on this page (NULL = none: the patch list opens instead) */
+    const synth_list_t *(*page_list)(int page);
     int overview_pages;
     void (*overview_draw)(int page, int disp);
     bool (*overview_scroll)(int page, int steps);

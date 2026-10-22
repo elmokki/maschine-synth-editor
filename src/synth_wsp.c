@@ -862,6 +862,33 @@ static bool param_step(int p, int steps)
     return true;
 }
 
+/* Wave list (Note Repeat): the wave sequences 0-31 and the ROM waves of the wave's bank */
+static int wave_list_current(void)
+{
+    ensure();
+    return get_field(F_WAVE_NUM, cur_wave);
+}
+
+static void wave_list_name(int i, char *buf, size_t len)
+{
+    char name[WS_WAVE_NAME_LEN + 1] = "";
+    wave_name(get_field(F_BANK, cur_wave), i, name, sizeof(name));
+    snprintf(buf, len, i < 32 ? "S%02d %s" : "%d %s", i < 32 ? i : i - 32 + 1, name);
+}
+
+static void wave_list_pick(int i)
+{
+    param_step(F_WAVE_NUM, i - get_field(F_WAVE_NUM, cur_wave));
+}
+
+static const synth_list_t wave_list = {"WAVES", 518, wave_list_current, wave_list_name, wave_list_pick};
+
+static const synth_list_t *page_list(int page)
+{
+    ensure();
+    return page == PG_WAVE && wave_active(cur_wave) ? &wave_list : NULL;
+}
+
 /* The vector's values back to the centre (AC = BD = 0) and the times to the init patch's: the current point,
  * or all five. Loop, repeats and the mix modulation stay. */
 static void reset_vector(bool all)
@@ -1686,6 +1713,7 @@ const synth_t synth_wsp = {
     .param_draw = param_draw,
     .page_draw = page_draw,
     .column_draw = column_draw,
+    .page_list = page_list,
     .overview_pages = 2,
     .overview_draw = overview_draw,
     .overview_scroll = overview_scroll,

@@ -13,6 +13,7 @@
 #define BTN_ARROW_LEFT_2 19
 #define BTN_ARROW_RIGHT_2 20
 #define BTN_ENTER 21
+#define BTN_NOTE_REPEAT 22 /* the name list of the library */
 #define BTN_GROUP_A 24     /* .. H = 31 */
 #define BTN_REC 37
 #define BTN_ERASE 38

@@ -37,6 +37,11 @@ LittleFS (browse, store, categories), a patch overview (Grid button), envelope/v
 tutorial for the synth's special controls (Shift + Control). Reading back from the unit needs its MIDI OUT
 on the Maschine's MIDI IN (see below for what needs it); editing and playing never do.
 
+**Name lists (Note Repeat):** fills both displays with names in small text, 24 a page. With Browse off and a
+wave knob on the page (Wavestation PATCH and SEQ) it lists the waves; otherwise, or with Browse on, the library's
+patches. The main encoder moves the cursor (Shift: a page), Enter picks (loads the patch / sets the wave) and
+closes the list, Browse off closes the patch list, a Group button goes back to the editor.
+
 | Synth | Editor | State |
 |---|---|---|
 | Plugiator MiniMax, B4000 (organ) | all parameters, factory presets | done |
@@ -94,7 +99,7 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 
 ### Planned
 
-- Wavestation SR SEQ: name search and name lists for waves, patches and library browsing, copy / paste of steps.
+- Name lists for the other synths' waveforms / sounds (the driver hook is `synth_t.page_list`), jump by letter, Wavestation SR SEQ copy / paste of steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.

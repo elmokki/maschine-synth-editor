@@ -379,6 +379,35 @@ static bool param_step(int p, int steps)
     return true;
 }
 
+/* Wave list (Note Repeat): the ROM names; a card has none */
+static int wave_list_current(void)
+{
+    ensure();
+    return get(P_WAVE);
+}
+
+static void wave_list_name(int i, char *buf, size_t len)
+{
+    char name[WS_WAVE_NAME_LEN + 1] = "";
+    if (!get(P_BANK)) {
+        ws_wave_name(3, i + 32, name, sizeof(name));
+    }
+    snprintf(buf, len, "%d %s", i + 1, name);
+}
+
+static void wave_list_pick(int i)
+{
+    param_step(P_WAVE, i - get(P_WAVE));
+}
+
+static const synth_list_t wave_list = {"WAVES", WAVES, wave_list_current, wave_list_name, wave_list_pick};
+
+static const synth_list_t *page_list(int page)
+{
+    ensure();
+    return page == PG_STEP && length() ? &wave_list : NULL;
+}
+
 static void param_toggle(int p)
 {
     ensure();
@@ -1063,6 +1092,7 @@ const synth_t synth_wsseq = {
     .read = read_seq,
     .sysex_in = sysex_in,
     .tick = tick,
+    .page_list = page_list,
     .unit_store_label = "TO SR",
     .unit_store_slots = STORE_SLOTS,
     .unit_slot_default = STORE_DEFAULT,

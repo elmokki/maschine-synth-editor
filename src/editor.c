@@ -232,7 +232,7 @@ static int64_t settings_save_at;   /* when to write the settings file, 0 = nothi
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
 typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL,
-               MODE_OVERVIEW, MODE_SEQ } ui_mode_t;
+               MODE_OVERVIEW, MODE_SEQ, MODE_LIST } ui_mode_t;
 static ui_mode_t mode;
 
 /* The pages shown: the synth's, or the sequencer's when opened from Scene (and back to it when closed) */
@@ -245,7 +245,7 @@ static ui_mode_t tips_return;
 static bool is_menu(ui_mode_t m)
 {
     return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP ||
-           m == MODE_TUTORIAL || m == MODE_OVERVIEW || m == MODE_SEQ;
+           m == MODE_TUTORIAL || m == MODE_OVERVIEW || m == MODE_SEQ || m == MODE_LIST;
 }
 
 static int store_target;  /* NONE = new patch, else index of a user patch */
@@ -258,6 +258,9 @@ static void draw_store(void);
 static void draw_setup(void);
 static void draw_synths(void);
 static void draw_categories(void);
+static void draw_list(void);
+static const synth_list_t *wave_list_now(void);
+static int list_cursor;  /* the wave list's cursor */
 static void draw_page(void);
 static void draw_patch_overview(void);
 static int po_page;  /* the patch overview's page (Grid) */
@@ -625,6 +628,7 @@ static void update_button_leds(void)
     }
     maschine_set_button_led(BTN_SCENE, sq_playing() ? scene_led : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PLAY, sq_playing() ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_NOTE_REPEAT, mode == MODE_LIST ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_GRID, !synth->overview_draw ? 0 : mode == MODE_OVERVIEW ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
@@ -633,18 +637,20 @@ static void update_button_leds(void)
                                      : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_REC, store ? LED_ON : edit ? LED_DIM : 0);
     maschine_set_button_led(BTN_ENTER, store ? LED_DIM
+                                       : mode == MODE_LIST ? (wave_list_now() ? (list_cursor != wave_list_now()->current() ? LED_ON : LED_DIM)
+                                           : patch_browse != NONE && patch_browse != patch_loaded ? LED_ON : LED_DIM)
                                        : !edit ? 0
                                        : patch_browse != NONE && patch_browse != patch_loaded ? LED_ON
                                        : LED_DIM);
     maschine_set_button_led(BTN_VOLUME, !edit || !has_volume() ? 0 : volume_held ? LED_ON : LED_DIM);
-    maschine_set_button_led(BTN_BROWSE, !edit ? 0 : encoder_browses ? LED_ON : LED_DIM);
+    maschine_set_button_led(BTN_BROWSE, !(edit || mode == MODE_LIST) ? 0 : encoder_browses ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_ERASE, mode == MODE_CATEGORY ? LED_DIM
                                        : !edit ? 0 : init_armed_until || erase_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_NAVIGATE, !edit ? 0 : overview ? LED_ON : LED_DIM);
     /* Shift does something everywhere the menus are (Shift + Control: the
      * tutorial), and more on some synths and screens */
     bool overview_on = mode == MODE_OVERVIEW;
-    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || ((edit || overview_on) && synth->shift_group);
+    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || mode == MODE_LIST || ((edit || overview_on) && synth->shift_group);
     maschine_set_button_led(BTN_SHIFT, !shift_useful ? 0 : shift_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
     uint8_t step_led = !(edit || overview_on) || !synth->instance_step ? 0
@@ -653,7 +659,7 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_STEP_RIGHT, step_led);
     static const int arrows[] = {BTN_ARROW_LEFT, BTN_ARROW_RIGHT, BTN_ARROW_LEFT_2, BTN_ARROW_RIGHT_2};
     for (size_t i = 0; i < sizeof(arrows) / sizeof(arrows[0]); i++) {
-        maschine_set_button_led(arrows[i], edit || (overview_on && synth->overview_pages > 1) ? LED_DIM : 0);
+        maschine_set_button_led(arrows[i], edit || mode == MODE_LIST || (overview_on && synth->overview_pages > 1) ? LED_DIM : 0);
     }
 
     /* Display buttons: what the screen offers */
@@ -1030,6 +1036,10 @@ static void draw_page(void)
     }
     if (mode == MODE_OVERVIEW) {
         draw_patch_overview();
+        return;
+    }
+    if (mode == MODE_LIST) {
+        draw_list();
         return;
     }
     if (mode != MODE_EDIT) {
@@ -1876,6 +1886,107 @@ static void draw_categories(void)
     }
 }
 
+/* Name list (Note Repeat): the library's patches in small text, two columns a display, filling column by
+ * column; the cursor is the browse selection (Enter loads it), a dot marks the loaded patch */
+#define LIST_ROWS 6
+#define LIST_COLS 4
+#define LIST_PER_PAGE (LIST_ROWS * LIST_COLS)
+#define LIST_COL_W 128
+#define LIST_TOP_Y (HEADER_LINE_Y + 3)
+
+/* With Browse off, a page with a name list (synth_t.page_list: the waves) lists that; else the patches */
+static const synth_list_t *wave_list_now(void)
+{
+    return !encoder_browses && synth->page_list ? synth->page_list(page) : NULL;
+}
+
+static void list_reset_cursor(void)
+{
+    const synth_list_t *wl = wave_list_now();
+    if (wl) {
+        list_cursor = wl->current();
+        patch_browse = NONE;
+    } else {
+        patch_browse = patch_loaded;  /* the cursor starts at the loaded patch */
+    }
+}
+
+static void list_frame(const char *title, int first, int last, int total)
+{
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_clear(d);
+        display_fill_rect(d, 0, HEADER_LINE_Y, DISPLAY_USABLE_WIDTH, 1, true);
+    }
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%s  %d-%d / %d", title, total ? first + 1 : 0, last, total);
+    draw_text_cap(0, 1, HEADER_CAP_Y, &font_small, buf, true);
+    draw_text_cap(1, 1, HEADER_CAP_Y, &font_small, "ENTER picks", true);
+    draw_right(1, DISPLAY_USABLE_WIDTH - 2, HEADER_CAP_Y, &font_small, "NOTE REPEAT closes", true);
+}
+
+/* One name in cell 0-23 (column by column); on = the cursor, mark = the one in use */
+static void list_cell(int cell, const char *text, bool on, bool mark)
+{
+    int col = cell / LIST_ROWS, row = cell % LIST_ROWS;
+    int disp = col / 2, x = col % 2 * LIST_COL_W, y = LIST_TOP_Y + row * font_tiny.height;
+    char buf[72];
+    fit_text(&font_tiny, text, LIST_COL_W - 8, buf, sizeof(buf));
+    if (on) {
+        display_fill_rect(disp, x, y, LIST_COL_W - 3, font_tiny.height, true);
+    } else if (mark) {
+        display_fill_rect(disp, x + 1, y + 3, 2, 2, true);
+    }
+    display_text(disp, x + 5, y, &font_tiny, buf, !on);
+}
+
+static void draw_wave_list(const synth_list_t *wl)
+{
+    int first = list_cursor / LIST_PER_PAGE * LIST_PER_PAGE;
+    int last = first + LIST_PER_PAGE < wl->count ? first + LIST_PER_PAGE : wl->count, now = wl->current();
+    list_frame(wl->title, first, last, wl->count);
+    char name[72];
+    for (int i = first; i < last; i++) {
+        wl->name(i, name, sizeof(name));
+        list_cell(i - first, name, i == list_cursor, i == now);
+    }
+}
+
+static void draw_list(void)
+{
+    const synth_list_t *wl = wave_list_now();
+    if (wl) {
+        draw_wave_list(wl);
+        return;
+    }
+    int cur = patch_browse != NONE ? patch_browse : patch_loaded;
+    int total = 0, pos = NONE;
+    for (int i = 0; i < patch_count; i++) {
+        if (patch_in_filter(i)) {
+            pos = i == cur ? total : pos;
+            total++;
+        }
+    }
+    int first = pos == NONE ? 0 : pos / LIST_PER_PAGE * LIST_PER_PAGE;
+    int last = first + LIST_PER_PAGE < total ? first + LIST_PER_PAGE : total;
+    list_frame("PATCHES", first, last, total);
+    char name[72];
+    int k = 0;
+    for (int i = 0; i < patch_count && k < last; i++) {
+        if (!patch_in_filter(i)) {
+            continue;
+        }
+        if (k++ < first) {
+            continue;
+        }
+        if (synth->patch_label) {
+            synth->patch_label(patch_names[i], name, sizeof(name));
+        } else {
+            snprintf(name, sizeof(name), "%s", patch_names[i]);
+        }
+        list_cell(k - 1 - first, name, i == cur, i == patch_loaded);
+    }
+}
+
 #define SYNTH_BOX_H 26
 #define SYNTH_STACK_STEP 4   /* how much of each card behind shows above the one in front */
 #define SYNTH_STACK_MAX 3    /* cards drawn in a stack */
@@ -2239,7 +2350,7 @@ static void editor_encoder_impl(int i, int delta)
     if (activating_until || synth_busy()) {
         return;  /* the synth isn't listening yet / is busy */
     }
-    if (mode == MODE_OVERVIEW) {
+    if (mode == MODE_OVERVIEW || mode == MODE_LIST) {
         return;  /* the overview only shows */
     }
     if (mode == MODE_SEQ) {
@@ -2414,8 +2525,26 @@ static bool is_arrow(int bit)
     return bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT || bit == BTN_ARROW_LEFT_2 || bit == BTN_ARROW_RIGHT_2;
 }
 
+/* The list cursor: a wave, or a patch (not loaded until Enter) */
+static void list_move(int steps)
+{
+    const synth_list_t *wl = wave_list_now();
+    if (wl) {
+        list_cursor = ((list_cursor + steps) % wl->count + wl->count) % wl->count;
+    } else {
+        browse_patches(steps);
+    }
+    draw_list();
+}
+
 static void arrow_action(int bit, bool fast)
 {
+    if (mode == MODE_LIST) {
+        /* top arrows: a name; the ones under the main encoder: a page */
+        int unit = bit == BTN_ARROW_LEFT || bit == BTN_ARROW_RIGHT ? 1 : LIST_PER_PAGE;
+        list_move((bit == BTN_ARROW_LEFT || bit == BTN_ARROW_LEFT_2 ? -unit : unit) * (fast && unit == 1 ? 4 : 1));
+        return;
+    }
     if (bit == BTN_ARROW_LEFT) {
         browse_patches(fast ? -4 : -1);  /* top arrows: patches (less often pressed by accident) */
     } else if (bit == BTN_ARROW_RIGHT) {
@@ -2511,6 +2640,7 @@ static void editor_button_impl(int bit, bool down)
                : bit == BTN_ALL && synth->categories ? MODE_CATEGORY
                : bit == BTN_PAD_MODE ? MODE_PADS
                : bit == BTN_GRID && synth->overview_draw ? MODE_OVERVIEW
+               : bit == BTN_NOTE_REPEAT ? MODE_LIST
                : bit == BTN_CONTROL ? MODE_SETUP
                : bit == BTN_SCENE ? MODE_SEQ
                : NONE;
@@ -2528,6 +2658,9 @@ static void editor_button_impl(int bit, bool down)
         mode = mode == (ui_mode_t)menu ? MODE_EDIT : (ui_mode_t)menu;
         if (mode == MODE_SYNTH) {
             show_active_card();
+        }
+        if (mode == MODE_LIST) {
+            list_reset_cursor();
         }
         if (mode == MODE_SEQ) {
             seq_ui_enter();
@@ -2606,6 +2739,48 @@ static void editor_button_impl(int bit, bool down)
         } else {
             action_armed_until = esp_timer_get_time() + ACTION_CONFIRM_US;
             draw_setup();
+        }
+        return;
+    }
+    if (mode == MODE_LIST) {
+        if (down && is_arrow(bit)) {
+            arrow_action(bit, false);
+            arrow_bit = bit;
+            arrow_pressed_at = esp_timer_get_time();
+            arrow_repeat_at = arrow_pressed_at + ARROW_REPEAT_DELAY_US;
+        } else if (down && bit == BTN_BROWSE) {
+            bool close = !wave_list_now();  /* the patch list: Browse off closes it */
+            encoder_browses = !encoder_browses;  /* Browse: the patch list, else the page's names */
+            if (close) {
+                patch_browse = NONE;
+                mode = MODE_EDIT;
+                memset(encoder_acc, 0, sizeof(encoder_acc));
+                for (int d = 0; d < DISPLAY_COUNT; d++) {
+                    display_clear(d);
+                }
+                draw_page();
+                update_group_leds();
+            } else {
+                list_reset_cursor();
+                draw_list();
+            }
+        } else if (down && bit == BTN_ENTER) {
+            const synth_list_t *wl = wave_list_now();
+            if (wl) {
+                wl->pick(list_cursor);
+                mark_modified();
+            } else if (patch_browse != NONE) {
+                load_patch(patch_browse);
+                patch_browse = NONE;
+            }
+            /* Picked: back to the editor */
+            mode = MODE_EDIT;
+            memset(encoder_acc, 0, sizeof(encoder_acc));
+            for (int d = 0; d < DISPLAY_COUNT; d++) {
+                display_clear(d);
+            }
+            draw_page();
+            update_group_leds();
         }
         return;
     }
@@ -2779,6 +2954,10 @@ static void editor_main_encoder_impl(int steps)
         draw_patch_overview();
         return;
     }
+    if (mode == MODE_LIST) {
+        list_move(shift_held ? steps * LIST_PER_PAGE : steps);  /* Shift: a page a detent */
+        return;
+    }
     if (mode != MODE_EDIT) {
         return;
     }
@@ -2832,7 +3011,7 @@ static void editor_tick_impl(int64_t now_us)
         }
     }
     if (arrow_bit != NONE) {
-        if (mode != MODE_EDIT) {
+        if (mode != MODE_EDIT && mode != MODE_LIST) {
             arrow_bit = NONE;
         } else if (now_us >= arrow_repeat_at) {
             bool fast = now_us - arrow_pressed_at > ARROW_FAST_AFTER_US;
@@ -2936,7 +3115,7 @@ static void editor_tick_impl(int64_t now_us)
             draw_store();
         }
     }
-    if (patch_browse != NONE && now_us > browse_deadline) {
+    if (patch_browse != NONE && now_us > browse_deadline && mode != MODE_LIST) {
         end_browse();  /* browsed away without loading */
     }
 }
