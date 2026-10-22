@@ -60,8 +60,8 @@ librarian-tested.
   in the middle of the messages froze the editor once).
 - Writing (done 2026-10-21, tested): the SR accepts the whole sequence bank as a dump (reply type `54` sent back, status 23
   + SUCCESS as for patches; Edisyn's own docs say so, it just never did it). `ws_seq_put` replaces one sequence in the dump;
-  the bank as it was goes to `/lfs/ws/backup/seq02` first. Decision: **RAM 3, sequence 31 (the last)** is the only place
-  the editor writes - sequences have no edit buffer, a write is permanent. What the unit's own sequences show (read
+  the bank as it was goes to `/lfs/ws/backup/seq02` first. Sequences have no edit buffer, a write is permanent. First the editor wrote only RAM 3 #31; since 2026-10-22 any
+  RAM 1-3 slot can be chosen (96 slots on the Store screen, starting at RAM 3 #31; the card is left out), one backup file a bank. What the unit's own sequences show (read
   from RAM 1 and 2): links fLink / bLink with 0 for none, steps 0 and 500 sentinels (f = b = 65535), 499 usable steps for
   all 32 sequences; a step's lLink = 65534 at the loop's first step, the loop's first step's number at the loop's last
   step (the last step wins if one step is both), 65535 elsewhere; sLink = the start step's number, the start byte is

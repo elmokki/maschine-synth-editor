@@ -46,7 +46,7 @@ on the Maschine's MIDI IN (see below for what needs it); editing and playing nev
 | Roland U-110 | one patch = 6 parts, read, IMPORT, store to the unit | done |
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
 | Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
-| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into **RAM 3 sequence 31 only** (see the warning below) |
+| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into any RAM 1-3 sequence (see the warning below) |
 
 ### What needs the MIDI IN cable
 
@@ -87,13 +87,14 @@ the screen; **Play** starts and stops it from anywhere, and Scene pulses while i
 
 Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns into scenes.
 
-> **Warning, Wavestation SR SEQ:** the SR has no edit buffer for wave sequences, so REC > TO SR replaces a sequence in
-> the unit for good. The editor writes to one place only, **RAM 3, sequence 31 (the last one)**, and keeps the whole
-> bank as it was in `/lfs/ws/backup/seq02` first. Use a sequence there that you do not care about.
+> **Warning, Wavestation SR SEQ:** the SR has no edit buffer for wave sequences, so REC > TO SR replaces the chosen
+> sequence in the unit for good. Any sequence of RAM 1-3 can be chosen (encoder 8 on the Store screen, which starts at
+> **RAM 3, sequence 31**, the last one; the slot's name as of the last IMPORT is shown). The whole bank is kept as it
+> was in `/lfs/ws/backup/seq00` - `seq02` first (one file a bank, overwritten by the next write to that bank).
 
 ### Planned
 
-- Wavestation SR SEQ: store slot choice (RAM 1-3, 96 slots), name search and name lists for waves, patches and library browsing, copy / paste of steps.
+- Wavestation SR SEQ: name search and name lists for waves, patches and library browsing, copy / paste of steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.

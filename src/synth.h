@@ -232,6 +232,8 @@ typedef struct {
     /* Optional: a few small words under the slot, e.g. what it holds now (up to 12 characters) */
     void (*unit_slot_info)(int slot, char *buf, size_t len);
     void (*unit_store)(int slot, const char *name);
+    /* Optional: the slot the Store screen starts at when this synth is selected (0 = the one it had) */
+    int unit_slot_default;
 
     /* Optional: a long job in the driver (a bank import, a bank written to the unit). While busy() the editor shows
      * busy_draw(display) on both displays (redrawn ~5 times a second), takes no input - buttons, encoders and

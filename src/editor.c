@@ -2155,6 +2155,9 @@ static void switch_synth(int i)
 {
     synth = synths[i];
     ESP_LOGI(TAG, "synth: %s", synth->name);
+    if (synth->unit_slot_default) {
+        unit_slot = synth->unit_slot_default;
+    }
     mkdir(STATE_DIR, 0777);
     FILE *f = fopen(ACTIVE_SYNTH_FILE, "w");
     if (f) {
@@ -3037,6 +3040,9 @@ static void editor_init_impl(void)
         }
     }
     ESP_LOGI(TAG, "synth: %s", synth->name);
+    if (synth->unit_slot_default) {
+        unit_slot = synth->unit_slot_default;
+    }
     seq_ui_init();
     load_global_settings();
     maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));

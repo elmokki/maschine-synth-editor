@@ -7,8 +7,9 @@
  * B LOOP (start, loop start, loop end, repeats + back and forth, modulation source and amount). The step is picked
  * with the STEP knob, the transport Step arrows (Shift: 8 steps).
  *
- * REC > TO SR writes the sequence into RAM 3 sequence 31 (the last), nothing else: it reads the bank, replaces that
- * sequence in the dump (ws_seq_put) and sends the bank back; the bank as it was is kept in /lfs/ws/backup/seq02.
+ * REC > TO SR writes the sequence into a RAM slot (RAM 1-3, 96 slots, starting at RAM 3 #31, the last): it reads the
+ * bank, replaces that sequence in the dump (ws_seq_put) and sends the bank back; the bank as it was is kept in
+ * /lfs/ws/backup/seq00-seq02.
  * Not written: the modulation amount, card waves.
  * Listening: a sequence that is in the SR (imported, or read with AUTO) is played by a test patch (wave A = the
  * sequence) in the edit buffer - the SR's version, not our edits. Not yet: sending edits as they are made (the SR
@@ -734,28 +735,31 @@ static bool sound_name(char *buf, size_t len)
     return true;
 }
 
-/* REC > TO SR: the one place the editor writes, RAM 3 sequence 31 (the last): the unit has no edit buffer for
- * sequences, so what goes in replaces that sequence for good - the bank as it was is kept in /lfs/ws/backup/seq02 */
-#define STORE_BANK 2  /* RAM 3 */
-#define STORE_NUM 31
+/* REC > TO SR: any sequence of RAM 1-3 (96 slots, encoder 8), starting at RAM 3 #31 (the last): the unit has no edit
+ * buffer for sequences, so what goes in replaces that sequence for good - the bank as it was is kept in
+ * /lfs/ws/backup/seq00 - seq02 (one a bank, the latest write). The card is left out: its waves and names are not known. */
+#define STORE_BANKS 3  /* RAM 1-3 */
+#define STORE_SLOTS (STORE_BANKS * 32)
+#define STORE_DEFAULT (STORE_SLOTS - 1)
 static bool storing;
+static int store_bank, store_num;
 static void set_name(const char *name);
 
 static void unit_slot_name(int slot, char *buf, size_t len)
 {
-    (void)slot;
-    snprintf(buf, len, "%s:%02d", ws_bank_tags[STORE_BANK], STORE_NUM);
+    slot = clampi(slot, 0, STORE_SLOTS - 1);
+    snprintf(buf, len, "%s:%02d", ws_bank_tags[slot / 32], slot % 32);
 }
 
+/* What the slot held at the last IMPORT: the name that is about to go */
 static void unit_slot_info(int slot, char *buf, size_t len)
 {
-    (void)slot;
-    snprintf(buf, len, "%.12s", ws_banks_lib_name(&ws_kind_seq, STORE_BANK, STORE_NUM));
+    slot = clampi(slot, 0, STORE_SLOTS - 1);
+    snprintf(buf, len, "%.12s", ws_banks_lib_name(&ws_kind_seq, slot / 32, slot % 32));
 }
 
 static void unit_store(int slot, const char *name)
 {
-    (void)slot;
     if (ws_banks_busy()) {
         return;
     }
@@ -764,9 +768,12 @@ static void unit_store(int slot, const char *name)
         synth_notice("NOTHING TO STORE: NO STEPS");
         return;
     }
+    slot = clampi(slot, 0, STORE_SLOTS - 1);
+    store_bank = slot / 32;
+    store_num = slot % 32;
     set_name(name);
     storing = true;
-    ws_banks_store(&ws_kind_seq, STORE_BANK, STORE_NUM, seq, channel());
+    ws_banks_store(&ws_kind_seq, store_bank, store_num, seq, channel());
 }
 
 static void tick(int64_t now)
@@ -778,7 +785,7 @@ static void tick(int64_t now)
     if (storing) {
         storing = false;
         if (ws_banks_last_ok()) {
-            audition(STORE_BANK, STORE_NUM);  /* hear what went in */
+            audition(store_bank, store_num);  /* hear what went in */
         }
     }
     audition_tick(now);
@@ -1057,7 +1064,8 @@ const synth_t synth_wsseq = {
     .sysex_in = sysex_in,
     .tick = tick,
     .unit_store_label = "TO SR",
-    .unit_store_slots = 1,
+    .unit_store_slots = STORE_SLOTS,
+    .unit_slot_default = STORE_DEFAULT,
     .unit_slot_name = unit_slot_name,
     .unit_slot_info = unit_slot_info,
     .unit_store = unit_store,
