@@ -54,7 +54,7 @@ tones (PATCH, RHYTHM key) and U-110 tones.
 | Roland U-110 | one patch = 6 parts, read, IMPORT, store to the unit | done |
 | Korg Wavestation SR | PATCH (4 waves, vector mix, SysEx parameters); IMPORT of RAM/ROM/card banks and store into RAM banks (bank dumps) | done |
 | Korg Wavestation SR | PERF (8 parts: patch, level, bus, ranges, tuning, play settings; effects: routing, mixes, both effect units with all 55 types); IMPORT, read, store | done |
-| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into any RAM 1-3 sequence (see the warning below) |
+| Korg Wavestation SR | SEQ (wave sequences: up to 255 steps with wave, level, duration, crossfade, tuning; start, loop; copy / paste of steps, length, reverse and whole-sequence changes in group C; modulation amount is not written); IMPORT of the banks' sequences, read, Grid overview, listening | done: REC > TO SR writes into any RAM 1-3 sequence (see the warning below) |
 
 ### What needs the MIDI IN cable
 
@@ -102,7 +102,6 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 
 ### Planned
 
-- Jump by letter in the name lists, Wavestation SR SEQ copy / paste of steps.
 - Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.

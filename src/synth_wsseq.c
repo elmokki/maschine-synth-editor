@@ -13,7 +13,8 @@
  * Not written: the modulation amount, card waves.
  * Listening: a sequence that is in the SR (imported, or read with AUTO) is played by a test patch (wave A = the
  * sequence) in the edit buffer - the SR's version, not our edits. Not yet: sending edits as they are made (the SR
- * has no edit buffer for sequences), group C. Working now: IMPORT of the banks'
+ * has no edit buffer for sequences). Group C EDIT: length, copy / paste of a step, reverse, clear, whole-sequence
+ * transpose / level / duration. Working now: IMPORT of the banks'
  * sequences into the library (/lfs/wsseq/NNN name, NNN = bank * 32 + n + 1; the file layout is in ws_seq.h), AUTO
  * (reads the READ BANK / READ SEQ one back from the unit), editing, saving to the library.
  */
@@ -50,6 +51,7 @@ static const char *TAG = "wsseq";
 enum {
     P_STEP, P_BANK, P_WAVE, P_LEVEL, P_DUR, P_XFADE, P_SEMI, P_FINE, P_INSERT, P_DELETE,
     P_START, P_LSTART, P_LEND, P_REPEATS, P_BACKFORTH, P_MODSRC, P_MODAMT,
+    P_LENGTH, P_TRANS_ALL, P_LEVEL_ALL, P_DUR_ALL, P_COPY, P_PASTE, P_PASTE_INS, P_CLEAR, P_REVERSE,
     P_COUNT
 };
 
@@ -59,12 +61,14 @@ static const char *const source_names[13] = {"KBD LIN", "KBD CTR", "VEL LIN", "V
 
 #define _ SYNTH_NONE
 #define NO_SW {_, _, _, _, _, _, _, _}
-enum { PG_STEP, PG_LOOP };
+enum { PG_STEP, PG_LOOP, PG_EDIT };
 static const synth_page_t pages[] = {
     [PG_STEP] = {0, "STEP", {P_STEP, P_BANK, P_WAVE, P_LEVEL, P_DUR, P_XFADE, P_SEMI, P_FINE},
                  {P_INSERT, P_DELETE, _, _, _, _, _, _}},
     [PG_LOOP] = {1, "LOOP", {P_START, P_LSTART, P_LEND, P_REPEATS, P_MODSRC, P_MODAMT, _, _},
                  {_, _, _, P_BACKFORTH, _, _, _, _}},
+    [PG_EDIT] = {2, "EDIT", {P_LENGTH, P_TRANS_ALL, P_LEVEL_ALL, P_DUR_ALL, _, _, _, _},
+                 {P_REVERSE, _, _, _, P_COPY, P_PASTE, P_PASTE_INS, P_CLEAR}},
 };
 #undef _
 
@@ -98,6 +102,20 @@ static void setting_note(int setting, char *buf, size_t len)
 static uint8_t seq[WSSEQ_MAX_LEN], init_seq[WSSEQ_MAX_LEN], as_read[WSSEQ_MAX_LEN];
 static bool loaded, from_unit, as_read_ok;
 static int cur;  /* the step shown, 0-based */
+
+/* Group C: the clipboard holds one step; the ALL knobs move every step at once and show how far they have gone
+ * (the duration one in per cent, approximately); CLEAR asks twice */
+static uint8_t clip[WSSEQ_STEP_LEN];
+static bool clip_set;
+static int tally[3];  /* TRANSPOSE ALL, LEVEL ALL, DURATION ALL since the sequence was loaded */
+static int64_t clear_armed_until;
+#define CLEAR_CONFIRM_US 3000000
+
+static void tally_reset(void)
+{
+    memset(tally, 0, sizeof(tally));
+    clear_armed_until = 0;
+}
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static int channel(void) { return synth_setting(SETTING_CHANNEL) & 0x0F; }
@@ -158,6 +176,10 @@ static int get(int p)
     case P_BACKFORTH: return seq[OFF_BACKFORTH];
     case P_MODSRC: return seq[OFF_MODSRC];
     case P_MODAMT: return (int8_t)seq[OFF_MODAMT];
+    case P_LENGTH: return length();
+    case P_TRANS_ALL: return tally[0];
+    case P_LEVEL_ALL: return tally[1];
+    case P_DUR_ALL: return tally[2];
     default: return 0;
     }
 }
@@ -181,6 +203,7 @@ static bool range_of(int p, int *lo, int *hi)
     case P_BACKFORTH: *lo = 0; *hi = 1; return true;
     case P_MODSRC: *lo = 0; *hi = 12; return true;
     case P_MODAMT: *lo = -127; *hi = 127; return true;
+    case P_LENGTH: *lo = 1; *hi = WSSEQ_MAX_STEPS; return true;
     default: return false;
     }
 }
@@ -273,6 +296,102 @@ static bool delete_step(void)
     return true;
 }
 
+/* ---- group C: clipboard, length, whole-sequence changes ---- */
+
+static void clamp_marks(void)
+{
+    int len = length() ? length() : 1;
+    seq[OFF_START] = clampi(seq[OFF_START], 1, len);
+    seq[OFF_LEND] = clampi(seq[OFF_LEND], 1, len);
+    seq[OFF_LSTART] = clampi(seq[OFF_LSTART], 1, seq[OFF_LEND]);
+}
+
+/* Longer: copies of the last step; shorter: cut from the end */
+static void set_length(int n)
+{
+    int len = length();
+    for (; len < n; len++) {
+        memcpy(step_at(len), len ? step_at(len - 1) : init_seq + WSSEQ_HEADER, WSSEQ_STEP_LEN);
+    }
+    seq[OFF_LEN] = n;
+    clamp_marks();
+    fix_cur();
+}
+
+static void reverse_steps(void)
+{
+    int len = length();
+    uint8_t tmp[WSSEQ_STEP_LEN];
+    for (int i = 0; i < len / 2; i++) {
+        memcpy(tmp, step_at(i), WSSEQ_STEP_LEN);
+        memcpy(step_at(i), step_at(len - 1 - i), WSSEQ_STEP_LEN);
+        memcpy(step_at(len - 1 - i), tmp, WSSEQ_STEP_LEN);
+    }
+    int start = seq[OFF_START], ls = seq[OFF_LSTART], le = seq[OFF_LEND];
+    seq[OFF_START] = len + 1 - start;
+    seq[OFF_LSTART] = len + 1 - le;
+    seq[OFF_LEND] = len + 1 - ls;
+    cur = len - 1 - cur;
+}
+
+static bool paste_step(bool insert)
+{
+    int len = length();
+    if (!clip_set) {
+        synth_notice("NOTHING COPIED YET");
+        return false;
+    }
+    if (len == 0) {
+        memcpy(step_at(0), clip, WSSEQ_STEP_LEN);
+        seq[OFF_LEN] = 1;
+        seq[OFF_START] = seq[OFF_LSTART] = seq[OFF_LEND] = 1;
+        cur = 0;
+        return true;
+    }
+    if (!insert) {
+        memcpy(step_at(cur), clip, WSSEQ_STEP_LEN);
+        return true;
+    }
+    if (len >= WSSEQ_MAX_STEPS) {
+        synth_notice("SEQUENCE FULL (255 STEPS)");
+        return false;
+    }
+    memmove(step_at(cur + 2), step_at(cur + 1), (len - cur - 1) * WSSEQ_STEP_LEN);
+    memcpy(step_at(cur + 1), clip, WSSEQ_STEP_LEN);
+    seq[OFF_LEN] = len + 1;
+    shift_marks(cur + 1, 1);
+    cur++;
+    return true;
+}
+
+/* TRANSPOSE ALL, LEVEL ALL, DURATION ALL: every step by steps detents; false if nothing moved */
+static bool whole_step(int p, int steps)
+{
+    bool changed = false;
+    for (int i = 0; i < length(); i++) {
+        uint8_t *st = step_at(i);
+        if (p == P_TRANS_ALL) {
+            int v = clampi((int8_t)st[2] + steps, -24, 24);
+            changed |= v != (int8_t)st[2];
+            st[2] = (uint8_t)v;
+        } else if (p == P_LEVEL_ALL) {
+            int v = clampi(st[8] + steps, 0, 99);
+            changed |= v != st[8];
+            st[8] = v;
+        } else {
+            int d = dur_of(st), v = d * (100 + 5 * steps) / 100;
+            v = clampi(v == d ? d + (steps > 0 ? 1 : -1) : v, 1, 500);
+            changed |= v != d;
+            st[6] = v >> 8;
+            st[7] = v;
+        }
+    }
+    if (changed) {
+        tally[p == P_TRANS_ALL ? 0 : p == P_LEVEL_ALL ? 1 : 2] += p == P_DUR_ALL ? 5 * steps : steps;
+    }
+    return changed;
+}
+
 /* ---- names ---- */
 
 static const char *param_name(int p)
@@ -282,6 +401,9 @@ static const char *param_name(int p)
         [P_XFADE] = "CROSSFADE", [P_SEMI] = "SEMITONE", [P_FINE] = "FINE", [P_INSERT] = "INSERT",
         [P_DELETE] = "DELETE", [P_START] = "START", [P_LSTART] = "LOOP START", [P_LEND] = "LOOP END",
         [P_REPEATS] = "REPEATS", [P_BACKFORTH] = "BACK+FORTH", [P_MODSRC] = "MOD SOURCE", [P_MODAMT] = "MOD AMOUNT",
+        [P_LENGTH] = "LENGTH", [P_TRANS_ALL] = "TRANSP ALL", [P_LEVEL_ALL] = "LEVEL ALL", [P_DUR_ALL] = "DUR ALL",
+        [P_COPY] = "COPY", [P_PASTE] = "PASTE", [P_PASTE_INS] = "PASTE INS", [P_CLEAR] = "CLEAR",
+        [P_REVERSE] = "REVERSE",
     };
     return p >= 0 && p < P_COUNT ? names[p] : "";
 }
@@ -321,8 +443,20 @@ static void param_format(int p, char *buf, size_t len)
     case P_MODSRC:
         snprintf(buf, len, "%s", source_names[clampi(v, 0, 12)]);
         break;
+    case P_TRANS_ALL:
+    case P_LEVEL_ALL:
+        snprintf(buf, len, v ? "%+d" : "0", v);
+        break;
+    case P_DUR_ALL:
+        snprintf(buf, len, v ? "%+d%%" : "0", v);
+        break;
     case P_INSERT:
     case P_DELETE:
+    case P_COPY:
+    case P_PASTE:
+    case P_PASTE_INS:
+    case P_CLEAR:
+    case P_REVERSE:
         buf[0] = 0;
         break;
     default:
@@ -335,6 +469,9 @@ static int param_bar(int p)
 {
     ensure();
     int lo, hi;
+    if (p >= P_TRANS_ALL) {
+        return -1;
+    }
     if (p == P_BANK || p == P_INSERT || p == P_DELETE || p == P_BACKFORTH || p == P_MODSRC || !range_of(p, &lo, &hi) ||
         hi == lo) {
         return -1;
@@ -345,6 +482,12 @@ static int param_bar(int p)
 static bool param_on(int p)
 {
     ensure();
+    if (p == P_COPY || p == P_PASTE || p == P_PASTE_INS) {
+        return clip_set;  /* filled boxes: something is on the clipboard */
+    }
+    if (p == P_CLEAR) {
+        return clear_armed_until != 0;
+    }
     return p == P_BACKFORTH && get(p);
 }
 
@@ -354,6 +497,8 @@ static int param_units(int p)
     case P_STEP: return 30;  /* a step a detent; the long sequences by turning fast (accelerated) */
     case P_WAVE: return 6;   /* 486 values: fast turns accelerate */
     case P_DUR: case P_XFADE: return 5;
+    case P_TRANS_ALL: case P_LEVEL_ALL: case P_DUR_ALL: return 20;
+    case P_LENGTH: return 15;
     case P_BANK: case P_BACKFORTH: return 80;
     case P_MODSRC: return 25;
     default: return 10;
@@ -363,6 +508,19 @@ static int param_units(int p)
 static bool param_step(int p, int steps)
 {
     ensure();
+    if (p == P_TRANS_ALL || p == P_LEVEL_ALL || p == P_DUR_ALL) {
+        from_unit = false;
+        return whole_step(p, steps);
+    }
+    if (p == P_LENGTH) {
+        int n = clampi(length() + steps, 1, WSSEQ_MAX_STEPS);
+        if (n == length()) {
+            return false;
+        }
+        from_unit = false;
+        set_length(n);
+        return true;
+    }
     int lo, hi;
     if (!range_of(p, &lo, &hi)) {
         return false;
@@ -422,6 +580,42 @@ static void param_toggle(int p)
     } else if (p == P_BACKFORTH) {
         put(p, !get(p));
         from_unit = false;
+    } else if (p == P_COPY) {
+        if (length()) {
+            memcpy(clip, step_at(cur), WSSEQ_STEP_LEN);
+            clip_set = true;
+            char msg[40];
+            snprintf(msg, sizeof(msg), "COPIED STEP %d", cur + 1);
+            synth_notice(msg);
+            synth_redraw();
+        }
+    } else if (p == P_PASTE || p == P_PASTE_INS) {
+        if (paste_step(p == P_PASTE_INS)) {
+            from_unit = false;
+        }
+        synth_redraw();
+    } else if (p == P_REVERSE) {
+        if (length() > 1) {
+            reverse_steps();
+            from_unit = false;
+            synth_redraw();
+        }
+    } else if (p == P_CLEAR) {
+        int64_t now = esp_timer_get_time();
+        if (clear_armed_until && now < clear_armed_until) {
+            clear_armed_until = 0;
+            memcpy(step_at(0), init_seq + WSSEQ_HEADER, WSSEQ_STEP_LEN);
+            seq[OFF_LEN] = 1;
+            seq[OFF_START] = seq[OFF_LSTART] = seq[OFF_LEND] = 1;
+            cur = 0;
+            tally_reset();
+            from_unit = false;
+            synth_notice("SEQUENCE CLEARED");
+        } else {
+            clear_armed_until = now + CLEAR_CONFIRM_US;
+            synth_notice("PRESS CLEAR AGAIN");
+        }
+        synth_redraw();
     }
 }
 
@@ -461,6 +655,34 @@ static int param_draw(int p, int disp, int x, int y, int w, int h)
     return SYNTH_DRAW_FULL;
 }
 
+/* ---- group C's clipboard panel (the right display, under the buttons) ---- */
+
+static void page_draw(int pg, int disp)
+{
+    if (pg != PG_EDIT || disp != 1) {
+        return;
+    }
+    display_fill_rect(1, 0, 29, 255, 35, false);
+    display_rect(1, 2, 30, 250, 33, true);
+    char line[48], name[WS_WAVE_NAME_LEN + 1] = "";
+    if (!clip_set) {
+        display_text(1, 6, 33, &font_tiny, "CLIPBOARD  empty", true);
+        display_text(1, 6, 43, &font_tiny, "COPY takes the step shown.", true);
+        return;
+    }
+    int v = wave_of(clip);
+    if (!(clip[9] & 1)) {
+        ws_wave_name(3, v + 32, name, sizeof(name));
+    }
+    display_text(1, 6, 33, &font_tiny, "CLIPBOARD  one step", true);
+    snprintf(line, sizeof(line), "WAVE %d %s%s", v + 1, name, clip[9] & 1 ? " (CARD)" : "");
+    display_text(1, 6, 41, &font_tiny, line, true);
+    snprintf(line, sizeof(line), "LEVEL %d  DUR %d  XFADE %d", clip[8], dur_of(clip), xfade_of(clip));
+    display_text(1, 6, 49, &font_tiny, line, true);
+    snprintf(line, sizeof(line), "SEMI %+d  FINE %+d", (int8_t)clip[2], (int8_t)clip[3]);
+    display_text(1, 6, 57, &font_tiny, line, true);
+}
+
 /* ---- the step's picture and the Step arrows ---- */
 
 static void header_tag(char *buf, size_t len)
@@ -469,6 +691,10 @@ static void header_tag(char *buf, size_t len)
         snprintf(buf, len, "STEP %d/%d", cur + 1, length());
     } else {
         snprintf(buf, len, "NO STEPS");
+    }
+    if (clip_set) {
+        size_t n = strlen(buf);
+        snprintf(buf + n, len - n, "  CLIP %d", wave_of(clip) + 1);
     }
 }
 
@@ -736,6 +962,7 @@ static void sysex_in(const uint8_t *d, size_t len)
     memcpy(seq, raw, n);
     memcpy(as_read, seq, n);
     cur = 0;
+    tally_reset();
     from_unit = as_read_ok = true;
     audition(clampi(synth_setting(SETTING_BANK), 0, 11), clampi(synth_setting(SETTING_NUM), 0, 31));
     synth_sound_replaced();
@@ -748,6 +975,7 @@ static bool revert(void)
         return false;
     }
     memcpy(seq, as_read, sizeof(seq));
+    tally_reset();
     fix_cur();
     return true;
 }
@@ -807,6 +1035,10 @@ static void unit_store(int slot, const char *name)
 
 static void tick(int64_t now)
 {
+    if (clear_armed_until && now > clear_armed_until) {
+        clear_armed_until = 0;
+        synth_redraw();  /* the CLEAR box lets go */
+    }
     if (ws_banks_busy()) {
         ws_banks_tick(now);
         return;
@@ -964,6 +1196,7 @@ static bool patch_load(const char *path)
         if (n >= 8 && !strcmp(path + n - 8, "000 Init")) {  /* the default patch needs no file */
             memcpy(seq, init_seq, sizeof(seq));
             cur = 0;
+            tally_reset();
             from_unit = as_read_ok = false;
             aud_bank = -1;
             return true;
@@ -979,6 +1212,7 @@ static bool patch_load(const char *path)
     memset(seq, 0, sizeof(seq));
     memcpy(seq, buf, got);
     cur = 0;
+    tally_reset();
     from_unit = as_read_ok = false;
     /* an imported one (NNN = bank * 32 + n + 1) is in the SR: listen to it; our own are not */
     const char *base = strrchr(path, '/');
@@ -1051,6 +1285,10 @@ static const synth_tip_t tips[] = {
                        "(SHIFT: 8 steps). Display buttons: INSERT", "copies the step after itself, DELETE removes", "it. B: start, loop, repeats, modulation.",
                        "GRID: the steps, and a picture of them."},
      {BTN_STEP_LEFT, BTN_STEP_RIGHT, BTN_SHIFT, BTN_GROUP_A, BTN_GROUP_A + 1, -1, -1, -1}},
+    {"EDIT (C)", {"COPY takes the step shown, PASTE replaces", "the picked step with it, PASTE INS adds it", "after. The clipboard shows what is held and",
+                  "keeps it over other sequences. LENGTH cuts", "or repeats the last step. TRANSP / LEVEL /", "DUR ALL move every step (DUR in per cent).",
+                  "REVERSE flips the order; CLEAR asks twice."},
+     {BTN_GROUP_A + 2, -1, -1, -1, -1, -1, -1, -1}},
     {"FROM THE UNIT", {"CONTROL > IMPORT (twice) reads the banks'", "sequences into the library as 1-384", "(bank x 32 + n + 1; ~5 s a bank).",
                        "AUTO reads the READ BANK / READ SEQ one.", "The SR must send on its MIDI OUT to the", "Maschine's MIDI IN. A sequence in the SR is", "heard as the SR has it, not as edited."},
      {BTN_CONTROL, BTN_AUTO, -1, -1, -1, -1, -1, -1}},
@@ -1093,6 +1331,7 @@ const synth_t synth_wsseq = {
     .sysex_in = sysex_in,
     .tick = tick,
     .page_list = page_list,
+    .page_draw = page_draw,
     .unit_store_label = "TO SR",
     .unit_store_slots = STORE_SLOTS,
     .unit_slot_default = STORE_DEFAULT,
