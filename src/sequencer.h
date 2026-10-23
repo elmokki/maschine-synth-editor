@@ -51,4 +51,9 @@ void sq_restart(void);       /* to the first step */
 void sq_set_bpm(int bpm);
 /* The step each track is playing next/now, tracks of different lengths loop on their own (-1 = stopped) */
 int sq_position(int track);
+/* Live recording: where in its step the clock is (0-23, a step is SQ_STEP_TICKS), the ticks played since Play,
+ * and "the engine plays this step at its next turn, but it was just recorded: don't" (the live note is the sound) */
+int sq_step_phase(void);
+uint32_t sq_tick_count(void);
+void sq_skip_next(int track, int step);
 void sq_clock_wake(void);  /* the arpeggiator has something to play: starts the clock if it is stopped */

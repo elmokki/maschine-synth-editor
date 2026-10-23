@@ -19,6 +19,7 @@ void seq_ui_encoder(int i, int delta);
 void seq_ui_main_encoder(int steps);       /* tempo */
 void seq_ui_tick(int64_t now_us);          /* playhead, redraws */
 void seq_ui_midi_note(int channel, int note, int velocity);  /* DIN IN, velocity 0 = off */
+void seq_ui_shift(bool down);              /* Shift + Rec: live recording */
 void seq_ui_group_leds(void);
 void seq_ui_button_leds(uint8_t control_led);  /* every button once; control_led = Control's value while Shift is held (0 = as usual) */
 const synth_tip_t *seq_ui_tips(int *count);    /* the tutorial (Shift + Control) */

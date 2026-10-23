@@ -477,6 +477,7 @@ static int pad_note(int pad) { return scale_note(pad_index(pad)); }
 int synth_scale_note(int note, int steps) { return scale_step(note, steps); }
 
 int synth_pad_root(void) { return lowest_pad_note(); }
+int synth_pad_note(int pad) { return pad_note(pad); }
 
 /* The pad's chord: thirds up the scale (chromatic: major, dominant 7th) */
 static int pad_chord_notes(int pad, bool seventh, uint8_t out[4])
@@ -2763,6 +2764,7 @@ static void editor_button_impl(int bit, bool down)
     }
     if (bit == BTN_SHIFT) {
         shift_held = down;
+        seq_ui_shift(down);
         update_group_leds();
         return;
     }
@@ -3489,6 +3491,8 @@ static void editor_connected_impl(void)
 static void pad_pressure_released(int pad, int channel, const uint8_t *notes, int count);
 
 /* Pads play notes on the synth's channel, or type in the name screen */
+int synth_pad_velocity(int raw) { return pad_velocity(raw); }
+
 static void editor_pad_impl(int pad, bool down, int raw)
 {
     if (synth_busy()) {

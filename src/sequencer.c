@@ -23,6 +23,8 @@ static volatile int ticks_pending;   /* timer ticks the task has yet to play */
 static uint32_t free_tick;           /* the arpeggiator's own clock while the sequencer is stopped */
 static volatile int cur[SQ_TRACKS];
 static uint32_t tick;
+static uint8_t skip_bits[SQ_TRACKS][SQ_STEPS / 8];   /* steps to leave out once: they were just played live */
+static bool skipping[SQ_TRACKS];
 /* Sounding notes, to be ended by their gate (the channel is kept: it may be edited meanwhile) */
 static uint8_t on_note[SQ_TRACKS][SQ_POLY], on_chan[SQ_TRACKS][SQ_POLY];
 static uint32_t off_tick[SQ_TRACKS][SQ_POLY];
@@ -153,9 +155,11 @@ static void do_tick(void)
         int idx = stepno % len;
         if (!phase) {
             cur[tr] = idx;
+            uint8_t bit = 1 << (idx & 7);
+            skipping[tr] = __atomic_fetch_and(&skip_bits[tr][idx >> 3], ~bit, __ATOMIC_RELAXED) & bit;
         }
         const sq_step_t *s = &trk->steps[idx];
-        if (!s->vel || trk->mute) {
+        if (!s->vel || trk->mute || skipping[tr]) {
             continue;
         }
         const sq_step_t *next = &trk->steps[(idx + 1) % len];
@@ -305,6 +309,23 @@ void sq_restart(void)
     }
     restart_req = true;
     xTaskNotifyGive(task);
+}
+
+int sq_step_phase(void)
+{
+    return tick ? (tick - 1) % SQ_STEP_TICKS : 0;
+}
+
+uint32_t sq_tick_count(void)
+{
+    return tick;
+}
+
+void sq_skip_next(int track, int step)
+{
+    if (track >= 0 && track < SQ_TRACKS && step >= 0 && step < SQ_STEPS) {
+        __atomic_fetch_or(&skip_bits[track][step >> 3], 1 << (step & 7), __ATOMIC_RELAXED);
+    }
 }
 
 int sq_position(int track)

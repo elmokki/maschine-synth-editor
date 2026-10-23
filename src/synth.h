@@ -298,6 +298,9 @@ void synth_state_received(void);
 int synth_scale_note(int note, int steps);
 /* The lowest pad's note (the Pad Mode screen's key and scale): the sequencer's default note */
 int synth_pad_root(void);
+/* Provided by the editor: the note of a pad, and the velocity of a hit of that pressure (Pad Mode settings) */
+int synth_pad_note(int pad);
+int synth_pad_velocity(int raw);
 
 extern const synth_t synth_minimax;
 extern const synth_t synth_b4000;
