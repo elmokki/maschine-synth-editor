@@ -47,6 +47,10 @@ void ws_banks_import(const ws_kind_t *kind, uint16_t mask, int channel);
 /* Puts raw (item_len bytes) into bank / num of the unit: reads the bank, replaces, sends it back */
 void ws_banks_store(const ws_kind_t *kind, int bank, int num, const uint8_t *raw, int channel);
 bool ws_banks_busy(void);
+/* A single read from the unit (Auto): the loading screen stays until ws_banks_read_end() (the reply came; it stays
+ * a moment so it does not flash) or 4 s have passed. `what` = "PATCH", "PERFORMANCE", "SEQUENCE" */
+void ws_banks_read_begin(const char *what);
+void ws_banks_read_end(void);
 /* The last job ended with the unit taking the bank (its status 21 / 23) */
 bool ws_banks_last_ok(void);
 void ws_banks_tick(int64_t now);

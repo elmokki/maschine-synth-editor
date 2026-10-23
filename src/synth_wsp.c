@@ -1508,7 +1508,9 @@ static void read_patch(void)
     int bank = synth_setting(SETTING_BANK), num = synth_setting(SETTING_PATCH);
     uint8_t msg[8] = {0xF0, 0x42, 0x30 + channel(), 0x28, 0x10, to_ws_bank[bank < 0 ? 0 : bank > 11 ? 11 : bank],
                       num, 0xF7};
-    midi_send_sysex(msg, sizeof(msg));
+    if (midi_send_sysex(msg, sizeof(msg))) {
+        ws_banks_read_begin("PATCH");
+    }
 }
 
 static void sysex_in(const uint8_t *d, size_t len)
@@ -1530,6 +1532,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         return;
     }
     ensure();
+    ws_banks_read_end();
     for (int i = 0; i < PATCH_LEN; i++) {
         patch[i] = d[7 + 2 * i] | d[8 + 2 * i] << 4;
     }

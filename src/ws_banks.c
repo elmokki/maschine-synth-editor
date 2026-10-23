@@ -234,7 +234,31 @@ static const char *prepare_store(void)
     return NULL;
 }
 
-bool ws_banks_busy(void) { return job_stage != JOB_NONE; }
+#define READ_TIMEOUT_US 4000000
+#define READ_MIN_US 600000
+static int64_t read_t0, read_until;
+static const char *read_what = "";
+static bool read_replied;
+
+bool ws_banks_busy(void) { return job_stage != JOB_NONE || (read_until && esp_timer_get_time() < read_until); }
+
+void ws_banks_read_begin(const char *what)
+{
+    read_what = what;
+    read_replied = false;
+    read_t0 = esp_timer_get_time();
+    read_until = read_t0 + READ_TIMEOUT_US;
+}
+
+void ws_banks_read_end(void)
+{
+    if (!read_until) {
+        return;
+    }
+    int64_t now = esp_timer_get_time(), min = read_t0 + READ_MIN_US;
+    read_replied = true;
+    read_until = now > min ? now : min;
+}
 bool ws_banks_last_ok(void) { return last_ok; }
 
 void ws_banks_import(const ws_kind_t *k, uint16_t mask, int channel)
@@ -394,6 +418,22 @@ void ws_banks_draw(int disp)
 {
     char buf[64];
     int64_t now = esp_timer_get_time();
+    if (job_stage == JOB_NONE && read_until) {
+        float frac = read_replied ? 1.0f : (float)(now - read_t0) / READ_TIMEOUT_US;
+        frac = frac > 0.95f && !read_replied ? 0.95f : frac > 1.0f ? 1.0f : frac;
+        if (disp == 0) {
+            display_text(0, 1, 0, &font_small, "READING FROM THE SR", true);
+            display_fill_rect(0, 0, 11, 255, 1, true);
+            display_text(0, 4, 18, &font_medium, read_what, true);
+            display_text(0, 4, 42, &font_small, read_replied ? "got it" : "waiting for the answer", true);
+        } else {
+            display_text(1, 1, 0, &font_small, "do not touch the SR or the knobs", true);
+            display_fill_rect(1, 0, 11, 255, 1, true);
+            display_rect(1, 6, 18, 242, 18, true);
+            display_fill_rect(1, 8, 20, (int)(238 * frac), 14, true);
+        }
+        return;
+    }
     int banks_done = import_total - __builtin_popcount(import_mask & 0x0FFF);
     float frac;  /* of the bank */
     const char *status;

@@ -1019,7 +1019,9 @@ static void read_perf(void)
     int b = clampi(synth_setting(SETTING_BANK), 0, 11);
     uint8_t msg[8] = {0xF0, 0x42, 0x30 + channel(), 0x28, 0x19, ws_to_ws_bank[b],
                       (uint8_t)clampi(synth_setting(SETTING_NUM), 0, 49), 0xF7};
-    midi_send_sysex(msg, sizeof(msg));
+    if (midi_send_sysex(msg, sizeof(msg))) {
+        ws_banks_read_begin("PERFORMANCE");
+    }
 }
 
 static void sysex_in(const uint8_t *d, size_t len)
@@ -1041,6 +1043,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         return;
     }
     ensure();
+    ws_banks_read_end();
     for (int i = 0; i < PERF_LEN; i++) {
         perf[i] = d[7 + 2 * i] | d[8 + 2 * i] << 4;
     }

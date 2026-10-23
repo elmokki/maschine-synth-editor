@@ -945,7 +945,9 @@ static void read_seq(void)
     rd_num = aud_bank >= 0 ? aud_num : clampi(synth_setting(SETTING_NUM), 0, 31);
     int b = rd_bank;
     uint8_t msg[7] = {0xF0, 0x42, 0x30 + channel(), 0x28, ws_kind_seq.request, ws_to_ws_bank[b], 0xF7};
-    midi_send_sysex(msg, sizeof(msg));
+    if (midi_send_sysex(msg, sizeof(msg))) {
+        ws_banks_read_begin("SEQUENCE");
+    }
 }
 
 static void sysex_in(const uint8_t *d, size_t len)
@@ -966,6 +968,7 @@ static void sysex_in(const uint8_t *d, size_t len)
         return;
     }
     ensure();
+    ws_banks_read_end();
     static uint8_t raw[WSSEQ_MAX_LEN];
     int n = ws_seq_extract(d + 6, rd_num, raw);
     if (n <= 0) {
