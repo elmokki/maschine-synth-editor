@@ -6,12 +6,11 @@
 #include "display.h"
 #include "esp_log.h"
 #include "sequencer.h"
+#include "synth.h"
 
 #define COLUMN_WIDTH 64
 #define COLUMN_INNER 63
 #define HEADER_LINE_Y 11
-#define SWITCH_Y 27
-#define SWITCH_H 11
 #define NAME_CAP_Y 41
 #define VALUE_CAP_Y 52
 #define SETTINGS_FILE "/lfs/arp"
@@ -73,7 +72,67 @@ static void save(void)
     fclose(f);
 }
 
-void arp_ui_tick(int64_t now_us)
+#define STRIP_Y 14       /* the picture above the knob texts: y 14-36 */
+#define STRIP_H 22
+#define REDRAW_US 50000  /* never faster (see CLAUDE.md) */
+#define CYCLE_MAX 32
+
+static void note_name(int note, char *buf, size_t len)
+{
+    static const char *const names[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    snprintf(buf, len, "%s%d", names[note % 12], note / 12 - 1);
+}
+
+/* Left: the notes held, in playing order. Right: one pass of the pattern as bars (a note's height is its pitch),
+ * the step playing now filled */
+static uint32_t strip_sig = ~0u;
+
+static void draw_strip(void)
+{
+    uint8_t notes[CYCLE_MAX];
+    bool chord = arp_cfg.mode == ARP_CHORD;
+    int n = chord ? arp_held(notes, CYCLE_MAX) : arp_cycle(notes, CYCLE_MAX), cur = arp_step();
+    for (int d = 0; d < DISPLAY_COUNT; d++) {
+        display_fill_rect(d, 0, STRIP_Y - 1, DISPLAY_USABLE_WIDTH, STRIP_H + 2, false);
+    }
+    if (!n) {
+        display_text(0, 2, STRIP_Y + STRIP_H / 2 - 4, &font_tiny, "hold a pad to see the pattern", true);
+        return;
+    }
+    int x = 2;
+    for (int k = 0; k < n && k < 8; k++) {
+        char b[8];
+        note_name(notes[k], b, sizeof b);
+        x = display_text(0, x, STRIP_Y + STRIP_H / 2 - 4, &font_tiny, b, true) + 5;
+    }
+    /* The bars of one pass: a chord has all its notes side by side in a group an octave (the group playing now is
+     * filled), the other modes one bar a step. Centred on the right display; three bars take about a third of it,
+     * more notes widen it until it fills the display, then the bars thin out. */
+    int oct = chord ? arp_cfg.octaves : 1, bars = chord ? n * oct : n, lo = 127, hi = 0;
+    uint8_t pitch[CYCLE_MAX * 4];
+    for (int b = 0; b < bars; b++) {
+        pitch[b] = chord ? notes[b % n] + 12 * (b / n) : notes[b];
+        lo = pitch[b] < lo ? pitch[b] : lo;
+        hi = pitch[b] > hi ? pitch[b] : hi;
+    }
+    const int group_gap = 8, max_slot = 28, avail = DISPLAY_USABLE_WIDTH - 8;
+    int slot = (avail - (oct - 1) * group_gap) / bars;
+    slot = slot > max_slot ? max_slot : slot < 2 ? 2 : slot;
+    int gap = slot >= 12 ? 5 : slot >= 6 ? 2 : 1, bw = slot - gap;
+    int total = bars * slot - gap + (oct - 1) * group_gap;
+    int x0 = (DISPLAY_USABLE_WIDTH - total) / 2;
+    for (int b = 0; b < bars; b++) {
+        int group = chord ? b / n : b;
+        int h = hi > lo ? 2 + (pitch[b] - lo) * (STRIP_H - 2) / (hi - lo) : STRIP_H / 2;
+        int bx = x0 + b * slot + (chord ? b / n * group_gap : 0), by = STRIP_Y + STRIP_H - h;
+        display_fill_rect(1, bx, by, bw, h, true);
+        if (group != cur && bw > 2 && h > 2) {
+            display_fill_rect(1, bx + 1, by + 1, bw - 2, h - 2, false);
+        }
+    }
+}
+
+void arp_ui_tick(int64_t now_us, bool open)
 {
     if (save_at == 1) {
         save_at = now_us + SAVE_DELAY_US;
@@ -81,23 +140,35 @@ void arp_ui_tick(int64_t now_us)
         save_at = 0;
         save();
     }
+    static int64_t next_at;
+    if (!open) {
+        strip_sig = ~0u;
+        return;
+    }
+    if (now_us < next_at) {
+        return;
+    }
+    uint8_t notes[CYCLE_MAX];
+    bool chord = arp_cfg.mode == ARP_CHORD;
+    int n = chord ? arp_held(notes, CYCLE_MAX) : arp_cycle(notes, CYCLE_MAX);
+    uint32_t sig = (uint32_t)(arp_step() + 2) * 977u + n + (chord ? arp_cfg.octaves * 7919u : 0);
+    for (int k = 0; k < n; k++) {
+        sig = sig * 31u + notes[k];
+    }
+    if (sig != strip_sig) {
+        strip_sig = sig;
+        next_at = now_us + REDRAW_US;
+        draw_strip();
+    }
 }
 
 static void column(int col, const char *name, const char *value)
 {
     int d = col / 4, x = (col % 4) * COLUMN_WIDTH;
-    display_fill_rect(d, x, SWITCH_Y - 1, COLUMN_WIDTH, DISPLAY_HEIGHT - SWITCH_Y + 1, false);
+    display_fill_rect(d, x, STRIP_Y + STRIP_H + 3, COLUMN_WIDTH, DISPLAY_HEIGHT - STRIP_Y - STRIP_H - 3, false);
     centered(d, x, COLUMN_INNER, NAME_CAP_Y, &font_small, name, true);
     const font_t *vf = display_text_width(&font_medium, value) <= COLUMN_INNER - 2 ? &font_medium : &font_small;
     centered(d, x, COLUMN_INNER, VALUE_CAP_Y, vf, value, true);
-}
-
-/* The switch on a column's display button, above its knob */
-static void switch_box(int col, const char *name, bool on)
-{
-    int d = col / 4, x = (col % 4) * COLUMN_WIDTH;
-    display_round_rect(d, x + 1, SWITCH_Y, COLUMN_INNER - 2, SWITCH_H, on, true);
-    centered(d, x, COLUMN_INNER, SWITCH_Y + (SWITCH_H - font_small.cap_height) / 2, &font_small, name, !on);
 }
 
 static void draw_head(void)
@@ -117,6 +188,7 @@ void arp_ui_draw(void)
 {
     char b[16];
     draw_head();
+    strip_sig = ~0u;  /* the picture follows in the next tick */
     column(0, "MODE", arp_mode_names[arp_cfg.mode]);
     column(1, "RATE", arp_rate_names[arp_cfg.rate]);
     snprintf(b, sizeof b, "%d%%", arp_cfg.gate);
@@ -131,10 +203,8 @@ void arp_ui_draw(void)
         snprintf(b, sizeof b, "HELD");
     }
     column(5, "VELOCITY", b);
-    column(6, "", arp_cfg.latch ? "ON" : "OFF");
-    switch_box(6, "LATCH", arp_cfg.latch);
-    column(7, "", arp_cfg.retrig ? "ON" : "OFF");
-    switch_box(7, "RETRIG", arp_cfg.retrig);
+    column(6, "LATCH", arp_cfg.latch ? "ON" : "OFF");
+    column(7, "RETRIG", arp_cfg.retrig ? "ON" : "OFF");
 }
 
 void arp_ui_toggle(void)
@@ -142,24 +212,6 @@ void arp_ui_toggle(void)
     arp_cfg.on = !arp_cfg.on;
     arp_changed();
     touched();
-}
-
-bool arp_ui_button(int bit, bool down)
-{
-    if (bit != BTN_DISPLAY_1 + 6 && bit != BTN_DISPLAY_1 + 7) {
-        return false;
-    }
-    if (down) {
-        if (bit == BTN_DISPLAY_1 + 6) {
-            arp_cfg.latch = !arp_cfg.latch;
-        } else {
-            arp_cfg.retrig = !arp_cfg.retrig;
-        }
-        arp_changed();
-        touched();
-        arp_ui_draw();
-    }
-    return true;
 }
 
 void arp_ui_encoder(int i, int delta)
@@ -206,4 +258,25 @@ void arp_ui_main_encoder(int steps)
 {
     sq_set_bpm(sq_pattern.bpm + steps);
     draw_head();
+}
+
+static const synth_tip_t tips[] = {
+    {"ARPEGGIATOR", {"SOLO switches it on and off, on every", "screen (lit = on). SHIFT + SOLO: these", "settings.",
+                     "The held pads play one after another", "on the pad channel, on the grid of", "RATE: in time with the sequencer while",
+                     "it plays."},
+     {BTN_SOLO, BTN_SHIFT, BTN_PLAY, -1, -1, -1, -1, -1}},
+    {"PATTERN", {"MODE: UP, DOWN, UP-DOWN, DOWN-UP, ORDER", "(the order you pressed), RANDOM, CHORD", "(all held notes at once).",
+                 "OCTAVES repeats it higher. RATE: 1/4 -", "1/32, T = triplets. SWING delays every", "second note. The picture above the knobs",
+                 "shows one pass, the playing note filled."},
+     {-1, -1, -1, -1, -1, -1, -1, -1}},
+    {"PLAYING", {"GATE: how long a note lasts. VELOCITY:", "HELD = the pad's own, else a fixed one.", "Knob 7 LATCH: the notes stay",
+                 "after the pads are let go, until a new", "group is played. Knob 8 RETRIG: a new", "pad starts the pattern over.",
+                 "Main encoder: tempo. MUTE: panic."},
+     {BTN_MUTE, BTN_TEMPO, -1, -1, -1, -1, -1, -1}},
+};
+
+const synth_tip_t *arp_ui_tips(int *count)
+{
+    *count = sizeof tips / sizeof tips[0];
+    return tips;
 }

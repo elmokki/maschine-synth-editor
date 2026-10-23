@@ -40,8 +40,11 @@ bool arp_ext_down(int note, int channel, int vel);
 bool arp_ext_up(int note);
 void arp_panic(void);            /* forget everything, end the notes */
 void arp_pause(bool paused);     /* a SysEx job runs: no notes */
-/* Where the arpeggiator is in its pattern, for the screen: the pad numbers held, the step number */
-int arp_step(void);
+/* For the screen: the notes of one pass of the pattern in playing order (RANDOM: the held notes by pitch; CHORD:
+ * the lowest note in each octave), up to max; returns how many. Empty when nothing is held */
+int arp_cycle(uint8_t *notes, int max);
+int arp_held(uint8_t *notes, int max);   /* the notes held, by pitch (ORDER: by press) */
+int arp_step(void);              /* the position in that pass now, -1 = not playing */
 
 /* The clock side (sequencer.c's task) */
 void arp_tick(uint32_t tick, bool from_sequencer);

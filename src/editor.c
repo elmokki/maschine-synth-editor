@@ -653,7 +653,7 @@ static void update_button_leds(void)
     /* Menus open from the editor and from each other */
     bool menus = edit || is_menu(mode);
     /* Shift + Control: the tutorial */
-    maschine_set_button_led(BTN_CONTROL, shift_held && synth->tips && menus ? pulse(LED_ON)
+    maschine_set_button_led(BTN_CONTROL, shift_held && (synth->tips || mode == MODE_ARP) && menus ? pulse(LED_ON)
                                          : mode == MODE_SETUP ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_STEP, mode == MODE_SYNTH ? LED_ON : menus ? LED_DIM : 0);
     /* The sequencer keeps playing when its screen is left: Scene pulses (a step every 50 ms at most) */
@@ -2772,11 +2772,11 @@ static void editor_button_impl(int bit, bool down)
     /* Menu screens (Step, All, Pad Mode, Control): their button opens or
      * closes them, from the editor or straight from another menu; a Group
      * button goes straight back to the editor, at that section */
-    if (bit == BTN_CONTROL && down && (synth->tips || mode == MODE_SEQ || mode == MODE_TUTORIAL) &&
+    if (bit == BTN_CONTROL && down && (synth->tips || mode == MODE_SEQ || mode == MODE_ARP || mode == MODE_TUTORIAL) &&
         (shift_held || mode == MODE_TUTORIAL) && (mode == MODE_EDIT || is_menu(mode))) {
         /* Shift + Control: the tutorial (again, or Control: out) - the sequencer's from Scene */
         if (mode == MODE_TUTORIAL) {
-            mode = tips_return == MODE_SEQ ? MODE_SEQ : MODE_EDIT;
+            mode = tips_return == MODE_SEQ ? MODE_SEQ : tips_return == MODE_ARP ? MODE_ARP : MODE_EDIT;
             if (mode == MODE_SEQ) {
                 seq_ui_enter();
             }
@@ -2789,6 +2789,9 @@ static void editor_button_impl(int bit, bool down)
                 }
                 tips_cur = seq_ui_tips(&tips_n);
                 tips_name = "SEQUENCER";
+            } else if (mode == MODE_ARP) {
+                tips_cur = arp_ui_tips(&tips_n);
+                tips_name = "ARPEGGIATOR";
             } else {
                 tips_cur = synth->tips;
                 tips_n = synth->tip_count;
@@ -2824,9 +2827,6 @@ static void editor_button_impl(int bit, bool down)
             arp_ui_draw();
         }
         update_button_leds();
-        return;
-    }
-    if (mode == MODE_ARP && arp_ui_button(bit, down)) {
         return;
     }
     if (mode == MODE_SEQ && seq_ui_button(bit, down)) {
@@ -3250,7 +3250,7 @@ static void editor_tick_impl(int64_t now_us)
         seq_ui_tick(now_us);
     }
     arp_pause(synth_busy());
-    arp_ui_tick(now_us);
+    arp_ui_tick(now_us, mode == MODE_ARP);
     /* Follows the setting and the selected synth's channel */
     midi_set_thru((midi_thru_t)midi_thru, play_channel());
     textentry_tick(now_us);

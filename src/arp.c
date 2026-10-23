@@ -149,11 +149,6 @@ void arp_pause(bool p)
     }
 }
 
-int arp_step(void)
-{
-    return shown_step;
-}
-
 void arp_silence(void)
 {
     for (int i = 0; i < sounding_n; i++) {
@@ -189,6 +184,18 @@ typedef struct {
     uint8_t note, chan, vel;
     uint32_t order;
 } ent_t;
+
+/* Steps in one pass of the pattern, and which of the total (held notes x octaves) is played at step k of it */
+static int period_of(int mode, int total, int oct)
+{
+    return mode == ARP_UPDN || mode == ARP_DNUP ? (total > 1 ? 2 * total - 2 : 1) : mode == ARP_CHORD ? oct : total;
+}
+
+static int index_at(int mode, int k, int total)
+{
+    int up = k < total ? k : 2 * total - 2 - k;
+    return mode == ARP_DOWN ? total - 1 - k : mode == ARP_UPDN ? up : mode == ARP_DNUP ? total - 1 - up : k;
+}
 
 static void play(int note, int chan, int vel, uint32_t off)
 {
@@ -270,33 +277,49 @@ void arp_tick(uint32_t t, bool from_sequencer)
     int gate = arp_cfg.gate < 5 ? 5 : arp_cfg.gate > 100 ? 100 : arp_cfg.gate;
     uint32_t off = t + (len * gate + 99) / 100;
     arp_silence();  /* a gate of 100 % touches the next note */
-    int total = ne * oct, i;
-    switch (arp_cfg.mode) {
-    case ARP_DOWN:
-        i = total - 1 - (int)(pos % total);
-        break;
-    case ARP_UPDN:
-    case ARP_DNUP: {
-        int period = total > 1 ? 2 * total - 2 : 1, k = pos % period;
-        k = k < total ? k : period - k;
-        i = arp_cfg.mode == ARP_UPDN ? k : total - 1 - k;
-        break;
-    }
-    case ARP_RANDOM:
-        i = esp_random() % total;
-        break;
-    default:
-        i = pos % total;
-        break;
-    }
+    int total = ne * oct, period = period_of(arp_cfg.mode, total, oct), k = pos % period;
+    int i = arp_cfg.mode == ARP_RANDOM ? (int)(esp_random() % total) : index_at(arp_cfg.mode, k, total);
     int vel_fixed = arp_cfg.vel;
     if (arp_cfg.mode == ARP_CHORD) {
-        for (int k = 0; k < ne; k++) {
-            play(e[k].note + 12 * (int)(pos % oct), e[k].chan, vel_fixed ? vel_fixed : e[k].vel, off);
+        for (int n = 0; n < ne; n++) {
+            play(e[n].note + 12 * k, e[n].chan, vel_fixed ? vel_fixed : e[n].vel, off);
         }
     } else {
         play(e[i % ne].note + 12 * (i / ne), e[i % ne].chan, vel_fixed ? vel_fixed : e[i % ne].vel, off);
     }
-    shown_step = pos % total;
+    shown_step = k;
     pos++;
+}
+
+int arp_step(void)
+{
+    return arp_cfg.on && arp_active() ? shown_step : -1;
+}
+
+int arp_cycle(uint8_t *notes, int max)
+{
+    ent_t e[64];
+    int ne = gather(e, arp_cfg.mode == ARP_ORDER);
+    if (!ne) {
+        return 0;
+    }
+    int oct = arp_cfg.octaves < 1 ? 1 : arp_cfg.octaves > 4 ? 4 : arp_cfg.octaves;
+    int total = ne * oct, period = period_of(arp_cfg.mode, total, oct), n = period < max ? period : max;
+    for (int k = 0; k < n; k++) {
+        int i = arp_cfg.mode == ARP_RANDOM ? k : index_at(arp_cfg.mode, k, total);
+        int note = arp_cfg.mode == ARP_CHORD ? e[0].note + 12 * k : e[i % ne].note + 12 * (i / ne);
+        notes[k] = note > 127 ? 127 : note;
+    }
+    return n;
+}
+
+int arp_held(uint8_t *notes, int max)
+{
+    ent_t e[64];
+    int ne = gather(e, arp_cfg.mode == ARP_ORDER);
+    ne = ne < max ? ne : max;
+    for (int i = 0; i < ne; i++) {
+        notes[i] = e[i].note;
+    }
+    return ne;
 }
