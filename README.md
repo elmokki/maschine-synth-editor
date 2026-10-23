@@ -69,14 +69,14 @@ The unit's MIDI OUT goes to the Maschine's MIDI IN only for reading back:
 | Plugiator MiniMax, B4000; Volca FM2 | nothing | everything |
 | Roland D-110, JV-880, U-110 (all entries) | Auto (read the sound from the unit), IMPORT | editing, playing, **storing into the unit** (direct writes); the remembered patch is loaded when the unit does not answer |
 | Korg Wavestation SR PATCH, PERF, SEQ | Auto, IMPORT, and **storing into the SR's memory (REC > TO SR, on all three entries)**: the SR only takes whole banks, so the bank is read first, one item replaced and the bank sent back | editing and sending to the edit buffer (PATCH, PERF), playing, listening to a SEQ sequence, saving to the library |
-| Sequencer (Scene) | note entry from a keyboard on the MIDI IN | everything else |
+| Sequencer (Scene), arpeggiator | note entry from a keyboard on the MIDI IN; the arpeggiator playing notes from the MIDI IN | everything else |
 
 In short: without the cable the Roland editors (and the Plugiator and Volca ones) only lose the knowledge of what is in
 the unit; storing into it still works. The Wavestation PATCH and PERF entries are live editors (the sound goes to the
 SR's edit buffer), but cannot store into the SR or read from it; SEQ then only edits the library, because a sequence
 has no edit buffer to hear or keep an edit in.
 
-Also in: pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), pad pressure settings (Pad Mode page 2 - my values: min 700, max 2600, linear, aftertouch 3000-3600, the main encoder turns the page: MIN PRESS = where a pad counts as hit, MAX PRESS = where velocity is 127, CURVE linear / soft / hard, AT START / AT END = where aftertouch starts and is 127, and a column with the last pad's measurements: HIT, VEL, NOW, AT), MIDI thru, LED brightness, a Volume button for the synths that have one.
+Also in: the SR's Auto buttons (PATCH, PERF, SEQ) show a loading screen while they wait for the unit; pad scales and chords, optional pad aftertouch (Pad Mode: OFF, channel or polyphonic; only a hard press, raw 3000-4000, counts), pad pressure settings (Pad Mode page 2 - my values: min 700, max 2600, linear, aftertouch 3000-3600, the main encoder turns the page: MIN PRESS = where a pad counts as hit, MAX PRESS = where velocity is 127, CURVE linear / soft / hard, AT START / AT END = where aftertouch starts and is 127, and a column with the last pad's measurements: HIT, VEL, NOW, AT), MIDI thru, LED brightness, a Volume button for the synths that have one.
 
 ## Sequencer
 
@@ -94,10 +94,35 @@ the screen; **Play** starts and stops it from anywhere, and Scene pulses while i
 - **Pattern** opens 16 pattern slots on the pads, stored on LittleFS and saved automatically; a playing
   sequencer switches at the end of the longest track. Erase + a pad clears a slot, Erase + a Group button
   clears a track.
+- **Shift + Rec** is live recording: the pads play notes (on the Pad Mode scale, on the picked track's channel) and,
+  while the sequencer plays, are written into the nearest 16th. How long a pad is held becomes the gate or a chain
+  of ties, a new note replaces the step, and Erase held clears the steps the playhead passes. Rec leaves it,
+  leaving Scene turns it off. One note a step, so a chord keeps its last note.
+- **Pattern** then Erase + a pad clears a pattern slot (or the whole pattern in use) and says so on the display.
+- **Control** also has CLOCK OUT (off by default): MIDI clock, Start and Stop to the DIN OUT while the
+  sequencer plays, so the Volcas and drum machines follow its tempo (Restart sends Start again).
 - The engine runs in its own task on core 1, clocked by a hardware timer.
 - **Shift + Control** in Scene opens the sequencer's own tutorial.
 
-Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns into scenes.
+Not yet: chords (polyphony), chaining patterns into scenes, MIDI clock in.
+
+## Arpeggiator
+
+**Solo** switches the arpeggiator on and off on every screen (the LED is lit when it is on); **Shift + Solo** opens
+its settings. The notes of the held pads - and, with it on, notes arriving on the MIDI IN on the pad channel - are
+played one after another on the pad channel instead of together. It starts on the grid of the chosen rate: in time
+with the sequencer while that plays, otherwise on a clock of its own at the same tempo (the main encoder sets it on
+the settings screen).
+
+- Knobs: MODE (UP, DOWN, UP-DOWN, DOWN-UP, ORDER = the order the pads were pressed, RANDOM, CHORD = all held notes
+  at once), RATE (1/4 to 1/32, with triplets), GATE, OCTAVES (1-4), SWING, VELOCITY (HELD = the pad's own, or a fixed
+  one), LATCH (the notes stay after the pads are released until a new group is played), RETRIG (a new pad starts
+  the pattern over).
+- A picture above the knobs shows one pass of the pattern as bars (a bar's height is its pitch), the note playing
+  now filled; the held notes are listed beside it. Chord pads arpeggiate as chords; Mute (panic) clears everything.
+- **Shift + Control** on the settings screen opens its tutorial. The settings are saved; the arpeggiator itself
+  starts off.
+- Tested on the unit except the MIDI IN notes.
 
 > **Warning, Wavestation SR SEQ:** the SR has no edit buffer for wave sequences, so REC > TO SR replaces the chosen
 > sequence in the unit for good. Any sequence of RAM 1-3 can be chosen (encoder 8 on the Store screen, which starts at
@@ -108,7 +133,8 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 
 ### Planned
 
-- Sequencer: MIDI clock out, live recording (Shift + Rec), chords, pattern chaining.
+- Sequencer: chords (polyphony), pattern chaining, MIDI clock in.
+- Arpeggiator: test with a keyboard on the MIDI IN.
 - Korg NS5R (documents are in the local `reference/`).
 - Volca Drum.
 - Overviews for the RHYTHM entries (JV-880, D-110).
@@ -120,7 +146,7 @@ Not yet: MIDI clock out, live recording, chords (polyphony), chaining patterns i
 - `docs/PROTOCOL.md` — the protocol reference. Read this first.
 - `docs/ESP32_NOTES.md` — firmware notes, step by step, incl. the full-speed workarounds.
 - `src/` — ESP32-S3 firmware (`main.c` HID side, `display.c`, `midi.c`, generated `fonts.c`, `editor.c` the generic
-  editor, `synth_*.c` one driver per synth entry, `sequencer.c` / `seq_ui.c` the step sequencer; `CLAUDE.md` has the code map).
+  editor, `synth_*.c` one driver per synth entry, `sequencer.c` / `seq_ui.c` the step sequencer, `arp.c` / `arp_ui.c` the arpeggiator; `CLAUDE.md` has the code map).
 - `docs/WAVESTATION.md` — notes on the Wavestation SR's SysEx and data.
 - `tools/ws_fx_gen.py` — generates `src/ws_fx_data.c` (the Wavestation effect tables) from the local Edisyn clone.
 - `tools/gen_font.py` — regenerates `src/fonts.c`/`fonts.h` from a TTF.
