@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include "arp.h"
@@ -93,9 +94,10 @@ static void load_settings(void)
 {
     FILE *f = fopen(SETTINGS_FILE, "rb");
     if (f) {
-        int c = fgetc(f), slot = fgetc(f);
+        int c = fgetc(f), slot = fgetc(f), clk = fgetc(f);
         fclose(f);
         in_channel = c >= 0 && c <= 16 ? c : 0;
+        sq_clock_out = clk == 1;
         cur_slot = slot >= 0 && slot < SLOTS ? slot : 0;
     }
 }
@@ -107,6 +109,7 @@ static void save_settings(void)
     if (f) {
         fputc(in_channel, f);
         fputc(cur_slot, f);
+        fputc(sq_clock_out, f);
         fclose(f);
     }
 }
@@ -296,6 +299,7 @@ static void draw_settings(void)
         display_fill_rect(d, 0, HEADER_LINE_Y + 1, DISPLAY_WIDTH, DISPLAY_HEIGHT - HEADER_LINE_Y - 1, false);
     }
     column(0, "IN CHANNEL", b);
+    column(1, "CLOCK OUT", sq_clock_out ? "ON" : "OFF");
     text_cap(1, 2, 20, &font_small, "A note on the IN channel is", true);
     text_cap(1, 2, 32, &font_small, "written to the picked step:", true);
     text_cap(1, 2, 44, &font_small, "pitch, velocity, length.", true);
@@ -718,6 +722,15 @@ void seq_ui_encoder(int i, int delta)
 {
     static const int units[8] = {30, 8, 12, 60, 60, 20, 40, 25};
     if (settings_open) {
+        if (i == 1) {
+            acc[1] += delta;
+            if (abs(acc[1]) >= 60) {
+                sq_clock_out = acc[1] > 0;
+                acc[1] = 0;
+                save_settings();
+                draw_settings();
+            }
+        }
         if (i == 0) {
             acc[0] += delta;
             int n = acc[0] / 60;

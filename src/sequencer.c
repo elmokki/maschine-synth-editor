@@ -11,6 +11,7 @@
 static const char *TAG = "seq";
 
 sq_pattern_t sq_pattern;
+bool sq_clock_out;
 
 #define NO_NOTE 0xFF
 
@@ -120,6 +121,12 @@ static void hit(int tr, const sq_track_t *trk, const sq_step_t *s, uint32_t t, i
 static void do_tick(void)
 {
     uint32_t t = tick++;
+    if (sq_clock_out && t % (SQ_PPQ / 24) == 0) {
+        if (t == 0) {
+            midi_send_realtime(0xFA);  /* start (also after a restart) */
+        }
+        midi_send_realtime(0xF8);
+    }
     for (int tr = 0; tr < SQ_TRACKS; tr++) {
         for (int p = 0; p < SQ_POLY; p++) {
             if (on_note[tr][p] != NO_NOTE && (int32_t)(t - off_tick[tr][p]) >= 0) {
@@ -191,6 +198,9 @@ static void seq_task(void *arg)
         if (flush_req) {
             flush_req = false;
             all_off();
+            if (sq_clock_out) {
+                midi_send_realtime(0xFC);
+            }
         }
         if (restart_req) {
             restart_req = false;

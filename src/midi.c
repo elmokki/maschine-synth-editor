@@ -105,6 +105,26 @@ void midi_send(uint8_t status, uint8_t data1, uint8_t data2)
     Q_UNLOCK();
 }
 
+void midi_send_realtime(uint8_t status)
+{
+    if (!attached || status < 0xF8) {
+        return;
+    }
+    Q_LOCK();
+    if (q_head - q_tail >= QUEUE_LEN) {
+        Q_UNLOCK();
+        return;
+    }
+    uint8_t *ev = queue[q_head % QUEUE_LEN];
+    ev[0] = (MIDI_CABLE << 4) | 0xF;  /* CIN F = a single byte */
+    ev[1] = status;
+    ev[2] = 0;
+    ev[3] = 0;
+    q_head++;
+    out_kick();
+    Q_UNLOCK();
+}
+
 /* System Exclusive, F0 ... F7 inclusive, as USB-MIDI event packets:
  * CIN 4 = 3 bytes that start/continue it, CIN 5/6/7 = it ends with 1/2/3
  * bytes. The whole message is queued or dropped, never cut. */

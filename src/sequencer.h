@@ -37,6 +37,7 @@ typedef struct {
 } sq_pattern_t;
 
 extern sq_pattern_t sq_pattern;
+extern bool sq_clock_out;   /* MIDI clock (24 ppq), start and stop to DIN OUT while the sequencer plays */
 
 void sq_pattern_clear(sq_pattern_t *p);   /* an empty pattern: 120 BPM, 16 steps, track n on channel n */
 /* Makes this the playing pattern: at once when stopped, else at the next pass of the longest track (the
