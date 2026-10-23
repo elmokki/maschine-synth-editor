@@ -33,3 +33,4 @@
 #define BTN_PLAY 36
 #define BTN_SCENE 40       /* opens the sequencer */
 #define BTN_PATTERN 41     /* the sequencer's pattern slots */
+#define BTN_SOLO 46        /* arpeggiator on/off; Shift + Solo = its settings */

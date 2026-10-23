@@ -42,6 +42,6 @@ void midi_set_thru(midi_thru_t mode, int channel);
 typedef void (*midi_sysex_handler_t)(const uint8_t *data, size_t len);
 void midi_set_sysex_handler(midi_sysex_handler_t fn);
 
-/* Called with every note arriving on DIN IN: velocity 0 = note off */
-typedef void (*midi_note_handler_t)(int channel, int note, int velocity);
+/* Called with every note arriving on DIN IN: velocity 0 = note off. True = taken: it is not sent through */
+typedef bool (*midi_note_handler_t)(int channel, int note, int velocity);
 void midi_set_note_handler(midi_note_handler_t fn);

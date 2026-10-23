@@ -50,3 +50,4 @@ void sq_restart(void);       /* to the first step */
 void sq_set_bpm(int bpm);
 /* The step each track is playing next/now, tracks of different lengths loop on their own (-1 = stopped) */
 int sq_position(int track);
+void sq_clock_wake(void);  /* the arpeggiator has something to play: starts the clock if it is stopped */

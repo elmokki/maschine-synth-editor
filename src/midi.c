@@ -270,12 +270,13 @@ static void in_cb(usb_transfer_t *xfer)
             if (len == 0) {
                 continue;  /* padding / reserved */
             }
+            bool taken = false;
             if ((cin == 0x8 || cin == 0x9) && note_handler) {
-                note_handler(d[i + 1] & 0x0F, d[i + 2] & 0x7F, cin == 0x8 ? 0 : d[i + 3] & 0x7F);
+                taken = note_handler(d[i + 1] & 0x0F, d[i + 2] & 0x7F, cin == 0x8 ? 0 : d[i + 3] & 0x7F);
             }
             if (cin >= 0x4 && cin <= 0x7) {
                 sysex_in(&d[i]);
-            } else if (thru_mode != MIDI_THRU_OFF) {
+            } else if (thru_mode != MIDI_THRU_OFF && !taken) {
                 thru(&d[i]);
             }
             char hex[3 * 3 + 1] = "";

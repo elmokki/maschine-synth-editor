@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "arp.h"
 #include "buttons.h"
 #include "display.h"
 #include "esp_timer.h"
@@ -868,6 +869,12 @@ void seq_ui_button_leds(uint8_t control_led)
             break;
         case BTN_PATTERN:
             v = pattern_open ? LED_ON : LED_DIM;
+            break;
+        case BTN_SOLO:
+            v = (arp_cfg.on ? LED_ON : LED_DIM) * (control_led ? control_led : LED_ON) / LED_ON;  /* Shift + Solo: the arpeggiator's settings */
+            break;
+        case BTN_SHIFT:
+            v = control_led ? LED_ON : LED_DIM;  /* Shift + Control: the tutorial, Shift + Solo */
             break;
         case BTN_DISPLAY_1:
             v = settings_open || pattern_open || !s->vel ? 0 : s->tie ? LED_ON : LED_DIM;

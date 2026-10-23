@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "arp.h"
 #include "midi.h"
 #include "sequencer.h"
 
@@ -15,7 +16,10 @@ sq_pattern_t sq_pattern;
 
 static TaskHandle_t task;
 static gptimer_handle_t timer;
-static volatile bool playing, flush_req, restart_req;
+static volatile bool playing, flush_req, restart_req, clock_req;
+static bool timer_running;           /* the task's */
+static volatile int ticks_pending;   /* timer ticks the task has yet to play */
+static uint32_t free_tick;           /* the arpeggiator's own clock while the sequencer is stopped */
 static volatile int cur[SQ_TRACKS];
 static uint32_t tick;
 /* Sounding notes, to be ended by their gate (the channel is kept: it may be edited meanwhile) */
@@ -67,6 +71,7 @@ static int tick_us(void)
 static bool IRAM_ATTR timer_cb(gptimer_handle_t t, const gptimer_alarm_event_data_t *ev, void *arg)
 {
     BaseType_t woken = pdFALSE;
+    __atomic_add_fetch(&ticks_pending, 1, __ATOMIC_RELAXED);
     vTaskNotifyGiveFromISR(task, &woken);
     return woken == pdTRUE;
 }
@@ -157,6 +162,20 @@ static void do_tick(void)
     }
 }
 
+/* (Re)starts the timer from zero: the first tick is played at once (the caller adds it to ticks_pending) */
+static void clock_start(void)
+{
+    if (!playing) {
+        free_tick = 0;
+    }
+    gptimer_set_raw_count(timer, 0);
+    set_alarm();
+    if (!timer_running) {
+        gptimer_start(timer);
+        timer_running = true;
+    }
+}
+
 static void seq_task(void *arg)
 {
     /* The timer's interrupt is allocated on the core that creates it: this one */
@@ -168,7 +187,7 @@ static void seq_task(void *arg)
     xTaskNotifyGive((TaskHandle_t)arg);  /* sq_init waits for this */
 
     while (1) {
-        uint32_t n = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (flush_req) {
             flush_req = false;
             all_off();
@@ -176,10 +195,27 @@ static void seq_task(void *arg)
         if (restart_req) {
             restart_req = false;
             all_off();
+            arp_silence();
             tick = 0;
         }
-        while (n-- && playing) {
-            do_tick();
+        if (clock_req) {
+            clock_req = false;
+            clock_start();
+        }
+        arp_service();
+        int n = __atomic_exchange_n(&ticks_pending, 0, __ATOMIC_RELAXED);
+        while (n-- > 0) {
+            if (playing) {
+                uint32_t t = tick;
+                do_tick();
+                arp_tick(t, true);
+            } else if (timer_running) {
+                arp_tick(free_tick++, false);
+            }
+        }
+        if (timer_running && !playing && !arp_active()) {
+            gptimer_stop(timer);
+            timer_running = false;
         }
     }
 }
@@ -209,9 +245,21 @@ static void set_alarm(void)
 void sq_set_bpm(int bpm)
 {
     sq_pattern.bpm = bpm < 20 ? 20 : bpm > 300 ? 300 : bpm;
-    if (playing) {
+    if (timer_running) {
         set_alarm();
     }
+}
+
+void sq_clock_wake(void)
+{
+    if (!task) {
+        return;
+    }
+    if (!timer_running && !playing) {
+        __atomic_add_fetch(&ticks_pending, 1, __ATOMIC_RELAXED);  /* the first step now */
+        clock_req = true;
+    }
+    xTaskNotifyGive(task);
 }
 
 void sq_play(bool on)
@@ -225,13 +273,11 @@ void sq_play(bool on)
         }
         tick = 0;
         playing = true;
-        gptimer_set_raw_count(timer, 0);
-        set_alarm();
-        gptimer_start(timer);
-        xTaskNotifyGive(task);  /* the first step now, not one tick late */
+        __atomic_add_fetch(&ticks_pending, 1, __ATOMIC_RELAXED);  /* the first step now, not one tick late */
+        clock_req = true;
+        xTaskNotifyGive(task);
     } else {
         playing = false;
-        gptimer_stop(timer);
         flush_req = true;
         xTaskNotifyGive(task);
     }

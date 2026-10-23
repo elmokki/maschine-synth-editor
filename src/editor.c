@@ -15,6 +15,8 @@
 #include "synth.h"
 #include "textentry.h"
 #include "editor.h"
+#include "arp.h"
+#include "arp_ui.h"
 #include "seq_ui.h"
 #include "sequencer.h"
 
@@ -114,6 +116,7 @@ static int pad_scale, pad_key;  /* index into scales, 0-11 = C-B */
 /* The notes each pad started (a chord in chord mode), so a release stops
  * exactly those even if the settings changed meanwhile */
 static uint8_t pad_notes[16][4], pad_note_count[16];
+static bool pad_arped[16];  /* the arpeggiator took the pad's notes: no note-on went out, no note-off will */
 static int64_t pad_at_t0[16];  /* when each pad was hit, for the aftertouch to wait out the strike */
 static int pad_at_f[16];        /* its smoothed pressure, 16 x 0-127 */
 /* ...and the channel they started on: a release goes there, so changing the
@@ -264,7 +267,7 @@ static int64_t settings_save_at;   /* when to write the settings file, 0 = nothi
 
 /* Store (Rec), naming (pads as a phone keypad) and setup (Control) screens */
 typedef enum { MODE_EDIT, MODE_STORE, MODE_NAME, MODE_SETUP, MODE_SYNTH, MODE_CATEGORY, MODE_PADS, MODE_TUTORIAL,
-               MODE_OVERVIEW, MODE_SEQ, MODE_LIST } ui_mode_t;
+               MODE_OVERVIEW, MODE_SEQ, MODE_LIST, MODE_ARP } ui_mode_t;
 static ui_mode_t mode;
 
 /* The pages shown: the synth's, or the sequencer's when opened from Scene (and back to it when closed) */
@@ -277,7 +280,7 @@ static ui_mode_t tips_return;
 static bool is_menu(ui_mode_t m)
 {
     return m == MODE_SYNTH || m == MODE_CATEGORY || m == MODE_PADS || m == MODE_SETUP ||
-           m == MODE_TUTORIAL || m == MODE_OVERVIEW || m == MODE_SEQ || m == MODE_LIST;
+           m == MODE_TUTORIAL || m == MODE_OVERVIEW || m == MODE_SEQ || m == MODE_LIST || m == MODE_ARP;
 }
 
 static int store_target;  /* NONE = new patch, else index of a user patch */
@@ -666,6 +669,8 @@ static void update_button_leds(void)
     maschine_set_button_led(BTN_PLAY, sq_playing() ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_NOTE_REPEAT, mode == MODE_LIST ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_PAD_MODE, mode == MODE_PADS ? LED_ON : menus ? LED_DIM : 0);
+    maschine_set_button_led(BTN_SOLO, shift_held && menus ? pulse(arp_cfg.on ? LED_ON : LED_DIM)
+                                          : arp_cfg.on ? LED_ON : menus ? LED_DIM : 0);  /* Shift + Solo: the arpeggiator's settings */
     maschine_set_button_led(BTN_GRID, !synth->overview_draw ? 0 : mode == MODE_OVERVIEW ? LED_ON : menus ? LED_DIM : 0);
     maschine_set_button_led(BTN_ALL, !synth->categories ? 0
                                      : mode == MODE_CATEGORY || (menus && category_filter != ALL_CATEGORIES)
@@ -686,7 +691,7 @@ static void update_button_leds(void)
     /* Shift does something everywhere the menus are (Shift + Control: the
      * tutorial), and more on some synths and screens */
     bool overview_on = mode == MODE_OVERVIEW;
-    bool shift_useful = (menus && synth->tips) || mode == MODE_CATEGORY || mode == MODE_LIST || ((edit || overview_on) && synth->shift_group);
+    bool shift_useful = menus || mode == MODE_CATEGORY || mode == MODE_LIST || ((edit || overview_on) && synth->shift_group);
     maschine_set_button_led(BTN_SHIFT, !shift_useful ? 0 : shift_held ? LED_ON : LED_DIM);
     maschine_set_button_led(BTN_AUTO, edit && synth->read ? LED_DIM : 0);
     uint8_t step_led = !(edit || overview_on) || !synth->instance_step ? 0
@@ -1070,6 +1075,10 @@ static void draw_page(void)
     }
     if (mode == MODE_SEQ) {
         seq_ui_draw();
+        return;
+    }
+    if (mode == MODE_ARP) {
+        arp_ui_draw();
         return;
     }
     if (mode == MODE_TUTORIAL) {
@@ -1866,6 +1875,7 @@ static void revert_patch(void)
  * D-110 only takes All Notes Off, which Hold overrides */
 static void panic(void)
 {
+    arp_panic();
     for (int pad = 0; pad < 16; pad++) {
         for (int i = 0; i < pad_note_count[pad]; i++) {
             midi_send(0x80 | pad_channel[pad], pad_notes[pad][i], 0);
@@ -2519,6 +2529,10 @@ static void editor_encoder_impl(int i, int delta)
     if (mode == MODE_OVERVIEW) {
         return;  /* the overview only shows */
     }
+    if (mode == MODE_ARP) {
+        arp_ui_encoder(i, delta);
+        return;
+    }
     if (mode == MODE_SEQ) {
         seq_ui_encoder(i, delta);
         return;
@@ -2804,6 +2818,17 @@ static void editor_button_impl(int bit, bool down)
         sq_play(!sq_playing());  /* the sequencer plays whatever screen is open */
         return;
     }
+    if (bit == BTN_SOLO && down && !shift_held && (mode == MODE_EDIT || is_menu(mode))) {
+        arp_ui_toggle();  /* the arpeggiator, on every screen */
+        if (mode == MODE_ARP) {
+            arp_ui_draw();
+        }
+        update_button_leds();
+        return;
+    }
+    if (mode == MODE_ARP && arp_ui_button(bit, down)) {
+        return;
+    }
     if (mode == MODE_SEQ && seq_ui_button(bit, down)) {
         return;
     }
@@ -2814,6 +2839,7 @@ static void editor_button_impl(int bit, bool down)
                : bit == BTN_NOTE_REPEAT ? MODE_LIST
                : bit == BTN_CONTROL ? MODE_SETUP
                : bit == BTN_SCENE ? MODE_SEQ
+               : bit == BTN_SOLO && shift_held ? MODE_ARP
                : NONE;
     if (menu != NONE && down && (mode == MODE_EDIT || is_menu(mode))) {
         end_browse();
@@ -2961,7 +2987,8 @@ static void editor_button_impl(int bit, bool down)
         }
         return;
     }
-    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL || mode == MODE_OVERVIEW || mode == MODE_SEQ) {
+    if (mode == MODE_PADS || mode == MODE_SETUP || mode == MODE_TUTORIAL || mode == MODE_OVERVIEW || mode == MODE_SEQ ||
+        mode == MODE_ARP) {
         return;
     }
     if (mode != MODE_EDIT) {
@@ -3113,6 +3140,10 @@ static void editor_main_encoder_impl(int steps)
         seq_ui_main_encoder(steps);
         return;
     }
+    if (mode == MODE_ARP) {
+        arp_ui_main_encoder(steps);
+        return;
+    }
     cancel_init();
     if (mode == MODE_STORE) {
         store_main_encoder(shift_held ? steps * SHIFT_BROWSE_STEPS : steps);
@@ -3218,6 +3249,8 @@ static void editor_tick_impl(int64_t now_us)
     if (mode == MODE_SEQ && !synth_busy()) {
         seq_ui_tick(now_us);
     }
+    arp_pause(synth_busy());
+    arp_ui_tick(now_us);
     /* Follows the setting and the selected synth's channel */
     midi_set_thru((midi_thru_t)midi_thru, play_channel());
     textentry_tick(now_us);
@@ -3365,14 +3398,18 @@ static void load_settings(void);
 
 /* A note from DIN IN on the synth's channel, with NOTES IN on: lights the
  * pad playing that note (if any) and tells the driver, like a pad hit */
-static void note_from_din(int channel, int note, int velocity)
+static bool note_from_din(int channel, int note, int velocity)
 {
     if (mode == MODE_SEQ) {
         seq_ui_midi_note(channel, note, velocity);
-        return;
+        return false;
+    }
+    if (arp_cfg.on && channel == play_channel() && mode != MODE_NAME && !synth_busy() &&
+        (velocity ? arp_ext_down(note, channel, velocity) : arp_ext_up(note))) {
+        return true;  /* the arpeggiator plays it, on the pad channel: not through */
     }
     if (!notes_in || channel != play_channel() || mode == MODE_NAME) {
-        return;
+        return false;
     }
     for (int pad = 0; pad < 16; pad++) {
         if (pad_note(pad) == note && !pad_note_count[pad]) {
@@ -3386,6 +3423,7 @@ static void note_from_din(int channel, int note, int velocity)
     if (velocity && synth->note_played && mode == MODE_EDIT) {
         synth->note_played(note);
     }
+    return false;
 }
 
 /* SysEx from DIN IN goes to the active synth's driver */
@@ -3418,6 +3456,7 @@ static void editor_init_impl(void)
         unit_slot = synth->unit_slot_default;
     }
     seq_ui_init();
+    arp_ui_init();
     load_global_settings();
     maschine_set_pad_press(pad_min);
     maschine_set_led_gain(LED_GAIN_PCT(led_bright), LED_WHITE_PCT(led_bright));
@@ -3489,7 +3528,8 @@ static void editor_pad_impl(int pad, bool down, int raw)
         pad_channel[pad] = channel;
         pad_at_t0[pad] = esp_timer_get_time();
         pad_at_f[pad] = 0;
-        for (int i = 0; i < pad_note_count[pad]; i++) {
+        pad_arped[pad] = arp_pad_down(pad, pad_notes[pad], pad_note_count[pad], channel, vel);
+        for (int i = 0; i < pad_note_count[pad] && !pad_arped[pad]; i++) {
             midi_send(0x90 | channel, pad_notes[pad][i], vel);
         }
         ESP_LOGD(TAG, "pad %d: %d notes from %d, vel %d", pad, pad_note_count[pad], pad_notes[pad][0], vel);
@@ -3501,7 +3541,12 @@ static void editor_pad_impl(int pad, bool down, int raw)
         if (!pad_note_count[pad]) {
             return;
         }
-        for (int i = 0; i < pad_note_count[pad]; i++) {
+        bool arped = pad_arped[pad];
+        if (arped) {
+            arp_pad_up(pad);
+            pad_arped[pad] = false;
+        }
+        for (int i = 0; i < pad_note_count[pad] && !arped; i++) {
             midi_send(0x80 | (hang_notes ? channel : pad_channel[pad]), pad_notes[pad][i], 0);
         }
         int cnt = pad_note_count[pad];
@@ -3548,7 +3593,7 @@ static void editor_pad_pressure_impl(int pad, int raw)
             draw_pad_live();
         }
     }
-    if (!pad_at || !pad_note_count[pad] || mode == MODE_SEQ || mode == MODE_NAME || synth_busy()) {
+    if (!pad_at || !pad_note_count[pad] || pad_arped[pad] || mode == MODE_SEQ || mode == MODE_NAME || synth_busy()) {
         return;
     }
     int64_t now = esp_timer_get_time();
